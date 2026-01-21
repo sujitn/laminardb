@@ -1,7 +1,6 @@
 //! Query planner for streaming SQL
 
-// use datafusion::logical_expr::LogicalPlan;
-type LogicalPlan = (); // Temporary placeholder
+use datafusion::logical_expr::LogicalPlan;
 
 /// Streaming query planner
 pub struct StreamingPlanner {

@@ -53,9 +53,9 @@ pub enum Error {
     #[error("Planning error: {0}")]
     PlanningError(#[from] planner::PlanningError),
 
-    // /// DataFusion error
-    // #[error("DataFusion error: {0}")]
-    // DataFusionError(#[from] datafusion::error::DataFusionError),
+    /// DataFusion error
+    #[error("DataFusion error: {0}")]
+    DataFusionError(#[from] datafusion_common::DataFusionError),
 
     /// Unsupported SQL feature
     #[error("Unsupported feature: {0}")]

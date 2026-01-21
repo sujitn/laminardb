@@ -16,10 +16,10 @@ crossbeam = { workspace = true }
 parking_lot = { workspace = true }
 bytes = { workspace = true }
 
-# Arrow for columnar data - temporarily disabled
-# arrow = { workspace = true }
-# arrow-array = { workspace = true }
-# arrow-schema = { workspace = true }
+# Arrow for columnar data
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }

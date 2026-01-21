@@ -10,9 +10,7 @@
 //! All operators implement the `Operator` trait and can be composed into
 //! directed acyclic graphs (DAGs) for complex stream processing.
 
-// use arrow_array::RecordBatch;
-// Temporarily use a placeholder type
-type RecordBatch = Vec<u8>;
+use arrow_array::RecordBatch;
 use async_trait::async_trait;
 
 /// An event flowing through the system
@@ -95,16 +93,20 @@ pub mod window;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{Int64Array, RecordBatch};
+    use std::sync::Arc;
 
     #[test]
     fn test_event_creation() {
-        // Temporarily simplified test
+        let array = Arc::new(Int64Array::from(vec![1, 2, 3]));
+        let batch = RecordBatch::try_from_iter(vec![("col1", array as _)]).unwrap();
+
         let event = Event {
             timestamp: 12345,
-            data: vec![1, 2, 3],
+            data: batch,
         };
 
         assert_eq!(event.timestamp, 12345);
-        assert_eq!(event.data.len(), 3);
+        assert_eq!(event.data.num_rows(), 3);
     }
 }

@@ -6,7 +6,9 @@
       "Bash(done)",
       "Bash(cargo check:*)",
       "Bash(cargo test:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "WebSearch"
     ]
   }
 }

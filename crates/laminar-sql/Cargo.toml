@@ -13,19 +13,19 @@ description = "SQL layer for LaminarDB with streaming extensions"
 # Core dependency
 laminar-core = { path = "../laminar-core" }
 
-# DataFusion for SQL processing - temporarily disabled
-# datafusion = { workspace = true }
-# datafusion-common = { workspace = true }
-# datafusion-expr = { workspace = true }
-# datafusion-sql = { workspace = true }
+# DataFusion for SQL processing
+datafusion = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+datafusion-sql = { workspace = true }
 
-# Arrow for columnar data - temporarily disabled
-# arrow = { workspace = true }
-# arrow-array = { workspace = true }
-# arrow-schema = { workspace = true }
+# Arrow for columnar data
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 
 # SQL parsing
-sqlparser = "0.43"
+sqlparser = "0.60"
 
 # Error handling
 thiserror = { workspace = true }

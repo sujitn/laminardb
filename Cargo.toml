@@ -25,13 +25,13 @@ categories = ["database", "embedded", "data-structures"]
 
 [workspace.dependencies]
 # Core dependencies
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = "1.3"
-bytes = "1.5"
-thiserror = "1.0"
+bincode = "2.0.0-rc.3"
+bytes = "1.11"
+thiserror = "2.0"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -41,19 +41,21 @@ fxhash = "0.2"  # Faster than std HashMap
 crossbeam = "0.8"  # Lock-free data structures
 parking_lot = "0.12"  # Faster Mutex/RwLock
 
-# DataFusion and Arrow - temporarily disabled due to arrow-arith compilation issue
-# arrow = "52.0"
-# arrow-array = "52.0"
-# arrow-schema = "52.0"
-# datafusion = "39.0"
-# datafusion-common = "39.0"
-# datafusion-expr = "39.0"
-# datafusion-sql = "39.0"
+# DataFusion and Arrow - using latest versions
+arrow = "57.2"
+arrow-array = "57.2"
+arrow-schema = "57.2"
+arrow-buffer = "57.2"
+arrow-data = "57.2"
+datafusion = "52.0"
+datafusion-common = "52.0"
+datafusion-expr = "52.0"
+datafusion-sql = "52.0"
 
 # Testing
-criterion = { version = "0.5", features = ["html_reports"] }
-proptest = "1.4"
-tempfile = "3.8"
+criterion = { version = "0.8", features = ["html_reports"] }
+proptest = "1.9"
+tempfile = "3.24"
 
 [profile.release]
 lto = "fat"
