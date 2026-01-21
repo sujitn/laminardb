@@ -4,12 +4,12 @@
 
 | Phase | Total | Draft | In Progress | Done |
 |-------|-------|-------|-------------|------|
-| Phase 1 | 12 | 12 | 0 | 0 |
+| Phase 1 | 12 | 11 | 0 | 1 |
 | Phase 2 | 12 | 12 | 0 | 0 |
 | Phase 3 | 10 | 10 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 |
-| **Total** | **55** | **55** | **0** | **0** |
+| **Total** | **55** | **54** | **0** | **1** |
 
 ## Status Legend
 
@@ -25,7 +25,7 @@
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
-| F001 | Core Reactor Event Loop | P0 | 📝 | [Link](phase-1/F001-core-reactor-event-loop.md) |
+| F001 | Core Reactor Event Loop | P0 | ✅ | [Link](phase-1/F001-core-reactor-event-loop.md) |
 | F002 | Memory-Mapped State Store | P0 | 📝 | [Link](phase-1/F002-memory-mapped-state-store.md) |
 | F003 | State Store Interface | P0 | 📝 | [Link](phase-1/F003-state-store-interface.md) |
 | F004 | Tumbling Windows | P0 | 📝 | [Link](phase-1/F004-tumbling-windows.md) |

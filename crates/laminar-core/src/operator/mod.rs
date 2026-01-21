@@ -11,7 +11,6 @@
 //! directed acyclic graphs (DAGs) for complex stream processing.
 
 use arrow_array::RecordBatch;
-use async_trait::async_trait;
 
 /// An event flowing through the system
 #[derive(Debug, Clone)]
@@ -34,12 +33,22 @@ pub enum Output {
 }
 
 /// Context provided to operators during processing
-pub struct OperatorContext {
-    // TODO: Add state store access, timer registration, metrics
+pub struct OperatorContext<'a> {
+    /// Current event time
+    pub event_time: i64,
+    /// Current processing time (system time in microseconds)
+    pub processing_time: i64,
+    /// Timer registration
+    pub timers: &'a mut crate::time::TimerService,
+    /// State store access
+    pub state: &'a mut dyn crate::state::StateStore,
+    /// Watermark generator
+    pub watermark_generator: &'a mut dyn crate::time::WatermarkGenerator,
+    /// Operator index in the chain
+    pub operator_index: usize,
 }
 
 /// Trait implemented by all streaming operators
-#[async_trait]
 pub trait Operator: Send {
     /// Process an incoming event
     fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> Vec<Output>;
