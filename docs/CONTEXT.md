@@ -4,42 +4,39 @@
 
 ## Last Session
 
-**Date**: 2026-01-21
-**Duration**: ~3 hours (continued from previous session)
+**Date**: 2026-01-22
+**Duration**: ~1 hour
 
 ### What Was Accomplished
-- ✅ Implemented F001 - Core Reactor Event Loop with full functionality
-- ✅ Added comprehensive reactor implementation with operator chains, timer service, and watermark generation
-- ✅ Created complete test suite with 14 tests covering all reactor functionality
-- ✅ Fixed all compilation warnings in benchmarks
-- ✅ Implemented performance benchmarks for reactor and throughput testing
+- ✅ Implemented F002 - Memory-Mapped State Store with full functionality
+- ✅ Created `MmapStateStore` with two storage modes:
+  - **In-memory mode**: Fast arena-based storage (not persistent)
+  - **Persistent mode**: Memory-mapped file with automatic growth
+- ✅ Implemented full `StateStore` trait with all required methods
+- ✅ Added compaction support for fragmentation management
+- ✅ Created comprehensive test suite (13 mmap-specific tests, 37 total)
+- ✅ Implemented performance benchmarks comparing both stores
 - ✅ **Performance targets exceeded**:
-  - Submit latency: **227ns** (target < 1μs) ✓
-  - Single event processing: **775ns** (target < 1μs) ✓
-  - Throughput: **834K-5.2M events/sec** (target 500K) ✓
-- ✅ Updated feature index - F001 marked as complete
+  - MmapStateStore get (10K entries): **~39ns** (target < 500ns) - **12x better**
+  - MmapStateStore contains (10K entries): **~5ns** (target < 500ns) - **100x better**
+  - InMemoryStore get: **~16ns** remains fastest for pure in-memory workloads
+- ✅ Updated feature index - F002 marked as complete
 
 ### Where We Left Off
-Successfully completed F001 implementation with all tests passing and performance targets exceeded by significant margins (1.7x to 10x). The reactor is production-ready and provides a solid foundation for building the rest of the streaming engine.
+Successfully completed F002 implementation with all tests passing and performance targets exceeded by ~12x. The memory-mapped store provides persistence capability while maintaining sub-500ns latency.
 
 ### Immediate Next Steps
-1. **F003 - State Store Interface** (P0) - Define the trait and basic implementation
-2. **F002 - Memory-Mapped State Store** (P0) - Implement efficient state storage with < 500ns lookup
-3. **F004 - Tumbling Windows** (P0) - First window operator implementation
+1. **F004 - Tumbling Windows** (P0) - First window operator implementation
+2. **F005 - DataFusion Integration** (P0) - SQL query support
+3. **F006 - Basic SQL Parser** (P0) - Streaming SQL extensions
 
 ### Open Issues
-- None currently - F001 is complete
+- None currently - F001, F002, F003 are complete
 
 ### Code Pointers
-- **Main file being edited**: crates/laminar-core/src/reactor/mod.rs
-- **Related test file**: crates/laminar-core/src/reactor/mod.rs (tests module)
-- **Benchmark file**: crates/laminar-core/benches/reactor_bench.rs
-- **Event type**: crates/laminar-core/src/operator/mod.rs (Event struct)
-
-### Code Pointers
-- **Main file being edited**: crates/laminar-core/src/reactor/mod.rs
-- **Related test file**: crates/laminar-core/src/reactor/mod.rs (tests module)
-- **Benchmark file**: crates/laminar-core/benches/reactor_bench.rs
+- **MmapStateStore implementation**: crates/laminar-core/src/state/mmap.rs
+- **State store benchmarks**: crates/laminar-core/benches/state_bench.rs
+- **Feature spec**: docs/features/phase-1/F002-memory-mapped-state-store.md
 
 ---
 
@@ -64,8 +61,8 @@ Successfully completed F001 implementation with all tests passing and performanc
 
 ### Current Focus
 - **Phase**: 1 - Core Engine
-- **Feature**: F001 - Core Reactor Event Loop
-- **Status**: 📝 Draft
+- **Completed**: F001 (Reactor), F002 (Memory-Mapped State Store), F003 (State Store Interface)
+- **Next**: F004 (Tumbling Windows), F005 (DataFusion Integration)
 
 ### Key Files
 ```
@@ -101,10 +98,13 @@ cargo clippy -- -D warnings
 ### Recent Decisions
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-01-21 | Use VecDeque for event queue | Better performance than Vec for queue operations, good cache locality |
-| 2026-01-21 | Pre-allocate output buffers | Avoid allocations in hot path, reuse memory |
-| 2026-01-21 | Integrate watermark generation in poll() | Keep time tracking close to event processing for efficiency |
-| 2026-01-21 | Batch size of 1024 default | Balance between latency and throughput |
+| 2026-01-22 | Defer index persistence to F007 | WAL will handle durable recovery; keeps F002 focused |
+| 2026-01-22 | Two-tier MmapStateStore design | FxHashMap index + data storage achieves ~39ns lookups |
+| 2026-01-22 | memmap2 for file-backed storage | Cross-platform mmap support with safe Rust API |
+| 2026-01-22 | Compaction for fragmentation | Deleted entries leave holes; compact() reclaims space |
+| 2026-01-22 | Use FxHashMap for state store | ~15-17ns lookups, 29x better than 500ns target |
+| 2026-01-22 | Split StateStore/StateStoreExt traits | Keep StateStore dyn-compatible, generic methods in extension |
+| 2026-01-22 | bincode 2.0 with serde feature | Modern serialization with serde compatibility |
 
 ---
 

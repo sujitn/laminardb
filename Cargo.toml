@@ -29,7 +29,7 @@ tokio = { version = "1.49", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = "2.0.0-rc.3"
+bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 bytes = "1.11"
 thiserror = "2.0"
 anyhow = "1.0"
@@ -40,6 +40,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 fxhash = "0.2"  # Faster than std HashMap
 crossbeam = "0.8"  # Lock-free data structures
 parking_lot = "0.12"  # Faster Mutex/RwLock
+memmap2 = "0.9"  # Memory-mapped files
+bumpalo = "3.16"  # Arena allocator
 
 # DataFusion and Arrow - using latest versions
 arrow = "57.2"

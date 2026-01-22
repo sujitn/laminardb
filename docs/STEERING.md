@@ -41,8 +41,9 @@
 
 | Item | Blocker | Unblock Action |
 |------|---------|----------------|
-| F003 State Store | F001 Reactor | Complete reactor first |
 | Benchmarking | CI setup | Set up benchmark CI |
+
+*F003 State Store - COMPLETED (was blocked by F001)*
 
 ## Technical Debt
 

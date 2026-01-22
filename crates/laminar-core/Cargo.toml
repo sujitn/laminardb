@@ -15,6 +15,8 @@ fxhash = { workspace = true }
 crossbeam = { workspace = true }
 parking_lot = { workspace = true }
 bytes = { workspace = true }
+memmap2 = { workspace = true }
+bumpalo = { workspace = true }
 
 # Arrow for columnar data
 arrow = { workspace = true }

@@ -9,7 +9,7 @@
 | **Priority** | P1 |
 | **Phase** | 1 |
 | **Effort** | M (3-5 days) |
-| **Dependencies** | F001 |
+| **Dependencies** | F001, F002 |
 | **Owner** | TBD |
 
 ## Summary
@@ -22,6 +22,7 @@ Implement a write-ahead log (WAL) for durability. All state mutations are logged
 - Configurable sync intervals
 - Log rotation and cleanup
 - Recovery replay support
+- MmapStateStore index reconstruction on recovery (deferred from F002)
 
 ## Technical Design
 
