@@ -28,8 +28,8 @@ arrow-schema = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Serialization for state
-bincode = { workspace = true }
+# Serialization for state (rkyv for zero-copy, serde for compatibility)
+rkyv = { workspace = true }
 serde = { workspace = true }
 
 # Async for Ring 1 communication

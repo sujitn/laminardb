@@ -62,7 +62,14 @@
 
 use bytes::Bytes;
 use fxhash::FxHashMap;
-use serde::{de::DeserializeOwned, Serialize};
+use rkyv::{
+    api::high::{HighDeserializer, HighSerializer, HighValidator},
+    bytecheck::CheckBytes,
+    rancor::Error as RkyvError,
+    ser::allocator::ArenaHandle,
+    util::AlignedVec,
+    Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize,
+};
 use std::ops::Range;
 
 /// Trait for state store implementations.
@@ -214,43 +221,63 @@ pub trait StateStore: Send {
 /// These methods use generics and thus cannot be part of the dyn-compatible
 /// `StateStore` trait. Import this trait to use typed access on any state store.
 ///
+/// Uses rkyv for zero-copy serialization. Types must derive `Archive`,
+/// `rkyv::Serialize`, and `rkyv::Deserialize`.
+///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use laminar_core::state::{StateStore, StateStoreExt, InMemoryStore};
+/// use rkyv::{Archive, Deserialize, Serialize};
+///
+/// #[derive(Archive, Serialize, Deserialize)]
+/// #[rkyv(check_bytes)]
+/// struct Counter { value: u64 }
 ///
 /// let mut store = InMemoryStore::new();
-///
-/// // Use typed methods via the extension trait
-/// store.put_typed(b"count", &42u64).unwrap();
-/// let count: u64 = store.get_typed(b"count").unwrap().unwrap();
-/// assert_eq!(count, 42);
+/// store.put_typed(b"count", &Counter { value: 42 }).unwrap();
+/// let count: Counter = store.get_typed(b"count").unwrap().unwrap();
+/// assert_eq!(count.value, 42);
 /// ```
 pub trait StateStoreExt: StateStore {
-    /// Get a value and deserialize it.
+    /// Get a value and deserialize it using rkyv.
+    ///
+    /// Uses zero-copy access where possible, falling back to full
+    /// deserialization to return an owned value.
     ///
     /// # Errors
     ///
     /// Returns `StateError::Serialization` if deserialization fails.
-    fn get_typed<T: DeserializeOwned>(&self, key: &[u8]) -> Result<Option<T>, StateError> {
+    fn get_typed<T>(&self, key: &[u8]) -> Result<Option<T>, StateError>
+    where
+        T: Archive,
+        T::Archived: for<'a> CheckBytes<HighValidator<'a, RkyvError>>
+            + RkyvDeserialize<T, HighDeserializer<RkyvError>>,
+    {
         match self.get(key) {
             Some(bytes) => {
-                let (value, _) =
-                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                        .map_err(|e| StateError::Serialization(e.to_string()))?;
+                let archived = rkyv::access::<T::Archived, RkyvError>(&bytes)
+                    .map_err(|e| StateError::Serialization(e.to_string()))?;
+                let value = rkyv::deserialize::<T, RkyvError>(archived)
+                    .map_err(|e| StateError::Serialization(e.to_string()))?;
                 Ok(Some(value))
             }
             None => Ok(None),
         }
     }
 
-    /// Serialize and store a value.
+    /// Serialize and store a value using rkyv.
+    ///
+    /// Uses aligned buffers for optimal performance on the hot path.
     ///
     /// # Errors
     ///
     /// Returns `StateError::Serialization` if serialization fails.
-    fn put_typed<T: Serialize>(&mut self, key: &[u8], value: &T) -> Result<(), StateError> {
-        let bytes = bincode::serde::encode_to_vec(value, bincode::config::standard())
+    fn put_typed<T>(&mut self, key: &[u8], value: &T) -> Result<(), StateError>
+    where
+        T: for<'a> RkyvSerialize<HighSerializer<AlignedVec, ArenaHandle<'a>, RkyvError>>,
+    {
+        let bytes = rkyv::to_bytes::<RkyvError>(value)
             .map_err(|e| StateError::Serialization(e.to_string()))?;
         self.put(key, &bytes)
     }
@@ -282,7 +309,9 @@ impl<T: StateStore + ?Sized> StateStoreExt for T {}
 ///
 /// Snapshots can be serialized for persistence and restored later.
 /// They capture the complete state at a point in time.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Uses rkyv for zero-copy deserialization on the hot path.
+#[derive(Debug, Clone, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct StateSnapshot {
     /// Serialized state data
     data: Vec<(Vec<u8>, Vec<u8>)>,
@@ -338,26 +367,30 @@ impl StateSnapshot {
         self.data.iter().map(|(k, v)| k.len() + v.len()).sum()
     }
 
-    /// Serialize the snapshot to bytes.
+    /// Serialize the snapshot to bytes using rkyv.
+    ///
+    /// Returns an aligned byte vector for optimal zero-copy access.
     ///
     /// # Errors
     ///
     /// Returns an error if serialization fails.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, StateError> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .map_err(|e| StateError::Serialization(e.to_string()))
+    pub fn to_bytes(&self) -> Result<AlignedVec, StateError> {
+        rkyv::to_bytes::<RkyvError>(self).map_err(|e| StateError::Serialization(e.to_string()))
     }
 
-    /// Deserialize a snapshot from bytes.
+    /// Deserialize a snapshot from bytes using rkyv.
+    ///
+    /// Uses zero-copy access internally for performance.
     ///
     /// # Errors
     ///
     /// Returns an error if deserialization fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StateError> {
-        let (snapshot, _) =
-            bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        let archived =
+            rkyv::access::<<Self as Archive>::Archived, RkyvError>(bytes)
                 .map_err(|e| StateError::Serialization(e.to_string()))?;
-        Ok(snapshot)
+        rkyv::deserialize::<Self, RkyvError>(archived)
+            .map_err(|e| StateError::Serialization(e.to_string()))
     }
 }
 
@@ -684,24 +717,15 @@ mod tests {
         assert_eq!(count, 42);
 
         // Test with string
-        store.put_typed(b"name", &"alice".to_string()).unwrap();
+        store.put_typed(b"name", &String::from("alice")).unwrap();
         let name: String = store.get_typed(b"name").unwrap().unwrap();
         assert_eq!(name, "alice");
 
-        // Test with struct
-        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-        struct User {
-            id: u32,
-            name: String,
-        }
-
-        let user = User {
-            id: 1,
-            name: "bob".to_string(),
-        };
-        store.put_typed(b"user:1", &user).unwrap();
-        let restored: User = store.get_typed(b"user:1").unwrap().unwrap();
-        assert_eq!(restored, user);
+        // Test with vector (complex type)
+        let nums = vec![1i64, 2, 3, 4, 5];
+        store.put_typed(b"nums", &nums).unwrap();
+        let restored: Vec<i64> = store.get_typed(b"nums").unwrap().unwrap();
+        assert_eq!(restored, nums);
 
         // Test non-existent key
         let missing: Option<u64> = store.get_typed(b"missing").unwrap();

@@ -27,7 +27,7 @@
 | Decision | Choice | Rationale | ADR |
 |----------|--------|-----------|-----|
 | Hash map implementation | FxHashMap | Faster than std HashMap for small keys | ADR-001 |
-| Serialization format | bincode | Fastest for Rust types | ADR-002 |
+| Serialization format | rkyv | Zero-copy deserialization, ~1.2ns access | ADR-002 |
 | Async runtime | tokio (Ring 1 only) | Industry standard, not on hot path | - |
 
 ### Pending

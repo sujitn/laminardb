@@ -29,7 +29,14 @@ use super::{Event, Operator, OperatorContext, OperatorError, OperatorState, Outp
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use crate::state::{StateStore, StateStoreExt};
-use serde::{Deserialize, Serialize};
+use rkyv::{
+    api::high::{HighDeserializer, HighSerializer, HighValidator},
+    bytecheck::CheckBytes,
+    rancor::Error as RkyvError,
+    ser::allocator::ArenaHandle,
+    util::AlignedVec,
+    Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize,
+};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,7 +45,7 @@ use std::time::Duration;
 ///
 /// Windows are identified by their start and end timestamps (in milliseconds).
 /// For tumbling windows, these are non-overlapping intervals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct WindowId {
     /// Window start timestamp (inclusive, in milliseconds)
     pub start: i64,
@@ -209,7 +216,10 @@ impl ResultToI64 for Option<f64> {
 ///
 /// This is the state stored per window in the state store.
 /// Different aggregators store different types of accumulators.
-pub trait Accumulator: Default + Clone + Serialize + for<'de> Deserialize<'de> + Send {
+///
+/// Implementors should derive `rkyv::Archive`, `rkyv::Serialize`, and
+/// `rkyv::Deserialize` for zero-copy serialization on the hot path.
+pub trait Accumulator: Default + Clone + Send {
     /// The input type for the aggregation.
     type Input;
     /// The output type produced by the aggregation.
@@ -250,7 +260,7 @@ pub trait Aggregator: Send + Clone {
 pub struct CountAggregator;
 
 /// Accumulator for count aggregation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct CountAccumulator {
     count: u64,
 }
@@ -304,7 +314,7 @@ pub struct SumAggregator {
 }
 
 /// Accumulator for sum aggregation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct SumAccumulator {
     sum: i64,
     count: u64,
@@ -372,7 +382,7 @@ pub struct MinAggregator {
 }
 
 /// Accumulator for min aggregation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct MinAccumulator {
     min: Option<i64>,
 }
@@ -438,7 +448,7 @@ pub struct MaxAggregator {
 }
 
 /// Accumulator for max aggregation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct MaxAccumulator {
     max: Option<i64>,
 }
@@ -504,7 +514,7 @@ pub struct AvgAggregator {
 }
 
 /// Accumulator for average aggregation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct AvgAccumulator {
     sum: i64,
     count: u64,
@@ -618,7 +628,12 @@ fn create_window_output_schema() -> SchemaRef {
     ]))
 }
 
-impl<A: Aggregator> TumblingWindowOperator<A> {
+impl<A: Aggregator> TumblingWindowOperator<A>
+where
+    A::Acc: Archive + for<'a> RkyvSerialize<HighSerializer<AlignedVec, ArenaHandle<'a>, RkyvError>>,
+    <A::Acc as Archive>::Archived:
+        for<'a> CheckBytes<HighValidator<'a, RkyvError>> + RkyvDeserialize<A::Acc, HighDeserializer<RkyvError>>,
+{
     /// Creates a new tumbling window operator.
     ///
     /// # Arguments
@@ -738,7 +753,11 @@ impl<A: Aggregator> TumblingWindowOperator<A> {
 
 impl<A: Aggregator> Operator for TumblingWindowOperator<A>
 where
-    A::Acc: 'static,
+    A::Acc: 'static
+        + Archive
+        + for<'a> RkyvSerialize<HighSerializer<AlignedVec, ArenaHandle<'a>, RkyvError>>,
+    <A::Acc as Archive>::Archived:
+        for<'a> CheckBytes<HighValidator<'a, RkyvError>> + RkyvDeserialize<A::Acc, HighDeserializer<RkyvError>>,
 {
     fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> Vec<Output> {
         let event_time = event.timestamp;
@@ -827,9 +846,10 @@ where
     }
 
     fn checkpoint(&self) -> OperatorState {
-        // Serialize the registered windows set
+        // Serialize the registered windows set using rkyv
         let windows: Vec<_> = self.registered_windows.iter().copied().collect();
-        let data = bincode::serde::encode_to_vec(windows, bincode::config::standard())
+        let data = rkyv::to_bytes::<RkyvError>(&windows)
+            .map(|v| v.to_vec())
             .unwrap_or_default();
 
         OperatorState {
@@ -846,9 +866,12 @@ where
             )));
         }
 
-        let (windows, _): (Vec<WindowId>, _) =
-            bincode::serde::decode_from_slice(&state.data, bincode::config::standard())
+        // Deserialize using rkyv
+        let archived =
+            rkyv::access::<rkyv::Archived<Vec<WindowId>>, RkyvError>(&state.data)
                 .map_err(|e| OperatorError::SerializationFailed(e.to_string()))?;
+        let windows: Vec<WindowId> = rkyv::deserialize::<Vec<WindowId>, RkyvError>(archived)
+            .map_err(|e| OperatorError::SerializationFailed(e.to_string()))?;
 
         self.registered_windows = windows.into_iter().collect();
         Ok(())

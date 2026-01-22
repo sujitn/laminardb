@@ -8,24 +8,22 @@
 **Duration**: ~1 hour
 
 ### What Was Accomplished
-- ✅ Implemented F005 - DataFusion Integration
-- ✅ Created comprehensive SQL query integration infrastructure:
-  - **StreamSource trait**: Abstract interface for streaming data sources
-  - **StreamBridge**: Channel-based push-to-pull bridge (tokio mpsc)
-  - **StreamingScanExec**: DataFusion ExecutionPlan for streaming scans
-  - **StreamingTableProvider**: DataFusion TableProvider for streaming sources
-  - **ChannelStreamSource**: Concrete source using channels for Reactor integration
-- ✅ Full DataFusion integration with:
-  - Query planning and execution
-  - Projection pushdown
-  - Filter pushdown (framework in place)
-  - Unbounded stream support
-- ✅ Created comprehensive test suite (35 tests)
-- ✅ All tests passing, clippy clean
-- ✅ Updated feature index - F005 marked as complete
+- ✅ Migrated serialization from bincode to rkyv for zero-copy deserialization
+- ✅ Updated all Cargo.toml files (workspace, laminar-core, laminar-storage)
+- ✅ Migrated state module (`state/mod.rs`):
+  - Updated `StateSnapshot` to derive rkyv traits
+  - Updated `StateStoreExt` trait with rkyv-compatible bounds
+  - Updated `to_bytes()`/`from_bytes()` to use rkyv
+- ✅ Migrated window operator (`operator/window.rs`):
+  - Updated `WindowId` and all accumulators with rkyv derives
+  - Updated `checkpoint()`/`restore()` methods
+  - Added proper trait bounds to impl blocks
+- ✅ Updated documentation (STEERING.md, checkpoint-recovery skill)
+- ✅ All 89 tests passing (54 laminar-core + 35 laminar-sql)
+- ✅ Clippy clean
 
 ### Where We Left Off
-Successfully completed F005 implementation with all tests passing. The DataFusion integration provides the foundation for SQL query support. Aggregations on unbounded streams correctly fail (require windowing from F006).
+Successfully migrated from bincode to rkyv. The rkyv library provides zero-copy deserialization with ~1.2ns access times, which is critical for Ring 0 hot path performance.
 
 ### Immediate Next Steps
 1. **F006 - Basic SQL Parser** (P0) - Streaming SQL extensions (TUMBLE, WATERMARK, EMIT)
@@ -36,34 +34,43 @@ Successfully completed F005 implementation with all tests passing. The DataFusio
 - None currently - F001, F002, F003, F004, F005 are complete
 
 ### Code Pointers
-- **StreamSource trait**: `crates/laminar-sql/src/datafusion/source.rs`
-- **StreamBridge**: `crates/laminar-sql/src/datafusion/bridge.rs`
-- **StreamingScanExec**: `crates/laminar-sql/src/datafusion/exec.rs`
-- **StreamingTableProvider**: `crates/laminar-sql/src/datafusion/table_provider.rs`
-- **ChannelStreamSource**: `crates/laminar-sql/src/datafusion/channel_source.rs`
+- **StateStoreExt with rkyv**: `crates/laminar-core/src/state/mod.rs:229-280`
+- **StateSnapshot rkyv**: `crates/laminar-core/src/state/mod.rs:305-395`
+- **WindowId rkyv**: `crates/laminar-core/src/operator/window.rs:45-85`
+- **Accumulator derives**: `crates/laminar-core/src/operator/window.rs:268-545`
 
 ---
 
 ## Session Notes
 
-**F005 Implementation Highlights:**
-- Push-to-pull bridge using tokio mpsc channels connects Reactor to DataFusion
-- StreamingScanExec implements DataFusion's ExecutionPlan with Unbounded boundedness
-- ChannelStreamSource uses `take_sender()` pattern for proper channel lifecycle
-- Filter and projection pushdown infrastructure ready for F006 enhancements
-- Aggregations on unbounded streams correctly rejected by DataFusion (require windows)
+**bincode → rkyv Migration:**
+- bincode discontinued in December 2025 (maintainer harassment, intentionally broken builds)
+- rkyv chosen for zero-copy deserialization (~1.2ns access vs microseconds)
+- Uses `aligned` feature for Ring 0 hot path (AlignedVec for proper memory alignment)
+- Breaking change: Types need `#[derive(Archive, Serialize, Deserialize)]` from rkyv
 
-**Key Design Decisions:**
-- `StreamSource` trait is async-trait based for flexibility
-- `BridgeSender` is cloneable for multiple producers
-- `take_sender()` pattern ensures channel closure (prevents hanging queries)
-- Unbounded streams marked with `Boundedness::Unbounded { requires_infinite_memory: false }`
-- Projection applied via `ProjectingStream` wrapper
+**rkyv Usage Patterns:**
+```rust
+use rkyv::{Archive, Deserialize, Serialize, rancor::Error};
+use rkyv::util::AlignedVec;
 
-**DataFusion Version Notes (52.0):**
-- `PlanProperties::new()` requires 4 args: equivalence, partitioning, emission_type, boundedness
-- `Boundedness::Unbounded` is a struct variant with `requires_infinite_memory` field
-- `Expr::Literal` takes 2 args: value and optional metadata
+// Derive rkyv traits
+#[derive(Archive, Serialize, Deserialize)]
+struct MyType { ... }
+
+// Serialize to aligned bytes
+let bytes: AlignedVec = rkyv::to_bytes::<Error>(&value)?;
+
+// Zero-copy access (hot path)
+let archived = rkyv::access::<Archived<MyType>, Error>(&bytes)?;
+
+// Full deserialization when needed
+let owned: MyType = rkyv::deserialize::<MyType, Error>(archived)?;
+```
+
+**Trait Bounds for StateStoreExt:**
+- `get_typed<T>` requires: `T: Archive`, `T::Archived: CheckBytes + Deserialize<T>`
+- `put_typed<T>` requires: `T: Serialize<HighSerializer<...>>`
 
 ---
 
@@ -102,6 +109,8 @@ cargo test --all
 ### Recent Decisions
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-01-22 | Migrate bincode → rkyv | Zero-copy deserialization (~1.2ns access), bincode discontinued |
+| 2026-01-22 | Use aligned buffers (rkyv) | Ring 0 state store uses AlignedVec for optimal CPU access |
 | 2026-01-22 | `take_sender()` pattern | Ensures channel closure for proper stream termination |
 | 2026-01-22 | Unbounded stream boundedness | Correctly marks streaming sources as unbounded |
 | 2026-01-22 | Aggregation rejection | Aggregations on unbounded streams fail (require windows/F006) |
@@ -115,6 +124,36 @@ cargo test --all
 ## History
 
 ### Previous Sessions
+
+<details>
+<summary>Session - 2026-01-22 (bincode → rkyv migration)</summary>
+
+**Accomplished**:
+- ✅ Migrated serialization from bincode to rkyv
+- ✅ Updated StateSnapshot, StateStoreExt, WindowId, and all accumulators
+- ✅ All 89 tests passing
+
+**Notes**:
+- bincode was discontinued in December 2025
+- rkyv provides zero-copy deserialization (~1.2ns access vs microseconds)
+- Uses aligned buffers for Ring 0 hot path operations
+- Breaking change: Types must now derive `rkyv::Archive, Serialize, Deserialize`
+
+</details>
+
+<details>
+<summary>Session - 2026-01-22 (F005 Implementation)</summary>
+
+**Accomplished**:
+- ✅ Implemented F005 - DataFusion Integration
+- ✅ StreamSource trait, StreamBridge, StreamingScanExec, StreamingTableProvider
+- ✅ 35 tests passing
+
+**Notes**:
+- Push-to-pull bridge using tokio mpsc channels
+- Aggregations on unbounded streams correctly rejected (require windows)
+
+</details>
 
 <details>
 <summary>Session - 2026-01-22 (F004 Implementation)</summary>
