@@ -4,12 +4,12 @@
 
 | Phase | Total | Draft | In Progress | Done |
 |-------|-------|-------|-------------|------|
-| Phase 1 | 12 | 9 | 0 | 3 |
+| Phase 1 | 12 | 8 | 0 | 4 |
 | Phase 2 | 12 | 12 | 0 | 0 |
 | Phase 3 | 10 | 10 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 |
-| **Total** | **55** | **52** | **0** | **3** |
+| **Total** | **55** | **51** | **0** | **4** |
 
 ## Status Legend
 
@@ -28,7 +28,7 @@
 | F001 | Core Reactor Event Loop | P0 | ✅ | [Link](phase-1/F001-core-reactor-event-loop.md) |
 | F002 | Memory-Mapped State Store | P0 | ✅ | [Link](phase-1/F002-memory-mapped-state-store.md) |
 | F003 | State Store Interface | P0 | ✅ | [Link](phase-1/F003-state-store-interface.md) |
-| F004 | Tumbling Windows | P0 | 📝 | [Link](phase-1/F004-tumbling-windows.md) |
+| F004 | Tumbling Windows | P0 | ✅ | [Link](phase-1/F004-tumbling-windows.md) |
 | F005 | DataFusion Integration | P0 | 📝 | [Link](phase-1/F005-datafusion-integration.md) |
 | F006 | Basic SQL Parser | P0 | 📝 | [Link](phase-1/F006-basic-sql-parser.md) |
 | F007 | Write-Ahead Log | P1 | 📝 | [Link](phase-1/F007-write-ahead-log.md) |

@@ -42,6 +42,7 @@ crossbeam = "0.8"  # Lock-free data structures
 parking_lot = "0.12"  # Faster Mutex/RwLock
 memmap2 = "0.9"  # Memory-mapped files
 bumpalo = "3.16"  # Arena allocator
+uuid = { version = "1.11", features = ["v4"] }  # Unique IDs
 
 # DataFusion and Arrow - using latest versions
 arrow = "57.2"

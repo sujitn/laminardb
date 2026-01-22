@@ -17,6 +17,7 @@ parking_lot = { workspace = true }
 bytes = { workspace = true }
 memmap2 = { workspace = true }
 bumpalo = { workspace = true }
+uuid = { workspace = true }
 
 # Arrow for columnar data
 arrow = { workspace = true }
@@ -54,4 +55,8 @@ harness = false
 
 [[bench]]
 name = "throughput_bench"
+harness = false
+
+[[bench]]
+name = "window_bench"
 harness = false
