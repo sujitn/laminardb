@@ -67,11 +67,24 @@ impl WindowId {
     }
 
     /// Converts the window ID to a byte key for state storage.
+    ///
+    /// This method allocates a `Vec<u8>`. For hot path operations,
+    /// prefer [`to_key_inline`] which returns a stack-allocated array.
     #[must_use]
     pub fn to_key(&self) -> Vec<u8> {
-        let mut key = Vec::with_capacity(16);
-        key.extend_from_slice(&self.start.to_be_bytes());
-        key.extend_from_slice(&self.end.to_be_bytes());
+        self.to_key_inline().to_vec()
+    }
+
+    /// Converts the window ID to a stack-allocated byte key.
+    ///
+    /// This is the zero-allocation version for Ring 0 hot path operations.
+    /// Returns a fixed-size array that can be used directly with state stores.
+    #[inline]
+    #[must_use]
+    pub fn to_key_inline(&self) -> [u8; 16] {
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(&self.start.to_be_bytes());
+        key[8..16].copy_from_slice(&self.end.to_be_bytes());
         key
     }
 
@@ -580,8 +593,11 @@ impl Aggregator for AvgAggregator {
     }
 }
 
-/// State key prefix for window accumulators
-const WINDOW_STATE_PREFIX: &[u8] = b"win:";
+/// State key prefix for window accumulators (4 bytes)
+const WINDOW_STATE_PREFIX: &[u8; 4] = b"win:";
+
+/// Total size of window state key: prefix (4) + `WindowId` (16) = 20 bytes
+const WINDOW_STATE_KEY_SIZE: usize = 4 + 16;
 
 /// Tumbling window operator.
 ///
@@ -690,11 +706,16 @@ where
     }
 
     /// Generates the state key for a window's accumulator.
+    ///
+    /// Returns a stack-allocated fixed-size array to avoid heap allocation
+    /// on the hot path. This is critical for Ring 0 performance.
+    #[inline]
     #[allow(clippy::unused_self)] // May use self for namespacing in the future
-    fn state_key(&self, window_id: &WindowId) -> Vec<u8> {
-        let mut key = Vec::with_capacity(WINDOW_STATE_PREFIX.len() + 16);
-        key.extend_from_slice(WINDOW_STATE_PREFIX);
-        key.extend_from_slice(&window_id.to_key());
+    fn state_key(&self, window_id: &WindowId) -> [u8; WINDOW_STATE_KEY_SIZE] {
+        let mut key = [0u8; WINDOW_STATE_KEY_SIZE];
+        key[..4].copy_from_slice(WINDOW_STATE_PREFIX);
+        let window_key = window_id.to_key_inline();
+        key[4..20].copy_from_slice(&window_key);
         key
     }
 
