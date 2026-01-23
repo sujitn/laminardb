@@ -18,6 +18,7 @@ bytes = { workspace = true }
 memmap2 = { workspace = true }
 bumpalo = { workspace = true }
 uuid = { workspace = true }
+smallvec = { workspace = true }
 
 # Arrow for columnar data
 arrow = { workspace = true }

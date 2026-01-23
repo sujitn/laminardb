@@ -66,6 +66,10 @@ pub struct Reactor {
     current_event_time: i64,
     start_time: Instant,
     events_processed: u64,
+    /// Pre-allocated buffers for operator chain processing
+    /// We use two buffers and swap between them to avoid allocations
+    operator_buffer_1: Vec<Output>,
+    operator_buffer_2: Vec<Output>,
 }
 
 impl Reactor {
@@ -91,6 +95,8 @@ impl Reactor {
             current_event_time: 0,
             start_time: Instant::now(),
             events_processed: 0,
+            operator_buffer_1: Vec::with_capacity(256),
+            operator_buffer_2: Vec::with_capacity(256),
         })
     }
 
@@ -140,12 +146,14 @@ impl Reactor {
 
         // 1. Fire expired timers
         let fired_timers = self.timer_service.poll_timers(self.current_event_time);
-        for timer in fired_timers {
+        for mut timer in fired_timers {
             // Find the operator that registered this timer
             // For now, we'll process timers for all operators
             for (idx, operator) in self.operators.iter_mut().enumerate() {
-                let timer_clone = crate::operator::Timer {
-                    key: timer.key.clone().unwrap_or_default(),
+                // Move key out of timer to avoid clone allocation
+                let timer_key = timer.key.take().unwrap_or_default();
+                let timer_for_operator = crate::operator::Timer {
+                    key: timer_key,
                     timestamp: timer.timestamp,
                 };
 
@@ -158,7 +166,7 @@ impl Reactor {
                     operator_index: idx,
                 };
 
-                let outputs = operator.on_timer(timer_clone, &mut ctx);
+                let outputs = operator.on_timer(timer_for_operator, &mut ctx);
                 self.output_buffer.extend(outputs);
             }
         }
@@ -176,13 +184,24 @@ impl Reactor {
                 self.output_buffer.push(Output::Watermark(watermark.timestamp()));
             }
 
-            // Process through operator chain
-            let mut current_outputs = vec![Output::Event(event.clone())];
+            // Process through operator chain using pre-allocated buffers
+            // Start with the event in buffer 1
+            self.operator_buffer_1.clear();
+            self.operator_buffer_1.push(Output::Event(event));
+
+            let mut current_buffer_is_1 = true;
 
             for (idx, operator) in self.operators.iter_mut().enumerate() {
-                let mut next_outputs = Vec::new();
+                // Determine which buffer to read from and which to write to
+                let (current_buffer, next_buffer) = if current_buffer_is_1 {
+                    (&mut self.operator_buffer_1, &mut self.operator_buffer_2)
+                } else {
+                    (&mut self.operator_buffer_2, &mut self.operator_buffer_1)
+                };
 
-                for output in current_outputs {
+                next_buffer.clear();
+
+                for output in current_buffer.drain(..) {
                     if let Output::Event(event) = output {
                         let mut ctx = OperatorContext {
                             event_time: self.current_event_time,
@@ -194,17 +213,24 @@ impl Reactor {
                         };
 
                         let operator_outputs = operator.process(&event, &mut ctx);
-                        next_outputs.extend(operator_outputs);
+                        next_buffer.extend(operator_outputs);
                     } else {
                         // Pass through watermarks and late events
-                        next_outputs.push(output);
+                        next_buffer.push(output);
                     }
                 }
 
-                current_outputs = next_outputs;
+                // Swap buffers for next iteration
+                current_buffer_is_1 = !current_buffer_is_1;
             }
 
-            self.output_buffer.extend(current_outputs);
+            // Extend output buffer with final results
+            let final_buffer = if current_buffer_is_1 {
+                &mut self.operator_buffer_1
+            } else {
+                &mut self.operator_buffer_2
+            };
+            self.output_buffer.extend(final_buffer.drain(..));
             self.events_processed += 1;
             events_in_batch += 1;
 
@@ -336,6 +362,7 @@ pub enum ReactorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operator::OutputVec;
     use arrow_array::{Int64Array, RecordBatch};
     use std::sync::Arc;
 
@@ -343,12 +370,14 @@ mod tests {
     struct PassthroughOperator;
 
     impl Operator for PassthroughOperator {
-        fn process(&mut self, event: &Event, _ctx: &mut OperatorContext) -> Vec<Output> {
-            vec![Output::Event(event.clone())]
+        fn process(&mut self, event: &Event, _ctx: &mut OperatorContext) -> OutputVec {
+            let mut output = OutputVec::new();
+            output.push(Output::Event(event.clone()));
+            output
         }
 
-        fn on_timer(&mut self, _timer: crate::operator::Timer, _ctx: &mut OperatorContext) -> Vec<Output> {
-            vec![]
+        fn on_timer(&mut self, _timer: crate::operator::Timer, _ctx: &mut OperatorContext) -> OutputVec {
+            OutputVec::new()
         }
 
         fn checkpoint(&self) -> crate::operator::OperatorState {

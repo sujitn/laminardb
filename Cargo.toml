@@ -16,7 +16,7 @@ version = "0.1.0"
 authors = ["LaminarDB Contributors"]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/laminardb/laminardb"
+repository = "https://github.com/sujitn/laminardb"
 homepage = "https://laminardb.io"
 documentation = "https://docs.laminardb.io"
 readme = "README.md"
@@ -54,6 +54,9 @@ datafusion = "52.0"
 datafusion-common = "52.0"
 datafusion-expr = "52.0"
 datafusion-sql = "52.0"
+
+# Collections
+smallvec = { version = "1.15", features = ["const_new", "union"] }
 
 # Testing
 criterion = { version = "0.8", features = ["html_reports"] }

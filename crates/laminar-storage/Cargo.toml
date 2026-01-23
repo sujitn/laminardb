@@ -43,3 +43,7 @@ delta = ["dep:delta_kernel"]
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
+
+[[bench]]
+name = "wal_bench"
+harness = false

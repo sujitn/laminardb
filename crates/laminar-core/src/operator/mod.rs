@@ -11,6 +11,7 @@
 //! directed acyclic graphs (DAGs) for complex stream processing.
 
 use arrow_array::RecordBatch;
+use smallvec::SmallVec;
 
 /// An event flowing through the system
 #[derive(Debug, Clone)]
@@ -32,6 +33,16 @@ pub enum Output {
     LateEvent(Event),
 }
 
+/// Collection type for operator outputs.
+///
+/// Uses `SmallVec` to avoid heap allocation for common cases (0-3 outputs).
+/// The size 4 is chosen based on typical operator patterns:
+/// - 0 outputs: filter that drops events
+/// - 1 output: most common case (map, regular processing)
+/// - 2 outputs: event + watermark
+/// - 3+ outputs: flatmap or window emission
+pub type OutputVec = SmallVec<[Output; 4]>;
+
 /// Context provided to operators during processing
 pub struct OperatorContext<'a> {
     /// Current event time
@@ -51,10 +62,10 @@ pub struct OperatorContext<'a> {
 /// Trait implemented by all streaming operators
 pub trait Operator: Send {
     /// Process an incoming event
-    fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> Vec<Output>;
+    fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> OutputVec;
 
     /// Handle timer expiration
-    fn on_timer(&mut self, timer: Timer, ctx: &mut OperatorContext) -> Vec<Output>;
+    fn on_timer(&mut self, timer: Timer, ctx: &mut OperatorContext) -> OutputVec;
 
     /// Checkpoint the operator's state
     fn checkpoint(&self) -> OperatorState;

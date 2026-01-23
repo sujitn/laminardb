@@ -25,7 +25,7 @@
 //! );
 //! ```
 
-use super::{Event, Operator, OperatorContext, OperatorError, OperatorState, Output, Timer};
+use super::{Event, Operator, OperatorContext, OperatorError, OperatorState, Output, OutputVec, Timer};
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use crate::state::{StateStore, StateStoreExt};
@@ -39,6 +39,7 @@ use rkyv::{
 };
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Unique identifier for a window.
@@ -633,6 +634,9 @@ pub struct TumblingWindowOperator<A: Aggregator> {
     _phantom: PhantomData<A::Acc>,
 }
 
+/// Static counter for generating unique operator IDs without allocation.
+static OPERATOR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Creates the standard window output schema.
 ///
 /// This schema is used for all window aggregation results.
@@ -660,13 +664,14 @@ where
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn new(assigner: TumblingWindowAssigner, aggregator: A, allowed_lateness: Duration) -> Self {
+        let operator_num = OPERATOR_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
             assigner,
             aggregator,
             // Truncation is acceptable: lateness > 2^63 ms (~292 million years) is not practical
             allowed_lateness_ms: allowed_lateness.as_millis() as i64,
             registered_windows: std::collections::HashSet::new(),
-            operator_id: format!("tumbling_window_{}", uuid::Uuid::new_v4()),
+            operator_id: format!("tumbling_window_{}", operator_num),
             output_schema: create_window_output_schema(),
             _phantom: PhantomData,
         }
@@ -780,7 +785,7 @@ where
     <A::Acc as Archive>::Archived:
         for<'a> CheckBytes<HighValidator<'a, RkyvError>> + RkyvDeserialize<A::Acc, HighDeserializer<RkyvError>>,
 {
-    fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> Vec<Output> {
+    fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> OutputVec {
         let event_time = event.timestamp;
 
         // Check for late data using current watermark
@@ -789,7 +794,9 @@ where
         // Check if this event is too late
         if let Some(wm) = &current_watermark {
             if self.is_late(event_time, wm.timestamp()) {
-                return vec![Output::LateEvent(event.clone())];
+                let mut output = OutputVec::new();
+                output.push(Output::LateEvent(event.clone()));
+                return output;
             }
         }
 
@@ -810,17 +817,17 @@ where
         self.maybe_register_timer(window_id, ctx);
 
         // Emit watermark update if generated
+        let mut output = OutputVec::new();
         if let Some(wm) = current_watermark {
-            vec![Output::Watermark(wm.timestamp())]
-        } else {
-            vec![]
+            output.push(Output::Watermark(wm.timestamp()));
         }
+        output
     }
 
-    fn on_timer(&mut self, timer: Timer, ctx: &mut OperatorContext) -> Vec<Output> {
+    fn on_timer(&mut self, timer: Timer, ctx: &mut OperatorContext) -> OutputVec {
         // Parse window ID from timer key
         let Some(window_id) = WindowId::from_key(&timer.key) else {
-            return vec![];
+            return OutputVec::new();
         };
 
         // Get the accumulator
@@ -831,7 +838,7 @@ where
             // Clean up state
             let _ = self.delete_accumulator(&window_id, ctx.state);
             self.registered_windows.remove(&window_id);
-            return vec![];
+            return OutputVec::new();
         }
 
         // Get the result
@@ -854,16 +861,19 @@ where
             ],
         );
 
+        let mut output = OutputVec::new();
         match batch {
-            Ok(data) => vec![Output::Event(Event {
-                timestamp: window_id.end,
-                data,
-            })],
+            Ok(data) => {
+                output.push(Output::Event(Event {
+                    timestamp: window_id.end,
+                    data,
+                }));
+            }
             Err(e) => {
                 eprintln!("Failed to create output batch: {e}");
-                vec![]
             }
         }
+        output
     }
 
     fn checkpoint(&self) -> OperatorState {
@@ -942,13 +952,13 @@ impl TumblingWindow {
 
 #[allow(deprecated)]
 impl Operator for TumblingWindow {
-    fn process(&mut self, _event: &Event, _ctx: &mut OperatorContext) -> Vec<Output> {
+    fn process(&mut self, _event: &Event, _ctx: &mut OperatorContext) -> OutputVec {
         // Legacy stub - use TumblingWindowOperator instead
-        vec![]
+        OutputVec::new()
     }
 
-    fn on_timer(&mut self, _timer: Timer, _ctx: &mut OperatorContext) -> Vec<Output> {
-        vec![]
+    fn on_timer(&mut self, _timer: Timer, _ctx: &mut OperatorContext) -> OutputVec {
+        OutputVec::new()
     }
 
     fn checkpoint(&self) -> OperatorState {
