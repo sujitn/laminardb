@@ -22,6 +22,7 @@ delta_kernel = { version = "0.1", optional = true }  # Delta Lake
 # Serialization (rkyv for zero-copy performance)
 rkyv = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 bytes = { workspace = true }
 
 # Async
@@ -46,4 +47,8 @@ criterion = { workspace = true }
 
 [[bench]]
 name = "wal_bench"
+harness = false
+
+[[bench]]
+name = "checkpoint_bench"
 harness = false

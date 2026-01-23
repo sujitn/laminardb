@@ -5,47 +5,46 @@
 ## Last Session
 
 **Date**: 2026-01-23
-**Duration**: ~2 hours
+**Duration**: ~4 hours
 
 ### What Was Accomplished
-- ✅ Implemented F007 - Write-Ahead Log with complete functionality
-- ✅ Created comprehensive WAL implementation:
-  - `wal.rs` - Core WAL with append-only log, group commit, recovery
-  - `wal_state_store.rs` - Integration with MmapStateStore for durability
-  - `wal_bench.rs` - Performance benchmarks
-- ✅ Implemented key features:
-  - Append-only log with rkyv serialization
-  - Group commit with configurable sync intervals
-  - Recovery replay to rebuild state after crashes
-  - MmapStateStore index reconstruction (deferred from F002)
-  - WAL truncation for log cleanup
-- ✅ Performance targets exceeded:
-  - WAL append: ~215ns (target <1μs) ✓
-  - WAL sync: ~2.3ms (target <10ms) ✓
-- ✅ All 7 tests passing in laminar-storage
+- ✅ Fixed Ring 0 hot path violations identified by performance audit:
+  - Replaced Vec allocations with SmallVec (stack-based)
+  - Removed UUID string formatting in favor of atomic counter
+  - Eliminated timer key cloning
+  - Implemented buffer swapping for operator chains
+- ✅ Implemented missing reactor features:
+  - Platform-specific CPU affinity (Linux/Windows)
+  - Sink infrastructure with trait and implementations
+  - Graceful shutdown mechanism with atomic flag
+- ✅ Implemented F008 - Basic Checkpointing:
+  - Created CheckpointManager for periodic snapshots
+  - Integrated checkpointing into WalStateStore
+  - Recovery now loads checkpoint first, then replays WAL
+  - Automatic cleanup of old checkpoints
+- ✅ All tests passing (11 tests in laminar-storage)
 
 ### Where We Left Off
-Successfully completed F007 - Write-Ahead Log. The WAL provides durability for state mutations and enables recovery after crashes. The WalStateStore wrapper integrates WAL with MmapStateStore, solving the index persistence issue that was deferred from F002. Performance benchmarks confirm sub-microsecond append latency.
+Successfully completed F008 - Basic Checkpointing. The system now supports periodic state snapshots that dramatically reduce recovery time. Instead of replaying the entire WAL from the beginning, recovery can load the latest checkpoint and only replay subsequent WAL entries. Checkpoint management includes automatic cleanup to prevent disk space issues.
 
 ### Immediate Next Steps
-1. **F008 - Basic Checkpointing** (P1) - Periodic state snapshots for faster recovery
-2. **F009 - Event Time Processing** (P1) - Time-based semantics
-3. **F010 - Watermarks** (P1) - Late data handling
+1. **F009 - Event Time Processing** (P1) - Time-based semantics
+2. **F010 - Watermarks** (P1) - Late data handling
+3. **F011 - EMIT Clause** (P2) - Control output timing
 
 ### Open Issues
-- None currently - F001 through F007 are complete (7/12 Phase 1 features done)
+- None currently - F001 through F008 are complete (8/12 Phase 1 features done, 67% complete)
 
 ### Code Pointers
-- **StateStoreExt with rkyv**: `crates/laminar-core/src/state/mod.rs:229-280`
-- **StateSnapshot rkyv**: `crates/laminar-core/src/state/mod.rs:305-395`
+- **Hot path fixes**: `crates/laminar-core/src/operator/mod.rs:41` (OutputVec)
+- **CPU affinity**: `crates/laminar-core/src/reactor/mod.rs:184-223` (platform-specific)
+- **Sink trait**: `crates/laminar-core/src/reactor/mod.rs:69-137` (implementations)
+- **Checkpoint manager**: `crates/laminar-storage/src/checkpoint.rs`
+- **WalStateStore checkpoint**: `crates/laminar-storage/src/wal_state_store.rs:213-270`
+- **StateSnapshot rkyv**: `crates/laminar-core/src/state/mod.rs:377-394`
 - **WindowId rkyv**: `crates/laminar-core/src/operator/window.rs:45-85`
-- **Accumulator derives**: `crates/laminar-core/src/operator/window.rs:268-545`
-- **Streaming statements**: `crates/laminar-sql/src/parser/statements.rs`
-- **Parser implementation**: `crates/laminar-sql/src/parser/parser_simple.rs`
-- **Window rewriter**: `crates/laminar-sql/src/parser/window_rewriter.rs`
 - **WAL implementation**: `crates/laminar-storage/src/wal.rs`
-- **WAL state store**: `crates/laminar-storage/src/wal_state_store.rs`
-- **WAL benchmarks**: `crates/laminar-storage/benches/wal_bench.rs`
+- **Checkpoint benchmarks**: `crates/laminar-storage/benches/checkpoint_bench.rs`
 
 ---
 
@@ -85,9 +84,9 @@ let owned: MyType = rkyv::deserialize::<MyType, Error>(archived)?;
 ## Quick Reference
 
 ### Current Focus
-- **Phase**: 1 - Core Engine
-- **Completed**: F001 (Reactor), F002 (Memory-Mapped State Store), F003 (State Store Interface), F004 (Tumbling Windows), F005 (DataFusion Integration), F006 (Basic SQL Parser)
-- **Next**: F007 (Write-Ahead Log), F008 (Basic Checkpointing)
+- **Phase**: 1 - Core Engine (67% complete)
+- **Completed**: F001 (Reactor), F002 (Memory-Mapped State Store), F003 (State Store Interface), F004 (Tumbling Windows), F005 (DataFusion Integration), F006 (Basic SQL Parser), F007 (Write-Ahead Log), F008 (Basic Checkpointing)
+- **Next**: F009 (Event Time Processing), F010 (Watermarks)
 
 ### Key Files
 ```

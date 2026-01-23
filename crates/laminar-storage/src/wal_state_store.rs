@@ -4,13 +4,15 @@
 //! before applying them, enabling recovery after crashes and supporting exactly-once
 //! semantics.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use laminar_core::state::{MmapStateStore, StateError, StateSnapshot, StateStore};
 
-use crate::{WriteAheadLog, WalEntry};
+use crate::{CheckpointManager, WriteAheadLog, WalEntry, WalPosition};
 
 /// A state store backed by Write-Ahead Log for durability.
 ///
@@ -26,6 +28,12 @@ pub struct WalStateStore {
     _wal_path: PathBuf,
     /// Whether to sync WAL on every write (for testing).
     sync_on_write: bool,
+    /// Checkpoint manager for periodic snapshots.
+    checkpoint_manager: Option<CheckpointManager>,
+    /// Last checkpoint time.
+    last_checkpoint: AtomicU64,
+    /// Current source offsets for exactly-once semantics.
+    source_offsets: HashMap<String, u64>,
 }
 
 impl WalStateStore {
@@ -58,6 +66,9 @@ impl WalStateStore {
             wal,
             _wal_path: wal_path_buf,
             sync_on_write: false,
+            checkpoint_manager: None,
+            last_checkpoint: AtomicU64::new(0),
+            source_offsets: HashMap::new(),
         })
     }
 
@@ -84,6 +95,9 @@ impl WalStateStore {
             wal,
             _wal_path: wal_path_buf,
             sync_on_write: false,
+            checkpoint_manager: None,
+            last_checkpoint: AtomicU64::new(0),
+            source_offsets: HashMap::new(),
         })
     }
 
@@ -93,19 +107,77 @@ impl WalStateStore {
         self.wal.set_sync_on_write(enabled);
     }
 
+    /// Enable checkpointing with the given configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `checkpoint_dir` - Directory to store checkpoint files
+    /// * `interval` - How often to create checkpoints
+    /// * `max_retained` - Maximum number of checkpoints to retain
+    pub fn enable_checkpointing(
+        &mut self,
+        checkpoint_dir: PathBuf,
+        interval: Duration,
+        max_retained: usize,
+    ) -> Result<(), StateError> {
+        let manager = CheckpointManager::new(checkpoint_dir, interval, max_retained)
+            .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        self.checkpoint_manager = Some(manager);
+        Ok(())
+    }
+
+    /// Check if it's time to create a checkpoint.
+    pub fn should_checkpoint(&self) -> bool {
+        if let Some(ref manager) = self.checkpoint_manager {
+            let last = self.last_checkpoint.load(Ordering::Relaxed);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            now - last >= manager.interval().as_secs()
+        } else {
+            false
+        }
+    }
+
+    /// Update source offset for exactly-once semantics.
+    pub fn update_source_offset(&mut self, source: String, offset: u64) {
+        self.source_offsets.insert(source, offset);
+    }
+
     /// Recover state from WAL.
     ///
     /// This reads the WAL from the beginning and replays all entries
     /// to rebuild the state. This is necessary because MmapStateStore
     /// doesn't persist its index.
     pub fn recover(&mut self) -> Result<(), StateError> {
-        // Read all WAL entries from the beginning
-        let reader = self.wal.read_from(0)
+        let mut start_position = 0u64;
+
+        // Try to recover from checkpoint first
+        if let Some(ref manager) = self.checkpoint_manager {
+            if let Ok(Some(checkpoint)) = manager.find_latest_checkpoint() {
+                // Load checkpoint state
+                let state_data = checkpoint.load_state()
+                    .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+                // Deserialize and restore snapshot
+                let snapshot = StateSnapshot::from_bytes(&state_data)?;
+                self.store.restore(snapshot);
+
+                // Update recovery state
+                start_position = checkpoint.metadata.wal_position.offset;
+                self.source_offsets = checkpoint.metadata.source_offsets.clone();
+                self.last_checkpoint.store(checkpoint.metadata.timestamp, Ordering::Relaxed);
+            }
+        }
+
+        // Read WAL entries from start position
+        let reader = self.wal.read_from(start_position)
             .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-        let mut last_checkpoint_id = None;
-
-        // Replay entries
+        // Replay entries after checkpoint
         for entry_result in reader {
             let entry = entry_result
                 .map_err(|e| StateError::Corruption(format!("WAL read error: {}", e)))?;
@@ -119,21 +191,16 @@ impl WalStateStore {
                     // Apply without logging
                     self.store.delete(&key)?;
                 }
-                WalEntry::Checkpoint { id } => {
-                    // Remember the last checkpoint we saw
-                    last_checkpoint_id = Some(id);
+                WalEntry::Checkpoint { .. } => {
+                    // Skip checkpoint markers during recovery
                 }
-                WalEntry::Commit { .. } => {
-                    // Used for exactly-once semantics with sources
-                    // We'll handle this in a future feature
+                WalEntry::Commit { offsets } => {
+                    // Update source offsets for exactly-once semantics
+                    for (source, offset) in offsets {
+                        self.source_offsets.insert(source, offset);
+                    }
                 }
             }
-        }
-
-        // If we saw a checkpoint, we could optimize recovery in the future
-        // by loading a checkpoint file and only replaying entries after it
-        if let Some(_checkpoint_id) = last_checkpoint_id {
-            // Future: Load checkpoint and replay only newer entries
         }
 
         Ok(())
@@ -141,18 +208,48 @@ impl WalStateStore {
 
     /// Create a checkpoint.
     ///
-    /// This writes a checkpoint marker to the WAL and could trigger
-    /// a snapshot in the future.
-    pub fn checkpoint(&mut self, checkpoint_id: u64) -> Result<(), StateError> {
-        self.wal
-            .append(WalEntry::Checkpoint { id: checkpoint_id })
+    /// This creates a snapshot of the current state and writes it to disk,
+    /// along with a checkpoint marker in the WAL.
+    pub fn checkpoint(&mut self) -> Result<(), StateError> {
+        if let Some(ref manager) = self.checkpoint_manager {
+            // Get current state snapshot
+            let snapshot = self.store.snapshot();
+            let state_data = snapshot.to_bytes()
+                .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Get current WAL position
+            let wal_position = WalPosition {
+                offset: self.wal.position(),
+            };
+
+            // Create checkpoint
+            let checkpoint = manager.create_checkpoint(
+                &state_data,
+                wal_position,
+                self.source_offsets.clone(),
+            )
             .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-        // Force sync after checkpoint
-        self.wal.sync()
-            .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            // Write checkpoint marker to WAL
+            self.wal
+                .append(WalEntry::Checkpoint { id: checkpoint.metadata.id })
+                .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-        // Future: Create actual snapshot file for faster recovery
+            // Force sync after checkpoint
+            self.wal.sync()
+                .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Update last checkpoint time
+            self.last_checkpoint.store(checkpoint.metadata.timestamp, Ordering::Relaxed);
+
+            // Clean up old checkpoints
+            manager.cleanup_old_checkpoints()
+                .map_err(|e| StateError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            // Optionally truncate WAL if safe
+            // This would require tracking minimum required WAL position
+            // across all consumers
+        }
 
         Ok(())
     }
@@ -352,7 +449,7 @@ mod tests {
 
         // Create checkpoint
         let _checkpoint_pos = store.wal_position();
-        store.checkpoint(1).unwrap();
+        store.checkpoint().unwrap();
 
         // Add more data after checkpoint
         store.put(b"key3", b"value3").unwrap();

@@ -40,6 +40,13 @@ async-trait = { workspace = true }
 # Observability
 tracing = { workspace = true }
 
+# Platform-specific dependencies
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["processthreadsapi", "winbase", "basetsd"] }
+
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }

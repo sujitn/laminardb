@@ -41,7 +41,7 @@ fxhash = "0.2"  # Faster than std HashMap
 crossbeam = "0.8"  # Lock-free data structures
 parking_lot = "0.12"  # Faster Mutex/RwLock
 memmap2 = "0.9"  # Memory-mapped files
-bumpalo = "3.16"  # Arena allocator
+bumpalo = "3.19"  # Arena allocator
 uuid = { version = "1.11", features = ["v4"] }  # Unique IDs
 
 # DataFusion and Arrow - using latest versions
@@ -57,6 +57,9 @@ datafusion-sql = "52.0"
 
 # Collections
 smallvec = { version = "1.15", features = ["const_new", "union"] }
+
+# Platform-specific
+libc = "0.2"
 
 # Testing
 criterion = { version = "0.8", features = ["html_reports"] }

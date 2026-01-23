@@ -54,6 +54,14 @@ mod wal_types {
 
 pub use wal_types::WalEntry;
 
+/// WAL position for checkpointing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(compare(PartialEq))]
+pub struct WalPosition {
+    /// Offset in the WAL file.
+    pub offset: u64,
+}
+
 /// Write-Ahead Log implementation.
 pub struct WriteAheadLog {
     /// Buffered writer for efficient writes.

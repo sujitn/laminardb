@@ -21,11 +21,46 @@
 //! Communication with Ring 1 (background tasks) happens via SPSC queues.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::operator::{Event, Operator, OperatorContext, Output};
 use crate::state::{InMemoryStore, StateStore};
 use crate::time::{BoundedOutOfOrdernessGenerator, TimerService, WatermarkGenerator};
+
+/// Trait for output sinks that consume reactor outputs.
+pub trait Sink: Send {
+    /// Write outputs to the sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sink cannot accept the outputs.
+    fn write(&mut self, outputs: Vec<Output>) -> Result<(), SinkError>;
+
+    /// Flush any buffered data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush operation fails.
+    fn flush(&mut self) -> Result<(), SinkError>;
+}
+
+/// Errors that can occur in sinks.
+#[derive(Debug, thiserror::Error)]
+pub enum SinkError {
+    /// Failed to write to sink
+    #[error("Write failed: {0}")]
+    WriteFailed(String),
+
+    /// Failed to flush sink
+    #[error("Flush failed: {0}")]
+    FlushFailed(String),
+
+    /// Sink is closed
+    #[error("Sink is closed")]
+    Closed,
+}
 
 /// Configuration for the reactor
 #[derive(Debug, Clone)]
@@ -70,6 +105,10 @@ pub struct Reactor {
     /// We use two buffers and swap between them to avoid allocations
     operator_buffer_1: Vec<Output>,
     operator_buffer_2: Vec<Output>,
+    /// Optional sink for outputs
+    sink: Option<Box<dyn Sink>>,
+    /// Shutdown flag for graceful termination
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Reactor {
@@ -97,12 +136,24 @@ impl Reactor {
             events_processed: 0,
             operator_buffer_1: Vec::with_capacity(256),
             operator_buffer_2: Vec::with_capacity(256),
+            sink: None,
+            shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Register an operator in the processing chain
     pub fn add_operator(&mut self, operator: Box<dyn Operator>) {
         self.operators.push(operator);
+    }
+
+    /// Set the output sink for the reactor
+    pub fn set_sink(&mut self, sink: Box<dyn Sink>) {
+        self.sink = Some(sink);
+    }
+
+    /// Get a handle to the shutdown flag
+    pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown)
     }
 
     /// Submit an event for processing
@@ -280,10 +331,54 @@ impl Reactor {
     /// Returns `ReactorError` if CPU affinity cannot be set (platform-specific)
     pub fn set_cpu_affinity(&self) -> Result<(), ReactorError> {
         if let Some(cpu_id) = self.config.cpu_affinity {
-            // Note: CPU affinity setting is platform-specific
-            // This would need platform-specific implementation
-            // For now, we'll just return Ok
-            eprintln!("CPU affinity setting to core {cpu_id} not implemented yet");
+            #[cfg(target_os = "linux")]
+            {
+                use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
+                use std::mem;
+
+                // SAFETY: We're calling libc functions with valid parameters.
+                // The cpu_set_t is properly initialized with CPU_ZERO.
+                // The process ID 0 refers to the current thread.
+                #[allow(unsafe_code)]
+                unsafe {
+                    let mut set: cpu_set_t = mem::zeroed();
+                    CPU_ZERO(&mut set);
+                    CPU_SET(cpu_id, &mut set);
+
+                    let result = sched_setaffinity(0, mem::size_of::<cpu_set_t>(), &set);
+                    if result != 0 {
+                        return Err(ReactorError::InitializationFailed(
+                            format!("Failed to set CPU affinity to core {}: {}", cpu_id, std::io::Error::last_os_error())
+                        ));
+                    }
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                use winapi::um::processthreadsapi::GetCurrentThread;
+                use winapi::um::winbase::SetThreadAffinityMask;
+                use winapi::shared::basetsd::DWORD_PTR;
+
+                // SAFETY: We're calling Windows API functions with valid parameters.
+                // GetCurrentThread returns a pseudo-handle that doesn't need to be closed.
+                // The mask is a valid CPU mask for the specified core.
+                #[allow(unsafe_code)]
+                unsafe {
+                    let mask: DWORD_PTR = 1 << cpu_id;
+                    let result = SetThreadAffinityMask(GetCurrentThread(), mask);
+                    if result == 0 {
+                        return Err(ReactorError::InitializationFailed(
+                            format!("Failed to set CPU affinity to core {}: {}", cpu_id, std::io::Error::last_os_error())
+                        ));
+                    }
+                }
+            }
+
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                eprintln!("Warning: CPU affinity is not implemented for this platform");
+            }
         }
         Ok(())
     }
@@ -296,14 +391,18 @@ impl Reactor {
     pub fn run(&mut self) -> Result<(), ReactorError> {
         self.set_cpu_affinity()?;
 
-        loop {
+        while !self.shutdown.load(Ordering::Relaxed) {
             // Process events
             let outputs = self.poll();
 
-            // In a real implementation, we would send outputs to sinks
+            // Send outputs to sink if configured
             if !outputs.is_empty() {
-                // For now, just count them
-                let _ = outputs.len();
+                if let Some(sink) = &mut self.sink {
+                    if let Err(e) = sink.write(outputs) {
+                        eprintln!("Failed to write to sink: {}", e);
+                        // Continue processing even if sink fails
+                    }
+                }
             }
 
             // If no events to process, yield to avoid busy-waiting
@@ -311,10 +410,16 @@ impl Reactor {
                 std::thread::yield_now();
             }
 
-            // Check for shutdown signal (placeholder)
-            // In a real implementation, we would check a shutdown flag
-            if false {
+            // Periodically check for shutdown signal
+            if self.events_processed % 1000 == 0 && self.shutdown.load(Ordering::Relaxed) {
                 break;
+            }
+        }
+
+        // Flush sink before shutdown
+        if let Some(sink) = &mut self.sink {
+            if let Err(e) = sink.flush() {
+                eprintln!("Failed to flush sink during shutdown: {}", e);
             }
         }
 
@@ -327,9 +432,28 @@ impl Reactor {
     ///
     /// Currently does not return any errors, but may in the future if shutdown fails
     pub fn shutdown(&mut self) -> Result<(), ReactorError> {
+        // Signal shutdown
+        self.shutdown.store(true, Ordering::Relaxed);
+
         // Process remaining events
         while !self.event_queue.is_empty() {
-            let _ = self.poll();
+            let outputs = self.poll();
+
+            // Send final outputs to sink
+            if !outputs.is_empty() {
+                if let Some(sink) = &mut self.sink {
+                    if let Err(e) = sink.write(outputs) {
+                        eprintln!("Failed to write final outputs during shutdown: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Final flush
+        if let Some(sink) = &mut self.sink {
+            if let Err(e) = sink.flush() {
+                eprintln!("Failed to flush sink during shutdown: {}", e);
+            }
         }
 
         Ok(())
@@ -357,6 +481,64 @@ pub enum ReactorError {
         /// The configured capacity of the event queue
         capacity: usize,
     },
+}
+
+/// A simple sink that writes outputs to stdout (for testing).
+pub struct StdoutSink;
+
+impl Sink for StdoutSink {
+    fn write(&mut self, outputs: Vec<Output>) -> Result<(), SinkError> {
+        for output in outputs {
+            match output {
+                Output::Event(event) => {
+                    println!("Event: timestamp={}, data={:?}", event.timestamp, event.data);
+                }
+                Output::Watermark(timestamp) => {
+                    println!("Watermark: {}", timestamp);
+                }
+                Output::LateEvent(event) => {
+                    println!("Late Event: timestamp={}, data={:?}", event.timestamp, event.data);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+}
+
+/// A buffering sink that collects outputs (for testing).
+pub struct BufferingSink {
+    buffer: Vec<Output>,
+}
+
+impl BufferingSink {
+    /// Create a new buffering sink.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+        }
+    }
+
+    /// Get the buffered outputs.
+    #[must_use]
+    pub fn take_buffer(&mut self) -> Vec<Output> {
+        std::mem::take(&mut self.buffer)
+    }
+}
+
+impl Sink for BufferingSink {
+    fn write(&mut self, mut outputs: Vec<Output>) -> Result<(), SinkError> {
+        self.buffer.append(&mut outputs);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -517,6 +699,63 @@ mod tests {
         // Third poll should process the last one
         reactor.poll();
         assert_eq!(reactor.events_processed(), 5);
+        assert_eq!(reactor.queue_size(), 0);
+    }
+
+    #[test]
+    fn test_reactor_with_sink() {
+        let config = Config::default();
+        let mut reactor = Reactor::new(config).unwrap();
+
+        // Add a buffering sink
+        let sink = Box::new(BufferingSink::new());
+        reactor.set_sink(sink);
+
+        // Add passthrough operator
+        reactor.add_operator(Box::new(PassthroughOperator));
+
+        let array = Arc::new(Int64Array::from(vec![42]));
+        let batch = RecordBatch::try_from_iter(vec![("value", array as _)]).unwrap();
+        let event = Event {
+            timestamp: 1000,
+            data: batch,
+        };
+
+        // Submit an event
+        reactor.submit(event).unwrap();
+
+        // Process
+        let outputs = reactor.poll();
+        // Should get the event output (and possibly a watermark)
+        assert!(!outputs.is_empty());
+
+        // Verify we got the event
+        assert!(outputs.iter().any(|o| matches!(o, Output::Event(_))));
+    }
+
+    #[test]
+    fn test_reactor_shutdown() {
+        let config = Config::default();
+        let mut reactor = Reactor::new(config).unwrap();
+
+        // Get shutdown handle
+        let shutdown_handle = reactor.shutdown_handle();
+        assert!(!shutdown_handle.load(Ordering::Relaxed));
+
+        let array = Arc::new(Int64Array::from(vec![1]));
+        let batch = RecordBatch::try_from_iter(vec![("col", array as _)]).unwrap();
+
+        // Submit some events
+        for i in 0..5 {
+            reactor.submit(Event {
+                timestamp: i * 1000,
+                data: batch.clone(),
+            }).unwrap();
+        }
+
+        // Shutdown should process remaining events
+        reactor.shutdown().unwrap();
+        assert!(shutdown_handle.load(Ordering::Relaxed));
         assert_eq!(reactor.queue_size(), 0);
     }
 }
