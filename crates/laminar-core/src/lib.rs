@@ -35,6 +35,7 @@
 
 pub mod alloc;
 pub mod io_uring;
+pub mod numa;
 pub mod operator;
 pub mod reactor;
 pub mod state;
@@ -42,7 +43,7 @@ pub mod time;
 pub mod tpc;
 
 // Re-export key types
-pub use reactor::{Config, Reactor};
+pub use reactor::{ReactorConfig as Config, Reactor};
 
 /// Result type for laminar-core operations
 pub type Result<T> = std::result::Result<T, Error>;
@@ -73,4 +74,8 @@ pub enum Error {
     /// `io_uring` errors
     #[error("io_uring error: {0}")]
     IoUring(#[from] io_uring::IoUringError),
+
+    /// NUMA errors
+    #[error("NUMA error: {0}")]
+    Numa(#[from] numa::NumaError),
 }

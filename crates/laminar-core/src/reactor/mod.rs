@@ -65,7 +65,7 @@ pub enum SinkError {
 
 /// Configuration for the reactor
 #[derive(Debug, Clone)]
-pub struct Config {
+pub struct ReactorConfig {
     /// Maximum events to process per poll
     pub batch_size: usize,
     /// CPU core to pin the reactor thread to (None = no pinning)
@@ -78,7 +78,7 @@ pub struct Config {
     pub max_out_of_orderness: i64,
 }
 
-impl Default for Config {
+impl Default for ReactorConfig {
     fn default() -> Self {
         Self {
             batch_size: 1024,
@@ -92,7 +92,7 @@ impl Default for Config {
 
 /// The main reactor for event processing
 pub struct Reactor {
-    config: Config,
+    config: ReactorConfig,
     operators: Vec<Box<dyn Operator>>,
     timer_service: TimerService,
     event_queue: VecDeque<Event>,
@@ -118,7 +118,7 @@ impl Reactor {
     /// # Errors
     ///
     /// Currently does not return any errors, but may in the future if initialization fails
-    pub fn new(config: Config) -> Result<Self, ReactorError> {
+    pub fn new(config: ReactorConfig) -> Result<Self, ReactorError> {
         let event_queue = VecDeque::with_capacity(config.event_buffer_size);
         let watermark_generator = Box::new(BoundedOutOfOrdernessGenerator::new(
             config.max_out_of_orderness,
@@ -626,21 +626,21 @@ mod tests {
 
     #[test]
     fn test_default_config() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         assert_eq!(config.batch_size, 1024);
         assert_eq!(config.event_buffer_size, 65536);
     }
 
     #[test]
     fn test_reactor_creation() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         let reactor = Reactor::new(config);
         assert!(reactor.is_ok());
     }
 
     #[test]
     fn test_reactor_add_operator() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         let mut reactor = Reactor::new(config).unwrap();
 
         let operator = Box::new(PassthroughOperator);
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_reactor_submit_event() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         let mut reactor = Reactor::new(config).unwrap();
 
         let array = Arc::new(Int64Array::from(vec![1, 2, 3]));
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_reactor_poll_processes_events() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         let mut reactor = Reactor::new(config).unwrap();
 
         // Add a passthrough operator
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_reactor_queue_full() {
-        let mut config = Config::default();
+        let mut config = ReactorConfig::default();
         config.event_buffer_size = 2; // Very small buffer
         let mut reactor = Reactor::new(config).unwrap();
 
@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_reactor_batch_processing() {
-        let mut config = Config::default();
+        let mut config = ReactorConfig::default();
         config.batch_size = 2; // Small batch size
         let mut reactor = Reactor::new(config).unwrap();
 
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_reactor_with_sink() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         let mut reactor = Reactor::new(config).unwrap();
 
         // Add a buffering sink
@@ -788,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_reactor_shutdown() {
-        let config = Config::default();
+        let config = ReactorConfig::default();
         let mut reactor = Reactor::new(config).unwrap();
 
         // Get shutdown handle

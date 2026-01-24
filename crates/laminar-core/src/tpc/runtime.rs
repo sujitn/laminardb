@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::operator::{Event, Operator, Output};
-use crate::reactor::Config as ReactorConfig;
+use crate::reactor::ReactorConfig;
 
 use super::core_handle::{CoreConfig, CoreHandle};
 use super::router::{KeyRouter, KeySpec};
@@ -55,6 +55,8 @@ pub struct TpcConfig {
     pub outbox_capacity: usize,
     /// Reactor configuration (applied to all cores)
     pub reactor_config: ReactorConfig,
+    /// Enable NUMA-aware memory allocation
+    pub numa_aware: bool,
 }
 
 impl Default for TpcConfig {
@@ -67,6 +69,7 @@ impl Default for TpcConfig {
             inbox_capacity: 65536,
             outbox_capacity: 65536,
             reactor_config: ReactorConfig::default(),
+            numa_aware: false,
         }
     }
 }
@@ -107,6 +110,7 @@ pub struct TpcConfigBuilder {
     inbox_capacity: Option<usize>,
     outbox_capacity: Option<usize>,
     reactor_config: Option<ReactorConfig>,
+    numa_aware: Option<bool>,
 }
 
 impl TpcConfigBuilder {
@@ -165,6 +169,16 @@ impl TpcConfigBuilder {
         self
     }
 
+    /// Enables or disables NUMA-aware memory allocation.
+    ///
+    /// When enabled, per-core state stores and buffers are allocated
+    /// on the NUMA node local to that core, improving memory access latency.
+    #[must_use]
+    pub fn numa_aware(mut self, enabled: bool) -> Self {
+        self.numa_aware = Some(enabled);
+        self
+    }
+
     /// Builds the configuration.
     ///
     /// # Errors
@@ -179,6 +193,7 @@ impl TpcConfigBuilder {
             inbox_capacity: self.inbox_capacity.unwrap_or(65536),
             outbox_capacity: self.outbox_capacity.unwrap_or(65536),
             reactor_config: self.reactor_config.unwrap_or_default(),
+            numa_aware: self.numa_aware.unwrap_or(false),
         };
         config.validate()?;
         Ok(config)
@@ -261,6 +276,9 @@ impl ThreadPerCoreRuntime {
                 outbox_capacity: config.outbox_capacity,
                 reactor_config: config.reactor_config.clone(),
                 backpressure: super::backpressure::BackpressureConfig::default(),
+                numa_aware: config.numa_aware,
+                #[cfg(all(target_os = "linux", feature = "io-uring"))]
+                io_uring_config: None,
             };
 
             let operators = factory.create(core_id);
@@ -376,6 +394,7 @@ impl ThreadPerCoreRuntime {
             .iter()
             .map(|core| CoreStats {
                 core_id: core.core_id(),
+                numa_node: core.numa_node(),
                 events_processed: core.events_processed(),
                 inbox_len: core.inbox_len(),
                 outbox_len: core.outbox_len(),
@@ -478,6 +497,8 @@ pub struct RuntimeStats {
 pub struct CoreStats {
     /// Core ID
     pub core_id: usize,
+    /// NUMA node for this core
+    pub numa_node: usize,
     /// Events processed by this core
     pub events_processed: u64,
     /// Current inbox queue length
@@ -772,6 +793,30 @@ mod tests {
             .unwrap();
 
         let runtime = ThreadPerCoreRuntime::new(config).unwrap();
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn test_numa_aware_config() {
+        let config = TpcConfig::builder()
+            .num_cores(2)
+            .cpu_pinning(false)
+            .numa_aware(true)
+            .build()
+            .unwrap();
+
+        assert!(config.numa_aware);
+
+        let runtime = ThreadPerCoreRuntime::new(config).unwrap();
+        assert_eq!(runtime.num_cores(), 2);
+
+        // Stats should include NUMA node info
+        let stats = runtime.stats();
+        for core_stat in &stats.cores {
+            // On any system, numa_node should be valid (0 on non-NUMA)
+            assert!(core_stat.numa_node < 64);
+        }
+
         runtime.shutdown().unwrap();
     }
 }

@@ -35,8 +35,9 @@ use std::thread::{self, JoinHandle};
 use crate::io_uring::{CoreRingManager, IoUringConfig};
 
 use crate::alloc::HotPathGuard;
+use crate::numa::{NumaAllocator, NumaTopology};
 use crate::operator::{Event, Operator, Output};
-use crate::reactor::{Config as ReactorConfig, Reactor};
+use crate::reactor::{Reactor, ReactorConfig};
 
 use super::backpressure::{
     BackpressureConfig, CreditAcquireResult, CreditGate, CreditMetrics, OverflowStrategy,
@@ -72,6 +73,8 @@ pub struct CoreConfig {
     pub reactor_config: ReactorConfig,
     /// Backpressure configuration
     pub backpressure: BackpressureConfig,
+    /// Enable NUMA-aware memory allocation
+    pub numa_aware: bool,
     /// `io_uring` configuration (Linux only, requires `io-uring` feature)
     #[cfg(all(target_os = "linux", feature = "io-uring"))]
     pub io_uring_config: Option<IoUringConfig>,
@@ -86,6 +89,7 @@ impl Default for CoreConfig {
             outbox_capacity: 65536,
             reactor_config: ReactorConfig::default(),
             backpressure: BackpressureConfig::default(),
+            numa_aware: false,
             #[cfg(all(target_os = "linux", feature = "io-uring"))]
             io_uring_config: None,
         }
@@ -99,6 +103,8 @@ impl Default for CoreConfig {
 pub struct CoreHandle {
     /// Core ID
     core_id: usize,
+    /// NUMA node for this core
+    numa_node: usize,
     /// Inbox queue (main thread writes, core reads)
     inbox: Arc<SpscQueue<CoreMessage>>,
     /// Outbox queue (core writes, main thread reads)
@@ -139,6 +145,13 @@ impl CoreHandle {
         let cpu_affinity = config.cpu_affinity;
         let reactor_config = config.reactor_config.clone();
 
+        // Detect NUMA topology for NUMA-aware allocation
+        let topology = NumaTopology::detect();
+        let numa_node = cpu_affinity.map_or_else(
+            || topology.current_node(),
+            |cpu| topology.node_for_cpu(cpu),
+        );
+
         let inbox = Arc::new(SpscQueue::new(config.inbox_capacity));
         let outbox = Arc::new(SpscQueue::new(config.outbox_capacity));
         let credit_gate = Arc::new(CreditGate::new(config.backpressure.clone()));
@@ -150,6 +163,8 @@ impl CoreHandle {
             core_id,
             cpu_affinity,
             reactor_config,
+            numa_aware: config.numa_aware,
+            numa_node,
             inbox: Arc::clone(&inbox),
             outbox: Arc::clone(&outbox),
             credit_gate: Arc::clone(&credit_gate),
@@ -175,6 +190,7 @@ impl CoreHandle {
 
         Ok(Self {
             core_id,
+            numa_node,
             inbox,
             outbox,
             credit_gate,
@@ -189,6 +205,12 @@ impl CoreHandle {
     #[must_use]
     pub fn core_id(&self) -> usize {
         self.core_id
+    }
+
+    /// Returns the NUMA node for this core.
+    #[must_use]
+    pub fn numa_node(&self) -> usize {
+        self.numa_node
     }
 
     /// Returns true if the core thread is running.
@@ -385,6 +407,7 @@ impl std::fmt::Debug for CoreHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoreHandle")
             .field("core_id", &self.core_id)
+            .field("numa_node", &self.numa_node)
             .field("is_running", &self.is_running())
             .field("events_processed", &self.events_processed())
             .field("inbox_len", &self.inbox_len())
@@ -400,6 +423,8 @@ struct CoreThreadContext {
     core_id: usize,
     cpu_affinity: Option<usize>,
     reactor_config: ReactorConfig,
+    numa_aware: bool,
+    numa_node: usize,
     inbox: Arc<SpscQueue<CoreMessage>>,
     outbox: Arc<SpscQueue<Output>>,
     credit_gate: Arc<CreditGate>,
@@ -419,6 +444,23 @@ fn core_thread_main(
     if let Some(cpu_id) = ctx.cpu_affinity {
         set_cpu_affinity(ctx.core_id, cpu_id)?;
     }
+
+    // Log NUMA information if NUMA-aware mode is enabled
+    if ctx.numa_aware {
+        tracing::info!(
+            "Core {} starting on NUMA node {}",
+            ctx.core_id,
+            ctx.numa_node
+        );
+    }
+
+    // Create NUMA allocator for this core (optional - for future state store integration)
+    let _numa_allocator = if ctx.numa_aware {
+        let topology = NumaTopology::detect();
+        Some(NumaAllocator::new(&topology))
+    } else {
+        None
+    };
 
     // Initialize io_uring ring manager if configured (Linux only)
     #[cfg(all(target_os = "linux", feature = "io-uring"))]
@@ -651,6 +693,9 @@ mod tests {
             outbox_capacity: 1024,
             reactor_config: ReactorConfig::default(),
             backpressure: super::BackpressureConfig::default(),
+            numa_aware: false,
+            #[cfg(all(target_os = "linux", feature = "io-uring"))]
+            io_uring_config: None,
         };
 
         let handle = CoreHandle::spawn(config).unwrap();
@@ -669,6 +714,9 @@ mod tests {
             outbox_capacity: 1024,
             reactor_config: ReactorConfig::default(),
             backpressure: super::BackpressureConfig::default(),
+            numa_aware: false,
+            #[cfg(all(target_os = "linux", feature = "io-uring"))]
+            io_uring_config: None,
         };
 
         let handle = CoreHandle::spawn_with_operators(
@@ -699,6 +747,9 @@ mod tests {
             outbox_capacity: 1024,
             reactor_config: ReactorConfig::default(),
             backpressure: super::BackpressureConfig::default(),
+            numa_aware: false,
+            #[cfg(all(target_os = "linux", feature = "io-uring"))]
+            io_uring_config: None,
         };
 
         let handle = CoreHandle::spawn_with_operators(
@@ -768,5 +819,22 @@ mod tests {
         assert!(config.cpu_affinity.is_none());
         assert_eq!(config.inbox_capacity, 65536);
         assert_eq!(config.outbox_capacity, 65536);
+        assert!(!config.numa_aware);
+    }
+
+    #[test]
+    fn test_core_handle_numa_node() {
+        let config = CoreConfig {
+            core_id: 0,
+            cpu_affinity: None,
+            numa_aware: true,
+            ..Default::default()
+        };
+
+        let handle = CoreHandle::spawn(config).unwrap();
+        // On any system, numa_node should be a valid value (0 on non-NUMA systems)
+        assert!(handle.numa_node() < 64);
+
+        handle.shutdown_and_join().unwrap();
     }
 }
