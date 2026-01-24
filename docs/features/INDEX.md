@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 28 | 18 | 0 | 0 | 10 |
+| Phase 2 | 29 | 19 | 0 | 0 | 10 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **74** | **52** | **0** | **1** | **21** |
+| **Total** | **75** | **53** | **0** | **1** | **21** |
 
 ## Status Legend
 
@@ -118,6 +118,7 @@
 | **F070** | **Task Budget Enforcement** | **P1** | 📝 | [Link](phase-2/F070-task-budget-enforcement.md) |
 | **F071** | **Zero-Allocation Enforcement** | **P0** | ✅ | [Link](phase-2/F071-zero-allocation-enforcement.md) |
 | **F072** | **XDP/eBPF Network Optimization** | **P2** | 📝 | [Link](phase-2/F072-xdp-network-optimization.md) |
+| **F073** | **Zero-Allocation Polling** | **P1** | 📝 | [Link](phase-2/F073-zero-allocation-polling.md) |
 
 ### Phase 2 Thread-Per-Core Research Gap Analysis (NEW)
 
@@ -406,8 +407,12 @@ Thread-Per-Core Advanced (Phase 2 - NEW):
 │      │        • Ring 1: 1ms budget + yielding                            │
 │      │                                                                    │
 │      ├──▶ F071 (Zero-Alloc) ───────────▶ Hot Path Verification           │
-│      │        • Debug allocator detector                                 │
-│      │        • CI enforcement                                           │
+│      │        │ • Debug allocator detector                               │
+│      │        │ • CI enforcement                                         │
+│      │        │                                                          │
+│      │        └──▶ F073 (Zero-Alloc Polling) ──▶ Allocation-Free Poll    │
+│      │                 • Pre-allocated buffers                           │
+│      │                 • Callback-based APIs                             │
 │      │                                                                    │
 │      └──▶ F072 (XDP) [P2] ─────────────▶ Wire-speed filtering            │
 │               • 26M packets/sec                                          │
