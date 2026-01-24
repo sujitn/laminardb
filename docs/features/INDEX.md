@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 14 | 7 | 0 | 0 | 7 |
-| Phase 3 | 11 | 11 | 0 | 0 | 0 |
+| Phase 2 | 16 | 9 | 0 | 0 | 7 |
+| Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **59** | **40** | **0** | **1** | **18** |
+| **Total** | **62** | **43** | **0** | **1** | **18** |
 
 ## Status Legend
 
@@ -86,7 +86,7 @@
 
 ## Phase 2: Production Hardening
 
-> **Status**: 🚧 In Progress (7/12 features complete)
+> **Status**: 🚧 In Progress (7/16 features complete)
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
@@ -104,6 +104,8 @@
 | F024 | Two-Phase Commit | P1 | 📝 | [Link](phase-2/F024-two-phase-commit.md) |
 | F056 | ASOF Joins | P1 | 📝 | [Link](phase-2/F056-asof-joins.md) |
 | F057 | Stream Join Optimizations | P1 | 📝 | [Link](phase-2/F057-stream-join-optimizations.md) |
+| F059 | FIRST/LAST Value Aggregates | P0 | 📝 | [Link](phase-2/F059-first-last-aggregates.md) |
+| F060 | Cascading Materialized Views | P1 | 📝 | [Link](phase-2/F060-cascading-materialized-views.md) |
 
 ### Phase 2 Join Research Gap Analysis
 
@@ -116,6 +118,20 @@
 | Asymmetric Compaction | Epsio 2025 | ❌ Missing | Reduced overhead | F057 |
 | Temporal Join (versioned) | RisingWave 2025 | 📝 Draft | Full impl | F021 |
 | Async State Access | Flink 2.0 | ❌ Missing | Phase 3 | F058 |
+
+### Phase 2 Financial Analytics Gap Analysis
+
+> Based on [Time-Series Financial Research 2026](../research/laminardb-timeseries-financial-research-2026.md)
+
+| Gap | Research Finding | Current | Target | Feature |
+|-----|------------------|---------|--------|---------|
+| **FIRST_VALUE/LAST_VALUE** | "OHLC is just SQL aggregates" | ❌ Missing | Essential for OHLC | F059 |
+| Cascading MVs | Multi-resolution OHLC (1s→1m→1h) | ❌ Missing | MVs reading MVs | F060 |
+| ASOF Joins | Financial enrichment (trade+quote) | 📝 Draft | Phase 2 P1 | F056 |
+| Historical Backfill | "Unified live + historical query" | ❌ Missing | Phase 3 P2 | F061 |
+| SAMPLE BY Syntax | QuestDB-style time sampling | ❌ Missing | Nice to have (sugar) | - |
+
+**Key Insight from Research**: No custom financial types needed. OHLC bars are just standard SQL aggregates (`FIRST_VALUE`, `MAX`, `MIN`, `LAST_VALUE`, `SUM`) over tumbling windows.
 
 ---
 
@@ -134,6 +150,7 @@
 | F033 | Parquet File Source | P2 | 📝 | [Link](phase-3/F033-parquet-source.md) |
 | F034 | Connector SDK | P1 | 📝 | [Link](phase-3/F034-connector-sdk.md) |
 | F058 | Async State Access | P1 | 📝 | [Link](phase-3/F058-async-state-access.md) |
+| F061 | Historical Backfill | P2 | 📝 | [Link](phase-3/F061-historical-backfill.md) |
 
 ---
 
@@ -211,9 +228,16 @@ F003 ──▶ F019 (Stream Joins) ──▶ F020 (Lookup) ──▶ F021 (Tempo
                     └──▶ F057 (Join Optimizations) ◀── Research 2025-2026
 F008 ──▶ F022 (Incremental) ──▶ F023 (Exactly-Once) ──▶ F024 (2PC)
 
+Financial Analytics (Phase 2):
+F004 (Tumbling) ──▶ F059 (FIRST/LAST) ──▶ F060 (Cascading MVs) ◀── OHLC Bars
+                                              │
+                                              ▼
+                                    F061 (Historical Backfill) [Phase 3]
+
 Phase 3 (blocked by F006B for DDL parsing):
 F006B ──▶ F025-F034 (Connectors need CREATE SOURCE/SINK)
 F013 + F019 ──▶ F058 (Async State Access) ◀── Flink 2.0 Innovation
+F060 + F031/F032 ──▶ F061 (Historical Backfill) ◀── Live+Historical Unification
 ```
 
 ---
@@ -255,6 +279,17 @@ F013 + F019 ──▶ F058 (Async State Access) ◀── Flink 2.0 Innovation
 | **No CPU-friendly encoding** | F057 | RisingWave July 2025 | NEW SPEC |
 | **No async state access** | F058 | Flink 2.0 VLDB 2025 | NEW SPEC (Phase 3) |
 | Temporal join incomplete | F021 | RisingWave 2025 | UPDATED SPEC |
+
+### P0/P1 - High (Financial Analytics Gaps)
+
+> From [Time-Series Financial Research 2026](../research/laminardb-timeseries-financial-research-2026.md)
+
+| Gap | Feature | Source | Fix |
+|-----|---------|--------|-----|
+| **No FIRST_VALUE/LAST_VALUE** | F059 | OHLC = standard aggregates | **NEW SPEC (P0)** |
+| **No cascading MVs** | F060 | Multi-resolution OHLC | NEW SPEC (P1) |
+| No historical backfill | F061 | Live + historical unification | NEW SPEC (P2, Phase 3) |
+| No SAMPLE BY syntax | - | QuestDB-style sugar | Not planned (low priority) |
 
 ### P2 - Medium (Phase 2+)
 
