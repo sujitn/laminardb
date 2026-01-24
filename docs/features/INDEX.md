@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 17 | 10 | 0 | 0 | 7 |
+| Phase 2 | 19 | 12 | 0 | 0 | 7 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **63** | **44** | **0** | **1** | **18** |
+| **Total** | **65** | **46** | **0** | **1** | **18** |
 
 ## Status Legend
 
@@ -86,7 +86,7 @@
 
 ## Phase 2: Production Hardening
 
-> **Status**: 🚧 In Progress (7/16 features complete)
+> **Status**: 🚧 In Progress (7/19 features complete)
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
@@ -107,6 +107,30 @@
 | F059 | FIRST/LAST Value Aggregates | P0 | 📝 | [Link](phase-2/F059-first-last-aggregates.md) |
 | F060 | Cascading Materialized Views | P1 | 📝 | [Link](phase-2/F060-cascading-materialized-views.md) |
 | F062 | Per-Core WAL Segments | P1 | 📝 | [Link](phase-2/F062-per-core-wal.md) |
+| **F011B** | **EMIT Clause Extension** | **P0** | 📝 | [Link](phase-2/F011B-emit-clause-extension.md) |
+| **F063** | **Changelog/Retraction (Z-Sets)** | **P0** | 📝 | [Link](phase-2/F063-changelog-retraction.md) |
+
+### Phase 2 Emit Patterns Gap Analysis (NEW)
+
+> Based on [Emit Patterns Research 2026](../research/emit-patterns-research-2026.md)
+
+| Gap | Research Finding | Current | Target | Feature |
+|-----|------------------|---------|--------|---------|
+| **EMIT ON WINDOW CLOSE** | "Essential for append-only sinks" | ❌ Parsed but not implemented | Critical for F023 | **F011B** |
+| **Changelog/Retraction** | "DBSP Z-sets fundamental" | ❌ None | Z-set weights, CDC format | **F063** |
+| **EMIT CHANGES** | "CDC pipelines need delta emission" | ❌ Missing | Emit +/-/update pairs | **F011B** |
+| **EMIT FINAL** | "Suppress intermediate for BI" | ❌ Missing | No retractions | **F011B** |
+| CDC Envelope Format | "Debezium standard" | ❌ Missing | Interoperable format | **F063** |
+| Emit Strategy Propagation | "Optimizer rule for sink compat" | ❌ Missing | Auto-select by sink type | **F011B** |
+
+**Critical Dependency Chain**:
+```
+F011 (EMIT Clause) ──► F011B (Extension) ──┐
+                                           ├──► F023 (Exactly-Once Sinks)
+F063 (Changelog/Retraction) ──────────────┘
+                           │
+                           └──► F060 (Cascading MVs)
+```
 
 ### Phase 2 Checkpoint/Recovery Gap Analysis
 
@@ -249,12 +273,25 @@ F003 ──▶ F019 (Stream Joins) ──▶ F020 (Lookup) ──▶ F021 (Tempo
 F007 + F013 ──▶ F062 (Per-Core WAL) ──┐
                                       │
 F008 ──▶ F022 (Incremental) ◀─────────┘ ──▶ F023 (Exactly-Once) ──▶ F024 (2PC)
+                                                    ▲
+Emit Patterns (Phase 2 - NEW):                      │
+┌────────────────────────────────────────────────────┼─────────────────────┐
+│ F011 (EMIT Clause)                                 │                     │
+│      │                                             │                     │
+│      └──▶ F011B (Extension) ──────────────────────┘                     │
+│               │     OnWindowClose, Changelog, Final                     │
+│               │                                                         │
+│      F063 (Changelog/Retraction) ──────────────────────┐                │
+│               │     Z-set weights, CDC envelope        │                │
+│               │                                        ▼                │
+│               └──────────────────────────────▶ F060 (Cascading MVs)     │
+└─────────────────────────────────────────────────────────────────────────┘
 
 Checkpoint Architecture (Phase 2):
 ┌───────────────────────────────────────────────────────────────────────────┐
 │ Ring 0: Changelog ──▶ Ring 1: Per-Core WAL ──▶ RocksDB ──▶ Checkpoint    │
 │                                                                           │
-│ F002 (mmap) + F022 (ChangelogBuffer) ──▶ F062 (Per-Core WAL) ──▶ F022    │
+│ F002 (mmap) + F063 (ChangelogBuffer) ──▶ F062 (Per-Core WAL) ──▶ F022    │
 └───────────────────────────────────────────────────────────────────────────┘
 
 Financial Analytics (Phase 2):
@@ -267,6 +304,7 @@ Phase 3 (blocked by F006B for DDL parsing):
 F006B ──▶ F025-F034 (Connectors need CREATE SOURCE/SINK)
 F013 + F019 ──▶ F058 (Async State Access) ◀── Flink 2.0 Innovation
 F060 + F031/F032 ──▶ F061 (Historical Backfill) ◀── Live+Historical Unification
+F063 ──▶ F027/F028 (CDC Connectors need changelog format)
 ```
 
 ---
@@ -321,12 +359,24 @@ F060 + F031/F032 ──▶ F061 (Historical Backfill) ◀── Live+Historical 
 | No historical backfill | F061 | Live + historical unification | NEW SPEC (P2, Phase 3) |
 | No SAMPLE BY syntax | - | QuestDB-style sugar | Not planned (low priority) |
 
+### P0 - Critical (Emit Patterns Research - 2026)
+
+> From [Emit Patterns Research 2026](../research/emit-patterns-research-2026.md)
+
+| Gap | Feature | Source | Fix |
+|-----|---------|--------|-----|
+| **EMIT ON WINDOW CLOSE** | F011B | RisingWave, Flink | **NEW SPEC (P0)** - Blocks F023 |
+| **Changelog/Retraction** | F063 | DBSP/Feldera VLDB 2025 | **NEW SPEC (P0)** - Blocks F023, F060 |
+| **EMIT CHANGES** | F011B | ksqlDB, Flink | Included in F011B |
+| **EMIT FINAL** | F011B | Spark, RisingWave | Included in F011B |
+| **CDC Envelope Format** | F063 | Debezium standard | Included in F063 |
+
 ### P2 - Medium (Phase 2+)
 
 | Gap | Feature | Impact |
 |-----|---------|--------|
 | Prefix scan O(n) | F003 | Slow for large state |
-| No retractions | F012 | Required for joins |
+| ~~No retractions~~ | ~~F012~~ | ~~Required for joins~~ | **F063 addresses this** |
 | No madvise hints | F002 | Suboptimal TLB usage |
 | Multi-way join optimization | - | Static join order, no adaptive |
-| DBSP incrementalization | - | No formal Z-set, no auto-incr |
+| ~~DBSP incrementalization~~ | - | ~~No formal Z-set~~ | **F063 adds Z-set foundation** |

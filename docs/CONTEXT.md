@@ -8,6 +8,14 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
+- ✅ **Emit Patterns Research Analysis** - Compared 2026 research against implementation
+- ✅ **F011B: EMIT Clause Extension** - NEW SPEC created for OnWindowClose, Changelog, Final strategies
+- ✅ **F063: Changelog/Retraction (Z-Sets)** - NEW SPEC for Z-set weights, CDC envelope, retractable aggregators
+- ✅ **F023 Updated** - Added dependencies on F011B and F063
+- ✅ **INDEX.md Updated** - Added F011B, F063 to Phase 2, updated counts and dependency graph
+- ✅ All feature specs aligned with 2026 emit patterns research
+
+### Previous Accomplishments (same session)
 - ✅ **F013: Thread-Per-Core Architecture** - Full implementation complete
 - ✅ **F014: SPSC Queue** - Lock-free bounded queue with cache padding
 - ✅ **Credit-Based Backpressure** - Apache Flink-style flow control added
@@ -17,6 +25,27 @@
 - ✅ All 336 tests passing across all crates (249 core + 56 sql + 25 storage + 6 connectors)
 - ✅ Clippy clean for all crates
 - ✅ TPC benchmarks added (`cargo bench --bench tpc_bench`)
+
+### Emit Patterns Analysis Summary
+
+From `docs/research/emit-patterns-research-2026.md`, identified critical gaps:
+
+| Gap | Research Finding | Status | Fix |
+|-----|------------------|--------|-----|
+| EMIT ON WINDOW CLOSE | Essential for append-only sinks | SQL parsed, not in EmitStrategy | **F011B** |
+| Changelog/Retraction | DBSP Z-sets fundamental | Not implemented | **F063** |
+| EMIT CHANGES | CDC pipelines need delta | Missing | **F011B** |
+| EMIT FINAL | BI reporting needs exact | Missing | **F011B** |
+| CDC Envelope | Debezium compatibility | Missing | **F063** |
+
+**New Dependency Chain**:
+```
+F011 (EMIT Clause) ──► F011B (Extension) ──┐
+                                           ├──► F023 (Exactly-Once Sinks)
+F063 (Changelog/Retraction) ──────────────┘
+                           │
+                           └──► F060 (Cascading MVs)
+```
 
 ### F013/F014 Implementation Details
 

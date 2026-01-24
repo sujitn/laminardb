@@ -8,14 +8,17 @@
 
 ### Sprint Priority: Phase 2 In Progress
 
-Phase 1 P0 hardening is complete. Phase 2 is underway with 7/17 features complete.
+Phase 1 P0 hardening is complete. Phase 2 is underway with 7/19 features complete.
 
 **Completed**: F013 (Thread-Per-Core), F014 (SPSC), F015 (CPU Pinning), F016 (Sliding Windows), F018 (Hopping), F019 (Stream-Stream Joins), F020 (Lookup Joins)
 
-**Next Priority**:
-1. F059 (FIRST/LAST Value Aggregates) - P0, essential for OHLC
-2. F022 (Incremental Checkpointing) - P1, async checkpoint + RocksDB
-3. F062 (Per-Core WAL) - P1, required for F013 integration
+**Next Priority** (updated based on [emit patterns research](research/emit-patterns-research-2026.md)):
+1. **F011B (EMIT Clause Extension)** - P0, adds OnWindowClose/Changelog/Final - blocks F023
+2. **F063 (Changelog/Retraction)** - P0, Z-set foundation - blocks F023, F060
+3. F059 (FIRST/LAST Value Aggregates) - P0, essential for OHLC
+4. F023 (Exactly-Once Sinks) - P0, now depends on F011B + F063
+5. F022 (Incremental Checkpointing) - P1, async checkpoint + RocksDB
+6. F062 (Per-Core WAL) - P1, required for F013 integration
 
 ### Phase 1 Hardening (Complete)
 
@@ -73,7 +76,9 @@ Phase 1 features are functionally complete. A comprehensive audit against 2025-2
 | Decision | Options | Deadline | Owner |
 |----------|---------|----------|-------|
 | io_uring crate | tokio-uring vs io_uring | Phase 2 Week 1 | TBD |
-| Retraction model | Z-set vs Flink changelog | Phase 2 Week 2 | TBD |
+| ~~Retraction model~~ | ~~Z-set vs Flink changelog~~ | ~~Phase 2 Week 2~~ | ✅ **Decided: Z-set** (F063) |
+
+**Note**: Retraction model decided based on [emit patterns research](research/emit-patterns-research-2026.md) - DBSP/Feldera Z-sets chosen for mathematical foundation. See [F063: Changelog/Retraction](features/phase-2/F063-changelog-retraction.md).
 
 ---
 
