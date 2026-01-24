@@ -125,6 +125,7 @@ pub enum OperatorError {
 }
 
 pub mod sliding_window;
+pub mod stream_join;
 pub mod window;
 
 #[cfg(test)]

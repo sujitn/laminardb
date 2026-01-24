@@ -12,7 +12,8 @@
 - ✅ **F014: SPSC Queue** - Lock-free bounded queue with cache padding
 - ✅ **Credit-Based Backpressure** - Apache Flink-style flow control added
 - ✅ **F016: Sliding Windows** - Overlapping window support with multi-window assignment
-- ✅ All 300 tests passing across all crates (219 core + 56 sql + 25 storage)
+- ✅ **F019: Stream-Stream Joins** - Time-bounded joins with Inner/Left/Right/Full types
+- ✅ All 314 tests passing across all crates (233 core + 56 sql + 25 storage)
 - ✅ Clippy clean for all crates
 - ✅ TPC benchmarks added (`cargo bench --bench tpc_bench`)
 
@@ -98,15 +99,67 @@ let operator = SlidingWindowOperator::new(
 );
 ```
 
+### F019 Stream-Stream Joins Implementation
+
+**Module**: `crates/laminar-core/src/operator/stream_join.rs`
+
+**Key Components**:
+- `StreamJoinOperator` - Time-bounded stream-stream join operator
+  - Supports Inner, Left, Right, and Full outer joins
+  - Configurable time bound for matching events
+  - State stored using prefixed keys (`sjl:` for left, `sjr:` for right)
+  - Automatic cleanup via watermark-based timers
+  - Late event handling
+
+- `JoinType` - Enum for join semantics
+  - `Inner`: Only emit matched pairs
+  - `Left`: Emit all left events, with right match if exists
+  - `Right`: Emit all right events, with left match if exists
+  - `Full`: Emit all events, with matches where they exist
+
+- `JoinSide` - Identifies event source (Left/Right)
+
+- `JoinRow` - Serialized event storage using Arrow IPC
+  - Stores timestamp, key value, and serialized batch data
+  - Tracks matched state for outer joins
+
+- `JoinMetrics` - Operational metrics
+  - Event counts (left/right)
+  - Match counts
+  - Unmatched event counts (for outer joins)
+  - Late event and cleanup counters
+
+**Example**:
+```rust
+use laminar_core::operator::stream_join::{
+    StreamJoinOperator, JoinType, JoinSide,
+};
+use std::time::Duration;
+
+// Join orders with payments within 1 hour
+let mut operator = StreamJoinOperator::new(
+    "order_id".to_string(),  // left key column
+    "order_id".to_string(),  // right key column
+    Duration::from_secs(3600), // 1 hour time bound
+    JoinType::Inner,
+);
+
+// Process left-side event (order)
+let outputs = operator.process_side(&order_event, JoinSide::Left, &mut ctx);
+
+// Process right-side event (payment)
+let outputs = operator.process_side(&payment_event, JoinSide::Right, &mut ctx);
+```
+
 ### Where We Left Off
-Phase 2 P0 features F013 and F016 complete. Ready to continue with joins and exactly-once sinks.
+Phase 2 P0 features F013, F016, and F019 complete. Ready to continue with lookup joins and exactly-once sinks.
 
 ### Immediate Next Steps
 
 1. **Continue Phase 2** - Production Hardening
-   - F019: Stream-Stream Joins (P0)
    - F020: Lookup Joins (P0)
    - F023: Exactly-Once Sinks (P0)
+   - F017: Session Windows (P1)
 
 ### Open Issues
 
@@ -168,7 +221,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 | F016: Sliding Windows | ✅ Complete | Multi-window assignment, 25 tests |
 | F017: Session Windows | 📝 Not started | |
 | F018: Hopping Windows | ✅ Complete | Alias for sliding windows |
-| F019: Stream-Stream Joins | 📝 Not started | |
+| F019: Stream-Stream Joins | ✅ Complete | Inner/Left/Right/Full, 14 tests |
 | F020: Lookup Joins | 📝 Not started | |
 | F023: Exactly-Once Sinks | 📝 Not started | |
 
@@ -178,7 +231,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 
 ### Current Focus
 - **Phase**: 2 Production Hardening
-- **Active Feature**: F016 complete, ready for F019 (joins)
+- **Active Feature**: F019 complete, ready for F020 (lookup joins)
 
 ### Key Files
 ```
@@ -192,11 +245,12 @@ crates/laminar-core/src/tpc/
 crates/laminar-core/src/operator/
 ├── mod.rs           # Operator trait, Event, Output types
 ├── window.rs        # TumblingWindowOperator, WindowAssigner trait
-└── sliding_window.rs# SlidingWindowOperator, SlidingWindowAssigner
+├── sliding_window.rs# SlidingWindowOperator, SlidingWindowAssigner
+└── stream_join.rs   # StreamJoinOperator, JoinType, JoinSide
 
 Benchmarks: crates/laminar-core/benches/tpc_bench.rs
 
-Tests: 300 passing (219 core, 56 sql, 25 storage)
+Tests: 314 passing (233 core, 56 sql, 25 storage)
 ```
 
 ### Useful Commands
