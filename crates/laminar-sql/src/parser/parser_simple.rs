@@ -71,18 +71,8 @@ impl StreamingParser {
                 if_not_exists: sql_upper.contains("IF NOT EXISTS"),
             }))
         } else if sql_upper.starts_with("CREATE CONTINUOUS QUERY") {
-            // Simplified CREATE CONTINUOUS QUERY parsing
-            let emit_clause = if sql_upper.contains("EMIT AFTER WATERMARK") {
-                Some(EmitClause::AfterWatermark)
-            } else if sql_upper.contains("EMIT ON WINDOW CLOSE") {
-                Some(EmitClause::OnWindowClose)
-            } else if sql_upper.contains("EMIT PERIODICALLY") {
-                Some(EmitClause::Periodically {
-                    interval: Expr::Identifier(Ident::new("5 SECONDS")),
-                })
-            } else {
-                None
-            };
+            // Parse the EMIT clause using the improved parser
+            let emit_clause = Self::parse_emit_clause(sql).ok().flatten();
 
             // For now, parse the actual query from the SQL string
             // In production, we'd properly parse the query portion
@@ -134,22 +124,121 @@ impl StreamingParser {
         }
     }
 
-    /// Parse EMIT clause from SQL string
+    /// Parse EMIT clause from SQL string.
+    ///
+    /// Supported syntax:
+    /// - `EMIT AFTER WATERMARK` or `EMIT ON WATERMARK`
+    /// - `EMIT ON WINDOW CLOSE`
+    /// - `EMIT EVERY INTERVAL 'N' SECOND|MINUTE|HOUR` or `EMIT PERIODICALLY INTERVAL ...`
+    /// - `EMIT ON UPDATE`
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseError::StreamingError` if the EMIT clause syntax is invalid.
     pub fn parse_emit_clause(sql: &str) -> Result<Option<EmitClause>, ParseError> {
         let sql_upper = sql.to_uppercase();
 
-        if sql_upper.contains("EMIT AFTER WATERMARK") {
-            Ok(Some(EmitClause::AfterWatermark))
-        } else if sql_upper.contains("EMIT ON WINDOW CLOSE") {
-            Ok(Some(EmitClause::OnWindowClose))
-        } else if sql_upper.contains("EMIT PERIODICALLY") {
-            // TODO: Parse the interval expression properly
-            Ok(Some(EmitClause::Periodically {
-                interval: Expr::Identifier(Ident::new("5 SECONDS")),
-            }))
-        } else {
-            Ok(None)
+        // Check for EMIT keyword
+        let Some(emit_pos) = sql_upper.find("EMIT ") else {
+            return Ok(None);
+        };
+
+        let emit_clause = &sql_upper[emit_pos..];
+
+        // EMIT AFTER WATERMARK or EMIT ON WATERMARK
+        if emit_clause.contains("AFTER WATERMARK") || emit_clause.contains("ON WATERMARK") {
+            return Ok(Some(EmitClause::AfterWatermark));
         }
+
+        // EMIT ON WINDOW CLOSE
+        if emit_clause.contains("ON WINDOW CLOSE") {
+            return Ok(Some(EmitClause::OnWindowClose));
+        }
+
+        // EMIT ON UPDATE
+        if emit_clause.contains("ON UPDATE") {
+            return Ok(Some(EmitClause::OnUpdate));
+        }
+
+        // EMIT EVERY INTERVAL or EMIT PERIODICALLY INTERVAL
+        if emit_clause.contains("EVERY") || emit_clause.contains("PERIODICALLY") {
+            // Extract the interval portion
+            let interval_expr = Self::parse_interval_from_emit(sql, emit_pos)?;
+            return Ok(Some(EmitClause::Periodically { interval: interval_expr }));
+        }
+
+        // Unknown EMIT clause
+        Err(ParseError::StreamingError(format!(
+            "Unknown EMIT clause syntax: {}",
+            &sql[emit_pos..].chars().take(50).collect::<String>()
+        )))
+    }
+
+    /// Parse interval expression from EMIT clause.
+    ///
+    /// Handles: `EMIT EVERY INTERVAL '10' SECOND` or `EMIT PERIODICALLY INTERVAL '5' MINUTE`
+    fn parse_interval_from_emit(sql: &str, emit_pos: usize) -> Result<Expr, ParseError> {
+        let sql_upper = sql.to_uppercase();
+        let emit_clause = &sql_upper[emit_pos..];
+
+        // Find INTERVAL keyword
+        let interval_pos = emit_clause.find("INTERVAL");
+        if interval_pos.is_none() {
+            // No INTERVAL keyword - look for a simple number with unit
+            // e.g., "EMIT EVERY 10 SECONDS"
+            return Self::parse_simple_interval(emit_clause);
+        }
+
+        let interval_start = emit_pos + interval_pos.unwrap();
+        let interval_sql = &sql[interval_start..];
+
+        // Try to parse the interval using sqlparser
+        let dialect = GenericDialect {};
+        let wrapped_sql = format!("SELECT {}", interval_sql.split_whitespace().take(4).collect::<Vec<_>>().join(" "));
+
+        match Parser::parse_sql(&dialect, &wrapped_sql) {
+            Ok(stmts) if !stmts.is_empty() => {
+                if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+                    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                        if !select.projection.is_empty() {
+                            if let sqlparser::ast::SelectItem::UnnamedExpr(expr) = &select.projection[0] {
+                                return Ok(expr.clone());
+                            }
+                        }
+                    }
+                }
+                // Fallback to identifier
+                Ok(Expr::Identifier(Ident::new(interval_sql.split_whitespace().take(4).collect::<Vec<_>>().join(" "))))
+            }
+            _ => {
+                // Fallback: return the interval portion as an identifier
+                Ok(Expr::Identifier(Ident::new(interval_sql.split_whitespace().take(4).collect::<Vec<_>>().join(" "))))
+            }
+        }
+    }
+
+    /// Parse a simple interval like "10 SECONDS" or "5 MINUTES".
+    fn parse_simple_interval(emit_clause: &str) -> Result<Expr, ParseError> {
+        // Look for patterns like "EVERY 10 SECOND" or "PERIODICALLY 5 MINUTE"
+        let words: Vec<&str> = emit_clause.split_whitespace().collect();
+
+        // Find the index after EVERY or PERIODICALLY
+        let start_idx = words.iter().position(|&w| w == "EVERY" || w == "PERIODICALLY")
+            .map(|i| i + 1);
+
+        if let Some(idx) = start_idx {
+            if idx < words.len() {
+                // Try to parse as number + unit
+                let remaining: String = words[idx..].join(" ");
+
+                // Create an interval expression
+                let interval_sql = format!("INTERVAL '{}'", remaining.replace('\'', ""));
+                return Ok(Expr::Identifier(Ident::new(interval_sql)));
+            }
+        }
+
+        // Default fallback
+        Ok(Expr::Identifier(Ident::new("INTERVAL '1' SECOND")))
     }
 }
 
@@ -197,16 +286,60 @@ mod tests {
 
     #[test]
     fn test_emit_clause_parsing() {
+        // Test EMIT AFTER WATERMARK
         let emit1 = StreamingParser::parse_emit_clause("SELECT * EMIT AFTER WATERMARK").unwrap();
         assert!(matches!(emit1, Some(EmitClause::AfterWatermark)));
 
+        // Test EMIT ON WATERMARK (synonym)
+        let emit1b = StreamingParser::parse_emit_clause("SELECT * EMIT ON WATERMARK").unwrap();
+        assert!(matches!(emit1b, Some(EmitClause::AfterWatermark)));
+
+        // Test EMIT ON WINDOW CLOSE
         let emit2 = StreamingParser::parse_emit_clause("SELECT * EMIT ON WINDOW CLOSE").unwrap();
         assert!(matches!(emit2, Some(EmitClause::OnWindowClose)));
 
-        let emit3 = StreamingParser::parse_emit_clause("SELECT * EMIT PERIODICALLY").unwrap();
-        assert!(matches!(emit3, Some(EmitClause::Periodically { .. })));
+        // Test EMIT ON UPDATE
+        let emit3 = StreamingParser::parse_emit_clause("SELECT * EMIT ON UPDATE").unwrap();
+        assert!(matches!(emit3, Some(EmitClause::OnUpdate)));
 
-        let emit4 = StreamingParser::parse_emit_clause("SELECT * FROM events").unwrap();
-        assert!(emit4.is_none());
+        // Test EMIT PERIODICALLY
+        let emit4 = StreamingParser::parse_emit_clause("SELECT * EMIT PERIODICALLY INTERVAL '5' SECOND").unwrap();
+        assert!(matches!(emit4, Some(EmitClause::Periodically { .. })));
+
+        // Test EMIT EVERY
+        let emit5 = StreamingParser::parse_emit_clause("SELECT * EMIT EVERY INTERVAL '10' SECOND").unwrap();
+        assert!(matches!(emit5, Some(EmitClause::Periodically { .. })));
+
+        // Test no EMIT clause
+        let emit6 = StreamingParser::parse_emit_clause("SELECT * FROM events").unwrap();
+        assert!(emit6.is_none());
+    }
+
+    #[test]
+    fn test_continuous_query_with_emit_on_update() {
+        let sql = "CREATE CONTINUOUS QUERY live_stats AS SELECT COUNT(*) FROM events EMIT ON UPDATE";
+        let statements = StreamingParser::parse_sql(sql).unwrap();
+        assert_eq!(statements.len(), 1);
+
+        match &statements[0] {
+            StreamingStatement::CreateContinuousQuery { emit_clause, .. } => {
+                assert!(matches!(emit_clause, Some(EmitClause::OnUpdate)));
+            }
+            _ => panic!("Expected CreateContinuousQuery"),
+        }
+    }
+
+    #[test]
+    fn test_continuous_query_with_emit_every() {
+        let sql = "CREATE CONTINUOUS QUERY dashboard AS SELECT SUM(amount) FROM sales EMIT EVERY INTERVAL '30' SECOND";
+        let statements = StreamingParser::parse_sql(sql).unwrap();
+        assert_eq!(statements.len(), 1);
+
+        match &statements[0] {
+            StreamingStatement::CreateContinuousQuery { emit_clause, .. } => {
+                assert!(matches!(emit_clause, Some(EmitClause::Periodically { .. })));
+            }
+            _ => panic!("Expected CreateContinuousQuery"),
+        }
     }
 }

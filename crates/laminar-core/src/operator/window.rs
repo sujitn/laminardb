@@ -8,21 +8,32 @@
 //! - **Sliding**: Fixed-size, overlapping windows (future)
 //! - **Session**: Dynamic windows based on activity gaps (future)
 //!
+//! ## Emit Strategies
+//!
+//! Windows support different emission strategies via [`EmitStrategy`]:
+//!
+//! - `OnWatermark` (default): Emit results when watermark passes window end
+//! - `Periodic`: Emit intermediate results at fixed intervals
+//! - `OnUpdate`: Emit after every state change (most expensive)
+//!
 //! ## Example
 //!
 //! ```rust,no_run
 //! use laminar_core::operator::window::{
-//!     TumblingWindowAssigner, TumblingWindowOperator, CountAggregator,
+//!     TumblingWindowAssigner, TumblingWindowOperator, CountAggregator, EmitStrategy,
 //! };
 //! use std::time::Duration;
 //!
 //! // Create a 1-minute tumbling window with count aggregation
 //! let assigner = TumblingWindowAssigner::new(Duration::from_secs(60));
-//! let operator = TumblingWindowOperator::new(
+//! let mut operator = TumblingWindowOperator::new(
 //!     assigner,
 //!     CountAggregator::new(),
 //!     Duration::from_secs(5), // 5 second grace period
 //! );
+//!
+//! // Emit intermediate results every 10 seconds
+//! operator.set_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(10)));
 //! ```
 
 use super::{
@@ -44,6 +55,61 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Strategy for when window results should be emitted.
+///
+/// This controls the trade-off between result freshness and efficiency:
+/// - `OnWatermark` is most efficient but has highest latency
+/// - `Periodic` balances freshness and efficiency
+/// - `OnUpdate` provides lowest latency but highest overhead
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum EmitStrategy {
+    /// Emit final results when watermark passes window end (default).
+    ///
+    /// This is the most efficient strategy as it only emits once per window.
+    /// Results are guaranteed to be complete (within allowed lateness bounds).
+    #[default]
+    OnWatermark,
+
+    /// Emit intermediate results at fixed intervals.
+    ///
+    /// Useful for dashboards and monitoring where periodic updates are needed
+    /// before the window closes. The final result is still emitted on watermark.
+    ///
+    /// The duration specifies the interval between periodic emissions.
+    Periodic(Duration),
+
+    /// Emit updated results after every state change.
+    ///
+    /// This provides the lowest latency for result visibility but has the
+    /// highest overhead. Each incoming event triggers an emission.
+    ///
+    /// Use with caution for high-volume streams.
+    OnUpdate,
+}
+
+impl EmitStrategy {
+    /// Returns true if this strategy requires periodic timer registration.
+    #[must_use]
+    pub fn needs_periodic_timer(&self) -> bool {
+        matches!(self, Self::Periodic(_))
+    }
+
+    /// Returns the periodic interval if this is a periodic strategy.
+    #[must_use]
+    pub fn periodic_interval(&self) -> Option<Duration> {
+        match self {
+            Self::Periodic(d) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// Returns true if results should be emitted on every update.
+    #[must_use]
+    pub fn emits_on_update(&self) -> bool {
+        matches!(self, Self::OnUpdate)
+    }
+}
 
 /// Unique identifier for a window.
 ///
@@ -618,7 +684,13 @@ const WINDOW_STATE_KEY_SIZE: usize = 4 + 16;
 ///
 /// Processes events through non-overlapping, fixed-size time windows.
 /// Events are assigned to windows based on their timestamps, aggregated,
-/// and results are emitted when the watermark passes the window end.
+/// and results are emitted based on the configured [`EmitStrategy`].
+///
+/// # Emit Strategies
+///
+/// - `OnWatermark` (default): Emit when watermark passes window end
+/// - `Periodic`: Emit intermediate results at intervals, final on watermark
+/// - `OnUpdate`: Emit after every state update
 ///
 /// # State Management
 ///
@@ -640,6 +712,10 @@ pub struct TumblingWindowOperator<A: Aggregator> {
     allowed_lateness_ms: i64,
     /// Track registered timers to avoid duplicates
     registered_windows: std::collections::HashSet<WindowId>,
+    /// Track windows with registered periodic timers
+    periodic_timer_windows: std::collections::HashSet<WindowId>,
+    /// Emit strategy for controlling when results are output
+    emit_strategy: EmitStrategy,
     /// Operator ID for checkpointing
     operator_id: String,
     /// Cached output schema (avoids allocation on every emit)
@@ -689,6 +765,8 @@ where
             // Truncation is acceptable: lateness > 2^63 ms (~292 million years) is not practical
             allowed_lateness_ms: allowed_lateness.as_millis() as i64,
             registered_windows: std::collections::HashSet::new(),
+            periodic_timer_windows: std::collections::HashSet::new(),
+            emit_strategy: EmitStrategy::default(),
             operator_id: format!("tumbling_window_{operator_num}"),
             output_schema: create_window_output_schema(),
             _phantom: PhantomData,
@@ -710,10 +788,46 @@ where
             // Truncation is acceptable: lateness > 2^63 ms (~292 million years) is not practical
             allowed_lateness_ms: allowed_lateness.as_millis() as i64,
             registered_windows: std::collections::HashSet::new(),
+            periodic_timer_windows: std::collections::HashSet::new(),
+            emit_strategy: EmitStrategy::default(),
             operator_id,
             output_schema: create_window_output_schema(),
             _phantom: PhantomData,
         }
+    }
+
+    /// Sets the emit strategy for this window operator.
+    ///
+    /// # Arguments
+    ///
+    /// * `strategy` - The emit strategy to use
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use laminar_core::operator::window::{
+    ///     TumblingWindowAssigner, TumblingWindowOperator, CountAggregator, EmitStrategy,
+    /// };
+    /// use std::time::Duration;
+    ///
+    /// let assigner = TumblingWindowAssigner::new(Duration::from_secs(60));
+    /// let mut operator = TumblingWindowOperator::new(
+    ///     assigner,
+    ///     CountAggregator::new(),
+    ///     Duration::from_secs(5),
+    /// );
+    ///
+    /// // Emit every 10 seconds instead of waiting for watermark
+    /// operator.set_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(10)));
+    /// ```
+    pub fn set_emit_strategy(&mut self, strategy: EmitStrategy) {
+        self.emit_strategy = strategy;
+    }
+
+    /// Returns the current emit strategy.
+    #[must_use]
+    pub fn emit_strategy(&self) -> &EmitStrategy {
+        &self.emit_strategy
     }
 
     /// Returns the window assigner.
@@ -794,6 +908,134 @@ where
             self.registered_windows.insert(window_id);
         }
     }
+
+    /// Registers a periodic timer for intermediate emissions.
+    ///
+    /// The timer key uses a special encoding to distinguish from final timers:
+    /// - Final timers: raw `WindowId` bytes (16 bytes)
+    /// - Periodic timers: `WindowId` with high bit set in first byte
+    #[allow(clippy::cast_possible_truncation)]
+    fn maybe_register_periodic_timer(
+        &mut self,
+        window_id: WindowId,
+        ctx: &mut OperatorContext,
+    ) {
+        if let EmitStrategy::Periodic(interval) = &self.emit_strategy {
+            if !self.periodic_timer_windows.contains(&window_id) {
+                // Register first periodic timer at processing_time + interval
+                let interval_ms = interval.as_millis() as i64;
+                let trigger_time = ctx.processing_time + interval_ms;
+
+                // Create a key with high bit set to distinguish from final timers
+                let key = Self::periodic_timer_key(&window_id);
+
+                ctx.timers.register_timer(trigger_time, Some(key));
+                self.periodic_timer_windows.insert(window_id);
+            }
+        }
+    }
+
+    /// Creates a periodic timer key from a window ID.
+    ///
+    /// Uses the high bit of the first byte as a marker to distinguish
+    /// periodic timers from final watermark timers.
+    #[inline]
+    fn periodic_timer_key(window_id: &WindowId) -> super::TimerKey {
+        let mut key = window_id.to_key();
+        // Set the high bit of the first byte to mark as periodic
+        if !key.is_empty() {
+            key[0] |= 0x80;
+        }
+        key
+    }
+
+    /// Checks if a timer key is for a periodic timer.
+    #[inline]
+    fn is_periodic_timer_key(key: &[u8]) -> bool {
+        !key.is_empty() && (key[0] & 0x80) != 0
+    }
+
+    /// Extracts the window ID from a periodic timer key.
+    #[inline]
+    fn window_id_from_periodic_key(key: &[u8]) -> Option<WindowId> {
+        if key.len() != 16 {
+            return None;
+        }
+        let mut clean_key = [0u8; 16];
+        clean_key.copy_from_slice(key);
+        // Clear the high bit to get the original window ID
+        clean_key[0] &= 0x7F;
+        WindowId::from_key(&clean_key)
+    }
+
+    /// Creates an intermediate result for a window without cleaning up state.
+    ///
+    /// Returns `None` if the window is empty.
+    fn create_intermediate_result(
+        &self,
+        window_id: &WindowId,
+        state: &dyn crate::state::StateStore,
+    ) -> Option<Event> {
+        let acc = self.get_accumulator(window_id, state);
+
+        if acc.is_empty() {
+            return None;
+        }
+
+        let result = acc.result();
+        let result_i64 = result.to_i64();
+
+        let batch = RecordBatch::try_new(
+            Arc::clone(&self.output_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![window_id.start])),
+                Arc::new(Int64Array::from(vec![window_id.end])),
+                Arc::new(Int64Array::from(vec![result_i64])),
+            ],
+        ).ok()?;
+
+        Some(Event {
+            timestamp: window_id.end,
+            data: batch,
+        })
+    }
+
+    /// Handles periodic timer expiration for intermediate emissions.
+    #[allow(clippy::cast_possible_truncation)]
+    fn handle_periodic_timer(
+        &mut self,
+        window_id: WindowId,
+        ctx: &mut OperatorContext,
+    ) -> OutputVec {
+        let mut output = OutputVec::new();
+
+        // Check if window is still valid (not yet closed by watermark)
+        if !self.registered_windows.contains(&window_id) {
+            // Window already closed, remove from periodic tracking
+            self.periodic_timer_windows.remove(&window_id);
+            return output;
+        }
+
+        // Emit intermediate result
+        if let Some(event) = self.create_intermediate_result(&window_id, ctx.state) {
+            output.push(Output::Event(event));
+        }
+
+        // Schedule next periodic timer if still within window
+        if let EmitStrategy::Periodic(interval) = &self.emit_strategy {
+            let interval_ms = interval.as_millis() as i64;
+            let next_trigger = ctx.processing_time + interval_ms;
+
+            // Only schedule if the window hasn't closed yet
+            let window_close_time = window_id.end + self.allowed_lateness_ms;
+            if next_trigger < window_close_time {
+                let key = Self::periodic_timer_key(&window_id);
+                ctx.timers.register_timer(next_trigger, Some(key));
+            }
+        }
+
+        output
+    }
 }
 
 impl<A: Aggregator> Operator for TumblingWindowOperator<A>
@@ -822,6 +1064,9 @@ where
         // Assign event to window
         let window_id = self.assigner.assign(event_time);
 
+        // Track if state was updated (for OnUpdate strategy)
+        let mut state_updated = false;
+
         // Extract value and update accumulator
         if let Some(value) = self.aggregator.extract(event) {
             let mut acc = self.get_accumulator(&window_id, ctx.state);
@@ -829,22 +1074,43 @@ where
             if let Err(e) = self.put_accumulator(&window_id, &acc, ctx.state) {
                 // Log error but don't fail - we'll retry on next event
                 eprintln!("Failed to store window state: {e}");
+            } else {
+                state_updated = true;
             }
         }
 
-        // Register timer for this window
+        // Register timer for this window (watermark-based final emission)
         self.maybe_register_timer(window_id, ctx);
+
+        // Register periodic timer if using Periodic strategy
+        self.maybe_register_periodic_timer(window_id, ctx);
 
         // Emit watermark update if generated
         let mut output = OutputVec::new();
         if let Some(wm) = current_watermark {
             output.push(Output::Watermark(wm.timestamp()));
         }
+
+        // For OnUpdate strategy, emit intermediate result after each update
+        if self.emit_strategy.emits_on_update() && state_updated {
+            if let Some(event) = self.create_intermediate_result(&window_id, ctx.state) {
+                output.push(Output::Event(event));
+            }
+        }
+
         output
     }
 
     fn on_timer(&mut self, timer: Timer, ctx: &mut OperatorContext) -> OutputVec {
-        // Parse window ID from timer key
+        // Check if this is a periodic timer (high bit set)
+        if Self::is_periodic_timer_key(&timer.key) {
+            if let Some(window_id) = Self::window_id_from_periodic_key(&timer.key) {
+                return self.handle_periodic_timer(window_id, ctx);
+            }
+            return OutputVec::new();
+        }
+
+        // Parse window ID from timer key (final emission timer)
         let Some(window_id) = WindowId::from_key(&timer.key) else {
             return OutputVec::new();
         };
@@ -857,6 +1123,7 @@ where
             // Clean up state
             let _ = self.delete_accumulator(&window_id, ctx.state);
             self.registered_windows.remove(&window_id);
+            self.periodic_timer_windows.remove(&window_id);
             return OutputVec::new();
         }
 
@@ -866,6 +1133,7 @@ where
         // Clean up window state
         let _ = self.delete_accumulator(&window_id, ctx.state);
         self.registered_windows.remove(&window_id);
+        self.periodic_timer_windows.remove(&window_id);
 
         // Convert result to i64 for the batch
         let result_i64 = result.to_i64();
@@ -896,9 +1164,13 @@ where
     }
 
     fn checkpoint(&self) -> OperatorState {
-        // Serialize the registered windows set using rkyv
+        // Serialize both registered windows and periodic timer windows using rkyv
         let windows: Vec<_> = self.registered_windows.iter().copied().collect();
-        let data = rkyv::to_bytes::<RkyvError>(&windows)
+        let periodic_windows: Vec<_> = self.periodic_timer_windows.iter().copied().collect();
+
+        // Create a tuple of both sets
+        let checkpoint_data = (windows, periodic_windows);
+        let data = rkyv::to_bytes::<RkyvError>(&checkpoint_data)
             .map(|v| v.to_vec())
             .unwrap_or_default();
 
@@ -916,13 +1188,23 @@ where
             )));
         }
 
-        // Deserialize using rkyv
+        // Try to deserialize as the new format (tuple of two vectors)
+        if let Ok(archived) = rkyv::access::<rkyv::Archived<(Vec<WindowId>, Vec<WindowId>)>, RkyvError>(&state.data) {
+            if let Ok((windows, periodic_windows)) = rkyv::deserialize::<(Vec<WindowId>, Vec<WindowId>), RkyvError>(archived) {
+                self.registered_windows = windows.into_iter().collect();
+                self.periodic_timer_windows = periodic_windows.into_iter().collect();
+                return Ok(());
+            }
+        }
+
+        // Fall back to old format (single vector) for backwards compatibility
         let archived = rkyv::access::<rkyv::Archived<Vec<WindowId>>, RkyvError>(&state.data)
             .map_err(|e| OperatorError::SerializationFailed(e.to_string()))?;
         let windows: Vec<WindowId> = rkyv::deserialize::<Vec<WindowId>, RkyvError>(archived)
             .map_err(|e| OperatorError::SerializationFailed(e.to_string()))?;
 
         self.registered_windows = windows.into_iter().collect();
+        self.periodic_timer_windows = std::collections::HashSet::new();
         Ok(())
     }
 }
@@ -1359,5 +1641,210 @@ mod tests {
         let window = TumblingWindow::new(config);
         assert_eq!(window.duration(), Duration::from_secs(60));
         assert_eq!(window.allowed_lateness(), Duration::from_secs(5));
+    }
+
+    // ==================== EmitStrategy Tests ====================
+
+    #[test]
+    fn test_emit_strategy_default() {
+        let strategy = EmitStrategy::default();
+        assert_eq!(strategy, EmitStrategy::OnWatermark);
+    }
+
+    #[test]
+    fn test_emit_strategy_on_watermark() {
+        let strategy = EmitStrategy::OnWatermark;
+        assert!(!strategy.needs_periodic_timer());
+        assert!(strategy.periodic_interval().is_none());
+        assert!(!strategy.emits_on_update());
+    }
+
+    #[test]
+    fn test_emit_strategy_periodic() {
+        let interval = Duration::from_secs(10);
+        let strategy = EmitStrategy::Periodic(interval);
+        assert!(strategy.needs_periodic_timer());
+        assert_eq!(strategy.periodic_interval(), Some(interval));
+        assert!(!strategy.emits_on_update());
+    }
+
+    #[test]
+    fn test_emit_strategy_on_update() {
+        let strategy = EmitStrategy::OnUpdate;
+        assert!(!strategy.needs_periodic_timer());
+        assert!(strategy.periodic_interval().is_none());
+        assert!(strategy.emits_on_update());
+    }
+
+    #[test]
+    fn test_window_operator_set_emit_strategy() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0),
+            "test_op".to_string(),
+        );
+
+        // Default is OnWatermark
+        assert_eq!(*operator.emit_strategy(), EmitStrategy::OnWatermark);
+
+        // Set to Periodic
+        operator.set_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(5)));
+        assert_eq!(
+            *operator.emit_strategy(),
+            EmitStrategy::Periodic(Duration::from_secs(5))
+        );
+
+        // Set to OnUpdate
+        operator.set_emit_strategy(EmitStrategy::OnUpdate);
+        assert_eq!(*operator.emit_strategy(), EmitStrategy::OnUpdate);
+    }
+
+    #[test]
+    fn test_emit_on_update_emits_intermediate_results() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0),
+            "test_op".to_string(),
+        );
+
+        // Set emit strategy to OnUpdate
+        operator.set_emit_strategy(EmitStrategy::OnUpdate);
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Process first event - should emit intermediate result
+        let event1 = create_test_event(100, 1);
+        let outputs1 = {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx)
+        };
+
+        // Should have at least one event output (intermediate result)
+        let has_event = outputs1.iter().any(|o| matches!(o, Output::Event(_)));
+        assert!(has_event, "OnUpdate should emit intermediate result after first event");
+
+        // Process second event - should emit another intermediate result
+        let event2 = create_test_event(500, 2);
+        let outputs2 = {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event2, &mut ctx)
+        };
+
+        // Should have intermediate result with count = 2
+        let event_output = outputs2.iter().find_map(|o| {
+            if let Output::Event(e) = o {
+                Some(e)
+            } else {
+                None
+            }
+        });
+
+        assert!(event_output.is_some(), "OnUpdate should emit after second event");
+        if let Some(event) = event_output {
+            let result_col = event.data.column(2);
+            let result_array = result_col.as_any().downcast_ref::<Int64Array>().unwrap();
+            assert_eq!(result_array.value(0), 2, "Intermediate count should be 2");
+        }
+    }
+
+    #[test]
+    fn test_emit_on_watermark_no_intermediate_results() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0),
+            "test_op".to_string(),
+        );
+
+        // Default is OnWatermark - no intermediate emissions
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Process events
+        let event1 = create_test_event(100, 1);
+        let outputs1 = {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx)
+        };
+
+        // Should NOT have event output (only watermark update if any)
+        let has_intermediate_event = outputs1.iter().any(|o| matches!(o, Output::Event(_)));
+        assert!(
+            !has_intermediate_event,
+            "OnWatermark should not emit intermediate results"
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_restore_with_emit_strategy() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner.clone(),
+            aggregator.clone(),
+            Duration::from_millis(0),
+            "test_op".to_string(),
+        );
+
+        // Set emit strategy and register some windows
+        operator.set_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(10)));
+        operator.registered_windows.insert(WindowId::new(0, 1000));
+        operator.periodic_timer_windows.insert(WindowId::new(0, 1000));
+
+        // Checkpoint
+        let checkpoint = operator.checkpoint();
+
+        // Create a new operator and restore
+        let mut restored_operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0),
+            "test_op".to_string(),
+        );
+        restored_operator.restore(checkpoint).unwrap();
+
+        // Both registered_windows and periodic_timer_windows should be restored
+        assert_eq!(restored_operator.registered_windows.len(), 1);
+        assert_eq!(restored_operator.periodic_timer_windows.len(), 1);
+        assert!(restored_operator
+            .registered_windows
+            .contains(&WindowId::new(0, 1000)));
+        assert!(restored_operator
+            .periodic_timer_windows
+            .contains(&WindowId::new(0, 1000)));
+    }
+
+    #[test]
+    fn test_periodic_timer_key_format() {
+        // Verify the periodic timer key format
+        let window_id = WindowId::new(1000, 2000);
+
+        // Create periodic key using the helper
+        let periodic_key = TumblingWindowOperator::<CountAggregator>::periodic_timer_key(&window_id);
+
+        // Periodic key should be 16 bytes (same as window key, but with high bit set)
+        assert_eq!(periodic_key.len(), 16);
+
+        // First byte should have high bit set
+        assert!(TumblingWindowOperator::<CountAggregator>::is_periodic_timer_key(&periodic_key));
+
+        // Extract window ID from periodic key
+        let extracted = TumblingWindowOperator::<CountAggregator>::window_id_from_periodic_key(&periodic_key);
+        assert_eq!(extracted, Some(window_id));
+
+        // Regular window key should not be detected as periodic
+        let regular_key = window_id.to_key();
+        assert!(!TumblingWindowOperator::<CountAggregator>::is_periodic_timer_key(&regular_key));
     }
 }

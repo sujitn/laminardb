@@ -76,18 +76,37 @@ pub struct WatermarkDef {
     pub expression: Expr,
 }
 
-/// EMIT clause for controlling output
+/// EMIT clause for controlling output timing.
+///
+/// This is the SQL AST representation of emit strategies.
+/// See `laminar_core::operator::window::EmitStrategy` for the runtime representation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmitClause {
-    /// EMIT AFTER WATERMARK
+    /// EMIT AFTER WATERMARK (or EMIT ON WATERMARK)
+    ///
+    /// Emit results when the watermark passes the window end.
+    /// This is the most efficient strategy.
     AfterWatermark,
+
     /// EMIT ON WINDOW CLOSE
+    ///
+    /// Synonym for `AfterWatermark` - emit when window closes.
     OnWindowClose,
-    /// EMIT PERIODICALLY INTERVAL 'N' unit
+
+    /// EMIT EVERY INTERVAL 'N' unit (or EMIT PERIODICALLY)
+    ///
+    /// Emit intermediate results at fixed intervals.
+    /// Final results are still emitted on watermark.
     Periodically {
         /// The interval expression (e.g., INTERVAL '5' SECOND)
-        interval: Expr
+        interval: Expr,
     },
+
+    /// EMIT ON UPDATE
+    ///
+    /// Emit updated results after every state change.
+    /// This provides lowest latency but highest overhead.
+    OnUpdate,
 }
 
 /// Window function types
@@ -164,6 +183,7 @@ mod tests {
         let emit3 = EmitClause::Periodically {
             interval: Expr::Identifier(Ident::new("5_SECONDS")),
         };
+        let emit4 = EmitClause::OnUpdate;
 
         match emit1 {
             EmitClause::AfterWatermark => (),
@@ -178,6 +198,11 @@ mod tests {
         match emit3 {
             EmitClause::Periodically { .. } => (),
             _ => panic!("Expected Periodically"),
+        }
+
+        match emit4 {
+            EmitClause::OnUpdate => (),
+            _ => panic!("Expected OnUpdate"),
         }
     }
 

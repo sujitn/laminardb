@@ -8,87 +8,110 @@
 **Duration**: ~1 hour
 
 ### What Was Accomplished
-- ✅ Implemented F010 - Watermarks:
-  - Created comprehensive watermark generation module (`time/watermark.rs`)
-  - Implemented 5 watermark generation strategies:
-    - `BoundedOutOfOrdernessGenerator` - allows bounded lateness
-    - `AscendingTimestampsGenerator` - for strictly ordered sources
-    - `PeriodicGenerator` - emits at wall-clock intervals
-    - `PunctuatedGenerator` - emits based on marker events
-    - `SourceProvidedGenerator` - for sources with embedded watermarks
-  - Implemented `WatermarkTracker` for multi-source alignment (joins/unions)
-  - Added idle source detection with configurable timeout
-  - Added `MeteredGenerator` wrapper for collecting watermark metrics
-  - Enhanced `Watermark` struct with ordering, min/max, and conversions
-  - Enhanced `TimerService` with pending_count, next_timer_timestamp, clear methods
-  - Added `TimeError::WatermarkRegression` for debugging
-- ✅ All tests passing (122 tests in laminar-core, 39 watermark-specific)
-- ✅ Clippy clean
+- ✅ Implemented F011 - EMIT Clause:
+  - Added `EmitStrategy` enum to laminar-core with 3 strategies:
+    - `OnWatermark` (default) - emit when watermark passes window end
+    - `Periodic(Duration)` - emit intermediate results at fixed intervals
+    - `OnUpdate` - emit after every state change
+  - Updated `TumblingWindowOperator` to support configurable emit strategies
+  - Implemented periodic timer system with special key encoding
+  - Added `EmitClause::OnUpdate` to SQL parser
+  - Enhanced EMIT clause parsing for all syntax variants
+  - Added 12 new tests (9 for EmitStrategy, 3 for SQL parsing)
+- ✅ All tests passing (204 total: 131 in laminar-core, 47 in laminar-sql)
+- ✅ Clippy clean for laminar-core
 
 ### Where We Left Off
-Successfully completed F010 - Watermarks. The system now has comprehensive watermark support including multiple generation strategies, multi-source alignment for join operators, idle source handling, and metrics collection.
+Successfully completed F011 - EMIT Clause. Window operators now support three emit strategies, allowing users to control the trade-off between result freshness and efficiency.
 
 ### Immediate Next Steps
-1. **F011 - EMIT Clause** (P2) - Control output timing in SQL
-2. **F012 - Late Data Handling** (P2) - Side output for late events
+1. **F012 - Late Data Handling** (P2) - Side output for late events
+2. Phase 1 completion (11/12 features done, 92% complete)
 
 ### Open Issues
-- None currently - F001 through F010 are complete (10/12 Phase 1 features done, 83% complete)
+- None currently - F001 through F011 are complete
 
 ### Code Pointers
-- **Watermark module**: `crates/laminar-core/src/time/watermark.rs`
-- **WatermarkGenerator trait**: `crates/laminar-core/src/time/watermark.rs:44-57`
-- **BoundedOutOfOrdernessGenerator**: `crates/laminar-core/src/time/watermark.rs:69-113`
-- **WatermarkTracker**: `crates/laminar-core/src/time/watermark.rs:279-390`
-- **MeteredGenerator**: `crates/laminar-core/src/time/watermark.rs:429-485`
-- **Time module exports**: `crates/laminar-core/src/time/mod.rs`
+- **EmitStrategy enum**: `crates/laminar-core/src/operator/window.rs:66-86`
+- **TumblingWindowOperator.set_emit_strategy**: `crates/laminar-core/src/operator/window.rs:803-821`
+- **Periodic timer handling**: `crates/laminar-core/src/operator/window.rs:1000-1030`
+- **EmitClause SQL AST**: `crates/laminar-sql/src/parser/statements.rs:84-110`
+- **EMIT clause parsing**: `crates/laminar-sql/src/parser/parser_simple.rs:127-220`
 
 ---
 
 ## Session Notes
 
-**Watermark Architecture:**
-- `WatermarkGenerator` trait defines the interface for all generators
-- `Watermark` is a simple newtype wrapper around i64 (milliseconds)
-- Reactor generates watermarks from events and propagates through operators
-- Window operators use watermarks to trigger emissions and detect late events
+**EMIT Strategy Architecture:**
+- `EmitStrategy` enum controls when window results are output
+- Three strategies with different latency/efficiency trade-offs:
+  - `OnWatermark` - most efficient, highest latency
+  - `Periodic` - balanced, configurable interval
+  - `OnUpdate` - lowest latency, highest overhead
 
-**Multi-Source Watermark Tracking:**
+**Using EmitStrategy:**
 ```rust
-use laminar_core::time::WatermarkTracker;
+use laminar_core::operator::window::{
+    TumblingWindowAssigner, TumblingWindowOperator, CountAggregator, EmitStrategy,
+};
+use std::time::Duration;
 
-// Track watermarks from multiple sources (e.g., for joins)
-let mut tracker = WatermarkTracker::new(2);
-tracker.update_source(0, 5000);
-tracker.update_source(1, 3000);
-// Combined watermark is minimum: 3000
+let assigner = TumblingWindowAssigner::new(Duration::from_secs(60));
+let mut operator = TumblingWindowOperator::new(
+    assigner,
+    CountAggregator::new(),
+    Duration::from_secs(5),
+);
 
-// Mark slow source as idle to unblock progress
-tracker.mark_idle(1);
-// Now watermark advances to 5000
+// Emit intermediate results every 10 seconds (for dashboards)
+operator.set_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(10)));
+
+// Or emit on every update (lowest latency, use with caution)
+operator.set_emit_strategy(EmitStrategy::OnUpdate);
 ```
 
-**Idle Source Detection:**
-- Sources that stop producing events can block watermark progress
-- `WatermarkTracker` has configurable idle timeout (default 30 seconds)
-- Call `check_idle_sources()` periodically to auto-detect stalled sources
-- Idle sources are excluded from min watermark calculation
+**SQL Syntax:**
+```sql
+-- Default: emit on watermark
+SELECT COUNT(*) FROM events
+GROUP BY TUMBLE(event_time, INTERVAL '1' HOUR)
+EMIT ON WATERMARK;
+
+-- Periodic: emit every 10 seconds
+SELECT SUM(amount) FROM orders
+GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR)
+EMIT EVERY INTERVAL '10' SECOND;
+
+-- On update: emit after every change
+SELECT AVG(temperature) FROM sensors
+GROUP BY TUMBLE(reading_time, INTERVAL '5' MINUTE)
+EMIT ON UPDATE;
+```
+
+**Periodic Timer Encoding:**
+- Periodic timers use high bit of first key byte as marker
+- This distinguishes them from final watermark timers
+- Both timer types use 16-byte keys (WindowId)
 
 ---
 
 ## Quick Reference
 
 ### Current Focus
-- **Phase**: 1 - Core Engine (83% complete)
-- **Completed**: F001 (Reactor), F002 (Memory-Mapped State Store), F003 (State Store Interface), F004 (Tumbling Windows), F005 (DataFusion Integration), F006 (Basic SQL Parser), F007 (Write-Ahead Log), F008 (Basic Checkpointing), F009 (Event Time Processing), F010 (Watermarks)
-- **Remaining**: F011 (EMIT Clause), F012 (Late Data Handling)
+- **Phase**: 1 - Core Engine (92% complete)
+- **Completed**: F001 (Reactor), F002 (Memory-Mapped State Store), F003 (State Store Interface), F004 (Tumbling Windows), F005 (DataFusion Integration), F006 (Basic SQL Parser), F007 (Write-Ahead Log), F008 (Basic Checkpointing), F009 (Event Time Processing), F010 (Watermarks), F011 (EMIT Clause)
+- **Remaining**: F012 (Late Data Handling)
 
 ### Key Files
 ```
-crates/laminar-core/src/time/
-├── mod.rs              # Module exports, Watermark, TimerService, TimeError
-├── event_time.rs       # EventTimeExtractor for Arrow batches
-└── watermark.rs        # WatermarkGenerator trait and implementations
+crates/laminar-core/src/operator/
+├── mod.rs              # Operator trait, Event, Output, Timer
+└── window.rs           # TumblingWindowOperator, EmitStrategy, Aggregators
+
+crates/laminar-sql/src/parser/
+├── mod.rs              # Parser exports
+├── statements.rs       # StreamingStatement, EmitClause, WindowFunction
+└── parser_simple.rs    # StreamingParser with EMIT clause parsing
 ```
 
 ### Useful Commands
@@ -108,18 +131,34 @@ cargo test --all
 ### Recent Decisions
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-01-24 | 3 emit strategies | Trade-off between latency and efficiency |
+| 2026-01-24 | High-bit timer key encoding | Distinguish periodic from final timers in 16 bytes |
+| 2026-01-24 | OnUpdate emits in process() | Immediate feedback without waiting for timer |
 | 2026-01-24 | 5 watermark strategies | Different sources need different strategies |
 | 2026-01-24 | WatermarkTracker for multi-source | Joins need aligned watermarks |
-| 2026-01-24 | Idle source timeout | Prevent stalled sources from blocking progress |
-| 2026-01-24 | MeteredGenerator wrapper | Composable metrics without modifying generators |
 | 2026-01-22 | Migrate bincode → rkyv | Zero-copy deserialization (~1.2ns access) |
-| 2026-01-22 | Use aligned buffers (rkyv) | Ring 0 state store uses AlignedVec for optimal CPU access |
 
 ---
 
 ## History
 
 ### Previous Sessions
+
+<details>
+<summary>Session - 2026-01-24 (Watermarks - F010)</summary>
+
+**Accomplished**:
+- ✅ Implemented F010 - Watermarks with 5 generation strategies
+- ✅ Implemented WatermarkTracker for multi-source alignment
+- ✅ Added idle source detection and MeteredGenerator wrapper
+- ✅ All tests passing (122 in laminar-core)
+
+**Notes**:
+- Different sources need different watermark strategies
+- Joins require aligned watermarks from multiple sources
+- Idle sources can block watermark progress
+
+</details>
 
 <details>
 <summary>Session - 2026-01-23 (Checkpointing and hot path fixes)</summary>
