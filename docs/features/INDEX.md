@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 22 | 15 | 0 | 0 | 7 |
+| Phase 2 | 28 | 21 | 0 | 0 | 7 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **68** | **49** | **0** | **1** | **18** |
+| **Total** | **74** | **55** | **0** | **1** | **18** |
 
 ## Status Legend
 
@@ -112,6 +112,46 @@
 | **F064** | **Per-Partition Watermarks** | **P1** | 📝 | [Link](phase-2/F064-per-partition-watermarks.md) |
 | **F065** | **Keyed Watermarks** | **P1** | 📝 | [Link](phase-2/F065-keyed-watermarks.md) |
 | **F066** | **Watermark Alignment Groups** | **P2** | 📝 | [Link](phase-2/F066-watermark-alignment-groups.md) |
+| **F067** | **io_uring Advanced Optimization** | **P0** | 📝 | [Link](phase-2/F067-io-uring-optimization.md) |
+| **F068** | **NUMA-Aware Memory Allocation** | **P0** | 📝 | [Link](phase-2/F068-numa-aware-memory.md) |
+| **F069** | **Three-Ring I/O Architecture** | **P1** | 📝 | [Link](phase-2/F069-three-ring-io.md) |
+| **F070** | **Task Budget Enforcement** | **P1** | 📝 | [Link](phase-2/F070-task-budget-enforcement.md) |
+| **F071** | **Zero-Allocation Enforcement** | **P0** | 📝 | [Link](phase-2/F071-zero-allocation-enforcement.md) |
+| **F072** | **XDP/eBPF Network Optimization** | **P2** | 📝 | [Link](phase-2/F072-xdp-network-optimization.md) |
+
+### Phase 2 Thread-Per-Core Research Gap Analysis (NEW)
+
+> Based on [Thread-Per-Core 2026 Research](../research/laminardb-thread-per-core-2026-research.md)
+
+| Gap | Research Finding | Current (F013) | Target | Feature |
+|-----|------------------|----------------|--------|---------|
+| **io_uring basic only** | "SQPOLL + registered buffers = 2.05x" | ❌ No io_uring | SQPOLL, registered buffers, IOPOLL | **F067** |
+| **No NUMA awareness** | "2-3x latency on remote access" | ❌ Generic allocation | NUMA-local per core | **F068** |
+| **Single I/O ring** | "3 rings: latency/main/poll" | ❌ Single reactor | Priority-based rings | **F069** |
+| **No task budgeting** | "Ring 0: 500ns, Ring 1: 1ms budgets" | ❌ No enforcement | Budget + metrics + yielding | **F070** |
+| **No allocation detection** | "Zero-alloc hot path verification" | ⚠️ Partial pre-alloc | Debug-mode detector + CI | **F071** |
+| **No XDP steering** | "26M packets/sec/core" | ❌ Standard sockets | CPU steering by partition | **F072** |
+| CPU pinning | "Cache efficiency" | ✅ Implemented | - | F013/F015 |
+| Lock-free SPSC | "~4.8ns per operation" | ✅ Implemented | - | F014 |
+| Credit-based backpressure | "Flink-style flow control" | ✅ Implemented | - | F014 |
+
+**Key Research Findings:**
+> "Simply replacing I/O with io_uring yields only **1.06-1.10x** improvement. Careful optimization achieves **2.05x** or more." - TU Munich, Dec 2024
+
+> "On multi-socket systems, memory access latency varies by **2-3x** depending on whether memory is local or remote to the CPU."
+
+**Thread-Per-Core Evolution Path:**
+```
+F013 (TPC Foundation) ──┬──▶ F067 (io_uring) ──▶ F069 (Three-Ring)
+      ✅ Complete       │
+                        ├──▶ F068 (NUMA) ──▶ Performance
+                        │
+                        ├──▶ F070 (Task Budget) ──▶ Latency SLAs
+                        │
+                        └──▶ F071 (Zero-Alloc) ──▶ Hot Path Verification
+                                    │
+                                    └──▶ F072 (XDP) [P2]
+```
 
 ### Phase 2 Watermark Research Gap Analysis (NEW)
 
@@ -345,6 +385,35 @@ Watermark Evolution (Phase 2 - NEW):
 │               • Pause fast sources                                       │
 └───────────────────────────────────────────────────────────────────────────┘
 
+Thread-Per-Core Advanced (Phase 2 - NEW):
+┌───────────────────────────────────────────────────────────────────────────┐
+│ F013 (Thread-Per-Core) - Foundation ✅                                    │
+│      │  • SPSC queues (F014) ✅                                          │
+│      │  • CPU pinning (F015) ✅                                          │
+│      │  • Credit-based backpressure ✅                                   │
+│      │                                                                    │
+│      ├──▶ F067 (io_uring Advanced) ──┬──▶ F069 (Three-Ring I/O)         │
+│      │        • SQPOLL mode           │        • Latency/Main/Poll rings  │
+│      │        • Registered buffers    │        • Eventfd wake-up         │
+│      │        • IOPOLL for NVMe       │                                  │
+│      │                                │                                  │
+│      ├──▶ F068 (NUMA Awareness) ─────┴──▶ Production Deployment          │
+│      │        • Per-core NUMA-local allocation                           │
+│      │        • Interleaved for shared data                              │
+│      │                                                                    │
+│      ├──▶ F070 (Task Budget) ──────────▶ Latency SLA Enforcement         │
+│      │        • Ring 0: 500ns budget                                     │
+│      │        • Ring 1: 1ms budget + yielding                            │
+│      │                                                                    │
+│      ├──▶ F071 (Zero-Alloc) ───────────▶ Hot Path Verification           │
+│      │        • Debug allocator detector                                 │
+│      │        • CI enforcement                                           │
+│      │                                                                    │
+│      └──▶ F072 (XDP) [P2] ─────────────▶ Wire-speed filtering            │
+│               • 26M packets/sec                                          │
+│               • CPU steering by partition                                │
+└───────────────────────────────────────────────────────────────────────────┘
+
 Phase 3 (blocked by F006B for DDL parsing):
 F006B ──▶ F025-F034 (Connectors need CREATE SOURCE/SINK)
 F013 + F019 ──▶ F058 (Async State Access) ◀── Flink 2.0 Innovation
@@ -372,6 +441,30 @@ F063 ──▶ F027/F028 (CDC Connectors need changelog format)
 |-----|---------|--------|-----|
 | **SQL parser is POC only** | F006 | Connectors need DDL parsing | **F006B** (2-3 weeks) |
 
+### P0 - Critical (Thread-Per-Core Research - 2026)
+
+> From [Thread-Per-Core 2026 Research](../research/laminardb-thread-per-core-2026-research.md)
+
+| Gap | Feature | Source | Fix |
+|-----|---------|--------|-----|
+| **Basic io_uring only** | F067 | TU Munich 2024 | **NEW SPEC (P0)** - 2.05x improvement |
+| **No NUMA awareness** | F068 | Multi-socket research | **NEW SPEC (P0)** - 2-3x latency fix |
+| **No allocation enforcement** | F071 | Hot path research | **NEW SPEC (P0)** - Debug detector + CI |
+
+### P1 - High (Thread-Per-Core Research - 2026)
+
+| Gap | Feature | Source | Fix |
+|-----|---------|--------|-----|
+| **Single I/O ring** | F069 | Seastar/Glommio | **NEW SPEC (P1)** - Latency ring priority |
+| **No task budgeting** | F070 | Cooperative scheduling | **NEW SPEC (P1)** - Budget enforcement |
+
+### P2 - Medium (Thread-Per-Core Research - 2026)
+
+| Gap | Feature | Source | Fix |
+|-----|---------|--------|-----|
+| No XDP steering | F072 | eBPF research | **NEW SPEC (P2)** - 26M packets/sec |
+| No CXL tiering | - | Memory research | Future (hardware dependent) |
+
 ### P1 - High (Phase 2/3)
 
 | Gap | Feature | Impact | Fix |
@@ -380,7 +473,7 @@ F063 ──▶ F027/F028 (CDC Connectors need changelog format)
 | ~~Checkpoint blocks Ring 0~~ | F022 | Latency spikes | **UPDATED SPEC** |
 | ~~No incremental checkpoints~~ | F022 | Large checkpoint size | **UPDATED SPEC** |
 | No CoW mmap | F002 | Can't isolate snapshots | Phase 3 |
-| No io_uring | F001 | Blocking I/O on hot path | Phase 3 |
+| ~~No io_uring~~ | ~~F001~~ | ~~Blocking I/O on hot path~~ | **F067** |
 
 ### P1 - High (Research Gaps - 2025-2026)
 

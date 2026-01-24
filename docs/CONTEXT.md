@@ -8,11 +8,44 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
+- ✅ **Thread-Per-Core Research Analysis** - Compared 2026 research against F013 implementation
+- ✅ **F067: io_uring Advanced Optimization** - NEW SPEC for SQPOLL, registered buffers, IOPOLL
+- ✅ **F068: NUMA-Aware Memory Allocation** - NEW SPEC for per-core NUMA-local allocation
+- ✅ **F069: Three-Ring I/O Architecture** - NEW SPEC for latency/main/poll ring separation
+- ✅ **F070: Task Budget Enforcement** - NEW SPEC for Ring 0/1 budget tracking and yielding
+- ✅ **F071: Zero-Allocation Enforcement** - NEW SPEC for debug allocator detector and CI checks
+- ✅ **F072: XDP/eBPF Network Optimization** - NEW SPEC for 26M packets/sec CPU steering
+- ✅ **INDEX.md Updated** - Added F067-F072, new research gap analysis section
+- ✅ **STEERING.md Updated** - Added thread-per-core research priorities
+
+### Thread-Per-Core Research Analysis Summary
+
+From `docs/research/laminardb-thread-per-core-2026-research.md`, identified critical gaps:
+
+| Gap | Research Finding | Current (F013) | Fix |
+|-----|------------------|----------------|-----|
+| io_uring basic only | "2.05x improvement with SQPOLL" | ❌ No io_uring | **F067** |
+| No NUMA awareness | "2-3x latency on remote access" | ❌ Generic allocation | **F068** |
+| Single I/O ring | "3 rings: latency/main/poll" | ❌ Single reactor | **F069** |
+| No task budgeting | "Ring 0: 500ns budget" | ❌ No enforcement | **F070** |
+| No allocation detection | "Zero-alloc verification" | ⚠️ Partial | **F071** |
+| No XDP steering | "26M packets/sec/core" | ❌ Standard sockets | **F072** |
+| CPU pinning | "Cache efficiency" | ✅ Implemented | F013 |
+| Lock-free SPSC | "~4.8ns per op" | ✅ Implemented | F014 |
+
+**Thread-Per-Core Evolution Path**:
+```
+F013 (Foundation) ──┬──▶ F067 (io_uring) ──▶ F069 (Three-Ring)
+      ✅ Complete   ├──▶ F068 (NUMA) ──▶ Production Deployment
+                    ├──▶ F070 (Task Budget) ──▶ Latency SLAs
+                    └──▶ F071 (Zero-Alloc) ──▶ F072 (XDP) [P2]
+```
+
+### Previous Session Accomplishments
 - ✅ **Emit Patterns Research Analysis** - Compared 2026 research against implementation
 - ✅ **F011B: EMIT Clause Extension** - NEW SPEC created for OnWindowClose, Changelog, Final strategies
 - ✅ **F063: Changelog/Retraction (Z-Sets)** - NEW SPEC for Z-set weights, CDC envelope, retractable aggregators
 - ✅ **F023 Updated** - Added dependencies on F011B and F063
-- ✅ **INDEX.md Updated** - Added F011B, F063 to Phase 2, updated counts and dependency graph
 - ✅ All feature specs aligned with 2026 emit patterns research
 
 ### Previous Accomplishments (same session)
