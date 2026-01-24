@@ -56,6 +56,117 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Configuration for late data handling.
+///
+/// Controls what happens to events that arrive after their window has closed
+/// (i.e., after `window_end + allowed_lateness`).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use laminar_core::operator::window::LateDataConfig;
+/// use std::time::Duration;
+///
+/// // Route late events to a side output called "late_events"
+/// let config = LateDataConfig::with_side_output("late_events".to_string());
+///
+/// // Drop late events (default behavior)
+/// let config = LateDataConfig::drop();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LateDataConfig {
+    /// Name of the side output for late data (None = drop late events)
+    side_output: Option<String>,
+}
+
+impl LateDataConfig {
+    /// Creates a config that drops late events (default behavior).
+    #[must_use]
+    pub fn drop() -> Self {
+        Self { side_output: None }
+    }
+
+    /// Creates a config that routes late events to a named side output.
+    #[must_use]
+    pub fn with_side_output(name: String) -> Self {
+        Self {
+            side_output: Some(name),
+        }
+    }
+
+    /// Returns the side output name, if configured.
+    #[must_use]
+    pub fn side_output(&self) -> Option<&str> {
+        self.side_output.as_deref()
+    }
+
+    /// Returns true if late events should be dropped.
+    #[must_use]
+    pub fn should_drop(&self) -> bool {
+        self.side_output.is_none()
+    }
+}
+
+/// Metrics for tracking late data.
+///
+/// These counters track the behavior of the late data handling system
+/// and can be used for monitoring and alerting.
+#[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_field_names)]
+pub struct LateDataMetrics {
+    /// Total number of late events received
+    late_events_total: u64,
+    /// Number of late events dropped (no side output configured)
+    late_events_dropped: u64,
+    /// Number of late events routed to side output
+    late_events_side_output: u64,
+}
+
+impl LateDataMetrics {
+    /// Creates a new metrics tracker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the total number of late events received.
+    #[must_use]
+    pub fn late_events_total(&self) -> u64 {
+        self.late_events_total
+    }
+
+    /// Returns the number of late events that were dropped.
+    #[must_use]
+    pub fn late_events_dropped(&self) -> u64 {
+        self.late_events_dropped
+    }
+
+    /// Returns the number of late events routed to side output.
+    #[must_use]
+    pub fn late_events_side_output(&self) -> u64 {
+        self.late_events_side_output
+    }
+
+    /// Records a dropped late event.
+    fn record_dropped(&mut self) {
+        self.late_events_total += 1;
+        self.late_events_dropped += 1;
+    }
+
+    /// Records a late event routed to side output.
+    fn record_side_output(&mut self) {
+        self.late_events_total += 1;
+        self.late_events_side_output += 1;
+    }
+
+    /// Resets all counters to zero.
+    pub fn reset(&mut self) {
+        self.late_events_total = 0;
+        self.late_events_dropped = 0;
+        self.late_events_side_output = 0;
+    }
+}
+
 /// Strategy for when window results should be emitted.
 ///
 /// This controls the trade-off between result freshness and efficiency:
@@ -692,6 +803,13 @@ const WINDOW_STATE_KEY_SIZE: usize = 4 + 16;
 /// - `Periodic`: Emit intermediate results at intervals, final on watermark
 /// - `OnUpdate`: Emit after every state update
 ///
+/// # Late Data Handling
+///
+/// Events that arrive after `window_end + allowed_lateness` are considered late.
+/// Their behavior is controlled by [`LateDataConfig`]:
+/// - Drop the event (default)
+/// - Route to a named side output for separate processing
+///
 /// # State Management
 ///
 /// Window state is stored in the operator context's state store using
@@ -716,6 +834,10 @@ pub struct TumblingWindowOperator<A: Aggregator> {
     periodic_timer_windows: std::collections::HashSet<WindowId>,
     /// Emit strategy for controlling when results are output
     emit_strategy: EmitStrategy,
+    /// Late data handling configuration
+    late_data_config: LateDataConfig,
+    /// Metrics for late data tracking
+    late_data_metrics: LateDataMetrics,
     /// Operator ID for checkpointing
     operator_id: String,
     /// Cached output schema (avoids allocation on every emit)
@@ -767,6 +889,8 @@ where
             registered_windows: std::collections::HashSet::new(),
             periodic_timer_windows: std::collections::HashSet::new(),
             emit_strategy: EmitStrategy::default(),
+            late_data_config: LateDataConfig::default(),
+            late_data_metrics: LateDataMetrics::new(),
             operator_id: format!("tumbling_window_{operator_num}"),
             output_schema: create_window_output_schema(),
             _phantom: PhantomData,
@@ -790,6 +914,8 @@ where
             registered_windows: std::collections::HashSet::new(),
             periodic_timer_windows: std::collections::HashSet::new(),
             emit_strategy: EmitStrategy::default(),
+            late_data_config: LateDataConfig::default(),
+            late_data_metrics: LateDataMetrics::new(),
             operator_id,
             output_schema: create_window_output_schema(),
             _phantom: PhantomData,
@@ -828,6 +954,53 @@ where
     #[must_use]
     pub fn emit_strategy(&self) -> &EmitStrategy {
         &self.emit_strategy
+    }
+
+    /// Sets the late data handling configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The late data configuration to use
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use laminar_core::operator::window::{
+    ///     TumblingWindowAssigner, TumblingWindowOperator, CountAggregator, LateDataConfig,
+    /// };
+    /// use std::time::Duration;
+    ///
+    /// let assigner = TumblingWindowAssigner::new(Duration::from_secs(60));
+    /// let mut operator = TumblingWindowOperator::new(
+    ///     assigner,
+    ///     CountAggregator::new(),
+    ///     Duration::from_secs(5),
+    /// );
+    ///
+    /// // Route late events to a side output
+    /// operator.set_late_data_config(LateDataConfig::with_side_output("late_events".to_string()));
+    /// ```
+    pub fn set_late_data_config(&mut self, config: LateDataConfig) {
+        self.late_data_config = config;
+    }
+
+    /// Returns the current late data configuration.
+    #[must_use]
+    pub fn late_data_config(&self) -> &LateDataConfig {
+        &self.late_data_config
+    }
+
+    /// Returns the late data metrics.
+    ///
+    /// Use this to monitor late data behavior and set up alerts.
+    #[must_use]
+    pub fn late_data_metrics(&self) -> &LateDataMetrics {
+        &self.late_data_metrics
+    }
+
+    /// Resets the late data metrics counters.
+    pub fn reset_late_data_metrics(&mut self) {
+        self.late_data_metrics.reset();
     }
 
     /// Returns the window assigner.
@@ -1049,16 +1222,29 @@ where
     fn process(&mut self, event: &Event, ctx: &mut OperatorContext) -> OutputVec {
         let event_time = event.timestamp;
 
-        // Check for late data using current watermark
-        let current_watermark = ctx.watermark_generator.on_event(event_time);
+        // Update watermark with the new event and get any emitted watermark
+        let emitted_watermark = ctx.watermark_generator.on_event(event_time);
 
-        // Check if this event is too late
-        if let Some(wm) = &current_watermark {
-            if self.is_late(event_time, wm.timestamp()) {
-                let mut output = OutputVec::new();
+        // Check if this event is too late (beyond allowed lateness)
+        // Use the current watermark (not just the newly emitted one) for the check
+        let current_wm = ctx.watermark_generator.current_watermark();
+        if current_wm > i64::MIN && self.is_late(event_time, current_wm) {
+            let mut output = OutputVec::new();
+
+            // Handle late event based on configuration
+            if let Some(side_output_name) = self.late_data_config.side_output() {
+                // Route to named side output
+                self.late_data_metrics.record_side_output();
+                output.push(Output::SideOutput {
+                    name: side_output_name.to_string(),
+                    event: event.clone(),
+                });
+            } else {
+                // No side output configured - emit as LateEvent (may be dropped by downstream)
+                self.late_data_metrics.record_dropped();
                 output.push(Output::LateEvent(event.clone()));
-                return output;
             }
+            return output;
         }
 
         // Assign event to window
@@ -1087,7 +1273,7 @@ where
 
         // Emit watermark update if generated
         let mut output = OutputVec::new();
-        if let Some(wm) = current_watermark {
+        if let Some(wm) = emitted_watermark {
             output.push(Output::Watermark(wm.timestamp()));
         }
 
@@ -1846,5 +2032,250 @@ mod tests {
         // Regular window key should not be detected as periodic
         let regular_key = window_id.to_key();
         assert!(!TumblingWindowOperator::<CountAggregator>::is_periodic_timer_key(&regular_key));
+    }
+
+    // ==================== Late Data Handling Tests (F012) ====================
+
+    #[test]
+    fn test_late_data_config_default() {
+        let config = LateDataConfig::default();
+        assert!(config.should_drop());
+        assert!(config.side_output().is_none());
+    }
+
+    #[test]
+    fn test_late_data_config_drop() {
+        let config = LateDataConfig::drop();
+        assert!(config.should_drop());
+        assert!(config.side_output().is_none());
+    }
+
+    #[test]
+    fn test_late_data_config_with_side_output() {
+        let config = LateDataConfig::with_side_output("late_events".to_string());
+        assert!(!config.should_drop());
+        assert_eq!(config.side_output(), Some("late_events"));
+    }
+
+    #[test]
+    fn test_late_data_metrics_initial() {
+        let metrics = LateDataMetrics::new();
+        assert_eq!(metrics.late_events_total(), 0);
+        assert_eq!(metrics.late_events_dropped(), 0);
+        assert_eq!(metrics.late_events_side_output(), 0);
+    }
+
+    #[test]
+    fn test_late_data_metrics_tracking() {
+        let mut metrics = LateDataMetrics::new();
+
+        metrics.record_dropped();
+        metrics.record_dropped();
+        metrics.record_side_output();
+
+        assert_eq!(metrics.late_events_total(), 3);
+        assert_eq!(metrics.late_events_dropped(), 2);
+        assert_eq!(metrics.late_events_side_output(), 1);
+    }
+
+    #[test]
+    fn test_late_data_metrics_reset() {
+        let mut metrics = LateDataMetrics::new();
+
+        metrics.record_dropped();
+        metrics.record_side_output();
+
+        assert_eq!(metrics.late_events_total(), 2);
+
+        metrics.reset();
+
+        assert_eq!(metrics.late_events_total(), 0);
+        assert_eq!(metrics.late_events_dropped(), 0);
+        assert_eq!(metrics.late_events_side_output(), 0);
+    }
+
+    #[test]
+    fn test_window_operator_set_late_data_config() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(100),
+            "test_op".to_string(),
+        );
+
+        // Default is drop
+        assert!(operator.late_data_config().should_drop());
+
+        // Set to side output
+        operator.set_late_data_config(LateDataConfig::with_side_output("late".to_string()));
+        assert!(!operator.late_data_config().should_drop());
+        assert_eq!(operator.late_data_config().side_output(), Some("late"));
+    }
+
+    #[test]
+    fn test_late_event_dropped_without_side_output() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0), // No allowed lateness
+            "test_op".to_string(),
+        );
+
+        // Default: drop late events
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        // Use a watermark generator with high max lateness so watermarks advance quickly
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(0);
+
+        // Process an event to advance the watermark to 1000
+        let event1 = create_test_event(1000, 1);
+        {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+
+        // Process a late event (timestamp 500 when watermark is at 1000)
+        let late_event = create_test_event(500, 2);
+        let outputs = {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&late_event, &mut ctx)
+        };
+
+        // Should emit a LateEvent (dropped)
+        assert!(!outputs.is_empty());
+        let is_late_event = outputs.iter().any(|o| matches!(o, Output::LateEvent(_)));
+        assert!(is_late_event, "Expected LateEvent output");
+
+        // Metrics should show dropped
+        assert_eq!(operator.late_data_metrics().late_events_dropped(), 1);
+        assert_eq!(operator.late_data_metrics().late_events_side_output(), 0);
+    }
+
+    #[test]
+    fn test_late_event_routed_to_side_output() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0), // No allowed lateness
+            "test_op".to_string(),
+        );
+
+        // Configure side output for late events
+        operator.set_late_data_config(LateDataConfig::with_side_output("late_events".to_string()));
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(0);
+
+        // Process an event to advance the watermark to 1000
+        let event1 = create_test_event(1000, 1);
+        {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+
+        // Process a late event
+        let late_event = create_test_event(500, 2);
+        let outputs = {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&late_event, &mut ctx)
+        };
+
+        // Should emit a SideOutput
+        assert!(!outputs.is_empty());
+        let side_output = outputs.iter().find_map(|o| {
+            if let Output::SideOutput { name, .. } = o {
+                Some(name.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(side_output, Some("late_events".to_string()));
+
+        // Metrics should show side output
+        assert_eq!(operator.late_data_metrics().late_events_dropped(), 0);
+        assert_eq!(operator.late_data_metrics().late_events_side_output(), 1);
+    }
+
+    #[test]
+    fn test_event_within_lateness_not_late() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(500), // 500ms allowed lateness
+            "test_op".to_string(),
+        );
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(0);
+
+        // Process an event to advance the watermark to 1200
+        // This would close window [0, 1000) at time 1000 + 0 (no lateness from watermark gen)
+        // But with 500ms allowed lateness, window cleanup is at 1500
+        let event1 = create_test_event(1200, 1);
+        {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+
+        // Process an event for window [0, 1000) at timestamp 800
+        // Watermark is at 1200, window cleanup time is 1000 + 500 = 1500
+        // Since 1200 < 1500, the event should NOT be late
+        let event2 = create_test_event(800, 2);
+        let outputs = {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event2, &mut ctx)
+        };
+
+        // Should NOT be a late event - should be processed normally
+        let is_late_event = outputs.iter().any(|o| matches!(o, Output::LateEvent(_) | Output::SideOutput { .. }));
+        assert!(!is_late_event, "Event within lateness period should not be marked as late");
+
+        // No late events recorded
+        assert_eq!(operator.late_data_metrics().late_events_total(), 0);
+    }
+
+    #[test]
+    fn test_reset_late_data_metrics() {
+        let assigner = TumblingWindowAssigner::from_millis(1000);
+        let aggregator = CountAggregator::new();
+        let mut operator = TumblingWindowOperator::with_id(
+            assigner,
+            aggregator,
+            Duration::from_millis(0),
+            "test_op".to_string(),
+        );
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(0);
+
+        // Generate a late event
+        let event1 = create_test_event(1000, 1);
+        {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+        let late_event = create_test_event(500, 2);
+        {
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&late_event, &mut ctx);
+        }
+
+        assert_eq!(operator.late_data_metrics().late_events_total(), 1);
+
+        // Reset metrics
+        operator.reset_late_data_metrics();
+
+        assert_eq!(operator.late_data_metrics().late_events_total(), 0);
     }
 }

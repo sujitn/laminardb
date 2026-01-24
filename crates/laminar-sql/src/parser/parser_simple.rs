@@ -8,7 +8,7 @@ use sqlparser::parser::{Parser, ParserError};
 use std::collections::HashMap;
 
 use super::statements::{
-    CreateSinkStatement, CreateSourceStatement, EmitClause, SinkFrom,
+    CreateSinkStatement, CreateSourceStatement, EmitClause, LateDataClause, SinkFrom,
     StreamingStatement,
 };
 use super::ParseError;
@@ -270,6 +270,110 @@ impl StreamingParser {
         // Default fallback
         Expr::Identifier(Ident::new("INTERVAL '1' SECOND"))
     }
+
+    /// Parse late data handling clause from SQL string.
+    ///
+    /// Supported syntax:
+    /// - `ALLOW LATENESS INTERVAL 'N' UNIT`
+    /// - `LATE DATA TO <sink_name>`
+    /// - Both combined: `ALLOW LATENESS INTERVAL '1' HOUR LATE DATA TO late_events`
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseError::StreamingError` if the late data clause syntax is invalid.
+    pub fn parse_late_data_clause(sql: &str) -> Result<Option<LateDataClause>, ParseError> {
+        let sql_upper = sql.to_uppercase();
+
+        let has_allow_lateness = sql_upper.contains("ALLOW LATENESS");
+        let has_late_data_to = sql_upper.contains("LATE DATA TO");
+
+        if !has_allow_lateness && !has_late_data_to {
+            return Ok(None);
+        }
+
+        let mut clause = LateDataClause::default();
+
+        // Parse ALLOW LATENESS INTERVAL
+        if has_allow_lateness {
+            if let Some(pos) = sql_upper.find("ALLOW LATENESS") {
+                let lateness_sql = &sql[pos..];
+                let interval_expr = Self::parse_interval_after_keyword(lateness_sql, "LATENESS");
+                clause.allowed_lateness = Some(Box::new(interval_expr));
+            }
+        }
+
+        // Parse LATE DATA TO <sink_name>
+        if has_late_data_to {
+            if let Some(pos) = sql_upper.find("LATE DATA TO") {
+                let after_to = &sql[pos + 12..].trim();
+                // Extract the sink name (next identifier)
+                let sink_name = after_to
+                    .split_whitespace()
+                    .next()
+                    .map(|s| s.trim_end_matches(';').to_string())
+                    .unwrap_or_default();
+
+                if !sink_name.is_empty() {
+                    clause.side_output = Some(sink_name);
+                }
+            }
+        }
+
+        Ok(Some(clause))
+    }
+
+    /// Parse interval expression after a keyword (e.g., "LATENESS INTERVAL '1' HOUR").
+    fn parse_interval_after_keyword(sql: &str, keyword: &str) -> Expr {
+        let sql_upper = sql.to_uppercase();
+
+        // Find INTERVAL after the keyword
+        let keyword_pos = sql_upper.find(keyword).unwrap_or(0);
+        let after_keyword = &sql[keyword_pos + keyword.len()..];
+
+        if let Some(interval_pos) = after_keyword.to_uppercase().find("INTERVAL") {
+            let interval_start = keyword_pos + keyword.len() + interval_pos;
+            let interval_sql = &sql[interval_start..];
+
+            // Try to parse using sqlparser
+            let dialect = GenericDialect {};
+            let wrapped_sql = format!(
+                "SELECT {}",
+                interval_sql
+                    .split_whitespace()
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+
+            if let Ok(stmts) = Parser::parse_sql(&dialect, &wrapped_sql) {
+                if !stmts.is_empty() {
+                    if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+                        if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                            if !select.projection.is_empty() {
+                                if let sqlparser::ast::SelectItem::UnnamedExpr(expr) =
+                                    &select.projection[0]
+                                {
+                                    return expr.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback to identifier
+            return Expr::Identifier(Ident::new(
+                interval_sql
+                    .split_whitespace()
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+
+        // Default fallback
+        Expr::Identifier(Ident::new("INTERVAL '0' SECOND"))
+    }
 }
 
 #[cfg(test)]
@@ -371,5 +475,53 @@ mod tests {
             }
             _ => panic!("Expected CreateContinuousQuery"),
         }
+    }
+
+    // ==================== Late Data Clause Tests ====================
+
+    #[test]
+    fn test_parse_allow_lateness() {
+        let sql = "SELECT * FROM events GROUP BY TUMBLE(ts, INTERVAL '1' HOUR) ALLOW LATENESS INTERVAL '5' MINUTE";
+        let clause = StreamingParser::parse_late_data_clause(sql).unwrap();
+        assert!(clause.is_some());
+        let clause = clause.unwrap();
+        assert!(clause.allowed_lateness.is_some());
+        assert!(clause.side_output.is_none());
+    }
+
+    #[test]
+    fn test_parse_late_data_to() {
+        let sql = "SELECT * FROM events GROUP BY TUMBLE(ts, INTERVAL '1' HOUR) LATE DATA TO late_events";
+        let clause = StreamingParser::parse_late_data_clause(sql).unwrap();
+        assert!(clause.is_some());
+        let clause = clause.unwrap();
+        assert!(clause.allowed_lateness.is_none());
+        assert_eq!(clause.side_output, Some("late_events".to_string()));
+    }
+
+    #[test]
+    fn test_parse_allow_lateness_with_late_data_to() {
+        let sql = "SELECT * FROM events GROUP BY TUMBLE(ts, INTERVAL '1' HOUR) ALLOW LATENESS INTERVAL '1' HOUR LATE DATA TO late_events";
+        let clause = StreamingParser::parse_late_data_clause(sql).unwrap();
+        assert!(clause.is_some());
+        let clause = clause.unwrap();
+        assert!(clause.allowed_lateness.is_some());
+        assert_eq!(clause.side_output, Some("late_events".to_string()));
+    }
+
+    #[test]
+    fn test_parse_no_late_data_clause() {
+        let sql = "SELECT * FROM events GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)";
+        let clause = StreamingParser::parse_late_data_clause(sql).unwrap();
+        assert!(clause.is_none());
+    }
+
+    #[test]
+    fn test_parse_late_data_to_with_semicolon() {
+        let sql = "SELECT * FROM events LATE DATA TO my_side_output;";
+        let clause = StreamingParser::parse_late_data_clause(sql).unwrap();
+        assert!(clause.is_some());
+        let clause = clause.unwrap();
+        assert_eq!(clause.side_output, Some("my_side_output".to_string()));
     }
 }

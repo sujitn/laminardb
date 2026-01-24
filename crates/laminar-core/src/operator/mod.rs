@@ -33,8 +33,15 @@ pub enum Output {
     Event(Event),
     /// Watermark update
     Watermark(i64),
-    /// Late event that arrived after watermark
+    /// Late event that arrived after watermark (no side output configured)
     LateEvent(Event),
+    /// Late event routed to a named side output
+    SideOutput {
+        /// The name of the side output to route to
+        name: String,
+        /// The late event
+        event: Event,
+    },
 }
 
 /// Collection type for operator outputs.

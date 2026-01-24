@@ -76,6 +76,48 @@ pub struct WatermarkDef {
     pub expression: Expr,
 }
 
+/// Late data handling clause.
+///
+/// Controls what happens to events that arrive after their window has closed.
+/// This is the SQL AST representation of late data configuration.
+/// See `laminar_core::operator::window::LateDataConfig` for the runtime representation.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LateDataClause {
+    /// Allowed lateness duration (e.g., `INTERVAL '1' HOUR`)
+    pub allowed_lateness: Option<Box<Expr>>,
+    /// Side output name for late events (e.g., `late_events`)
+    pub side_output: Option<String>,
+}
+
+impl LateDataClause {
+    /// Creates a clause with allowed lateness only.
+    #[must_use]
+    pub fn with_allowed_lateness(lateness: Expr) -> Self {
+        Self {
+            allowed_lateness: Some(Box::new(lateness)),
+            side_output: None,
+        }
+    }
+
+    /// Creates a clause with both allowed lateness and side output.
+    #[must_use]
+    pub fn with_side_output(lateness: Expr, side_output: String) -> Self {
+        Self {
+            allowed_lateness: Some(Box::new(lateness)),
+            side_output: Some(side_output),
+        }
+    }
+
+    /// Creates a clause with side output only (uses default lateness).
+    #[must_use]
+    pub fn side_output_only(side_output: String) -> Self {
+        Self {
+            allowed_lateness: None,
+            side_output: Some(side_output),
+        }
+    }
+}
+
 /// EMIT clause for controlling output timing.
 ///
 /// This is the SQL AST representation of emit strategies.
@@ -228,5 +270,37 @@ mod tests {
             WindowFunction::Hop { .. } => (),
             _ => panic!("Expected Hop"),
         }
+    }
+
+    // ==================== Late Data Clause Tests ====================
+
+    #[test]
+    fn test_late_data_clause_default() {
+        let clause = LateDataClause::default();
+        assert!(clause.allowed_lateness.is_none());
+        assert!(clause.side_output.is_none());
+    }
+
+    #[test]
+    fn test_late_data_clause_with_allowed_lateness() {
+        let lateness_expr = Expr::Identifier(Ident::new("INTERVAL '1' HOUR"));
+        let clause = LateDataClause::with_allowed_lateness(lateness_expr);
+        assert!(clause.allowed_lateness.is_some());
+        assert!(clause.side_output.is_none());
+    }
+
+    #[test]
+    fn test_late_data_clause_with_side_output() {
+        let lateness_expr = Expr::Identifier(Ident::new("INTERVAL '1' HOUR"));
+        let clause = LateDataClause::with_side_output(lateness_expr, "late_events".to_string());
+        assert!(clause.allowed_lateness.is_some());
+        assert_eq!(clause.side_output, Some("late_events".to_string()));
+    }
+
+    #[test]
+    fn test_late_data_clause_side_output_only() {
+        let clause = LateDataClause::side_output_only("late_events".to_string());
+        assert!(clause.allowed_lateness.is_none());
+        assert_eq!(clause.side_output, Some("late_events".to_string()));
     }
 }

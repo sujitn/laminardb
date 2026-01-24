@@ -507,8 +507,14 @@ impl Sink for StdoutSink {
                 }
                 Output::LateEvent(event) => {
                     println!(
-                        "Late Event: timestamp={}, data={:?}",
+                        "Late Event (dropped): timestamp={}, data={:?}",
                         event.timestamp, event.data
+                    );
+                }
+                Output::SideOutput { name, event } => {
+                    println!(
+                        "Side Output [{}]: timestamp={}, data={:?}",
+                        name, event.timestamp, event.data
                     );
                 }
             }

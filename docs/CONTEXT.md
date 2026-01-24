@@ -8,51 +8,51 @@
 **Duration**: ~1 hour
 
 ### What Was Accomplished
-- ✅ Implemented F011 - EMIT Clause:
-  - Added `EmitStrategy` enum to laminar-core with 3 strategies:
-    - `OnWatermark` (default) - emit when watermark passes window end
-    - `Periodic(Duration)` - emit intermediate results at fixed intervals
-    - `OnUpdate` - emit after every state change
-  - Updated `TumblingWindowOperator` to support configurable emit strategies
-  - Implemented periodic timer system with special key encoding
-  - Added `EmitClause::OnUpdate` to SQL parser
-  - Enhanced EMIT clause parsing for all syntax variants
-  - Added 12 new tests (9 for EmitStrategy, 3 for SQL parsing)
-- ✅ All tests passing (204 total: 131 in laminar-core, 47 in laminar-sql)
-- ✅ Clippy clean for laminar-core
+- ✅ Implemented F012 - Late Data Handling:
+  - Added `LateDataConfig` struct with drop/side-output options
+  - Added `LateDataMetrics` for tracking late events (total, dropped, side output)
+  - Added `Output::SideOutput` variant for routing to named sinks
+  - Updated window operator to use `current_watermark()` for late detection
+  - Added `ALLOW LATENESS` and `LATE DATA TO` SQL clause parsing
+  - Added 11 new tests in laminar-core, 9 new tests in laminar-sql
+- ✅ **Phase 1 Complete!** All 12 features implemented (100%)
+- ✅ All tests passing (226 total: 142 in laminar-core, 56 in laminar-sql, 11 in laminar-storage)
+- ✅ Clippy clean for all crates
 
 ### Where We Left Off
-Successfully completed F011 - EMIT Clause. Window operators now support three emit strategies, allowing users to control the trade-off between result freshness and efficiency.
+Successfully completed Phase 1 - Core Engine. All 12 features are implemented and tested.
 
 ### Immediate Next Steps
-1. **F012 - Late Data Handling** (P2) - Side output for late events
-2. Phase 1 completion (11/12 features done, 92% complete)
+1. **Phase 1 Gate Check** - Run `/gate-check` to validate completion
+2. **Phase 2 Planning** - Begin Production Hardening phase
+   - F013: Thread-Per-Core Architecture (P0)
+   - F016: Sliding Windows (P0)
+   - F019: Stream-Stream Joins (P0)
 
 ### Open Issues
-- None currently - F001 through F011 are complete
+- None - Phase 1 is complete!
 
 ### Code Pointers
-- **EmitStrategy enum**: `crates/laminar-core/src/operator/window.rs:66-86`
-- **TumblingWindowOperator.set_emit_strategy**: `crates/laminar-core/src/operator/window.rs:803-821`
-- **Periodic timer handling**: `crates/laminar-core/src/operator/window.rs:1000-1030`
-- **EmitClause SQL AST**: `crates/laminar-sql/src/parser/statements.rs:84-110`
-- **EMIT clause parsing**: `crates/laminar-sql/src/parser/parser_simple.rs:127-220`
+- **LateDataConfig**: `crates/laminar-core/src/operator/window.rs:59-105`
+- **LateDataMetrics**: `crates/laminar-core/src/operator/window.rs:115-165`
+- **Late event handling in process()**: `crates/laminar-core/src/operator/window.rs:1221-1245`
+- **Output::SideOutput**: `crates/laminar-core/src/operator/mod.rs:39-44`
+- **LateDataClause SQL**: `crates/laminar-sql/src/parser/statements.rs:79-100`
+- **ALLOW LATENESS parsing**: `crates/laminar-sql/src/parser/parser_simple.rs:278-345`
 
 ---
 
 ## Session Notes
 
-**EMIT Strategy Architecture:**
-- `EmitStrategy` enum controls when window results are output
-- Three strategies with different latency/efficiency trade-offs:
-  - `OnWatermark` - most efficient, highest latency
-  - `Periodic` - balanced, configurable interval
-  - `OnUpdate` - lowest latency, highest overhead
+**Late Data Handling Architecture:**
+- `LateDataConfig` controls what happens to events after window cleanup time
+- Two options: drop (default) or route to named side output
+- `LateDataMetrics` tracks total late events, dropped count, and side output count
 
-**Using EmitStrategy:**
+**Using Late Data Handling:**
 ```rust
 use laminar_core::operator::window::{
-    TumblingWindowAssigner, TumblingWindowOperator, CountAggregator, EmitStrategy,
+    TumblingWindowAssigner, TumblingWindowOperator, CountAggregator, LateDataConfig,
 };
 use std::time::Duration;
 
@@ -60,58 +60,54 @@ let assigner = TumblingWindowAssigner::new(Duration::from_secs(60));
 let mut operator = TumblingWindowOperator::new(
     assigner,
     CountAggregator::new(),
-    Duration::from_secs(5),
+    Duration::from_secs(5), // 5 second allowed lateness
 );
 
-// Emit intermediate results every 10 seconds (for dashboards)
-operator.set_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(10)));
+// Route late events to a side output for separate processing
+operator.set_late_data_config(LateDataConfig::with_side_output("late_events".to_string()));
 
-// Or emit on every update (lowest latency, use with caution)
-operator.set_emit_strategy(EmitStrategy::OnUpdate);
+// Check late event metrics
+let metrics = operator.late_data_metrics();
+println!("Late events: {}", metrics.late_events_total());
 ```
 
 **SQL Syntax:**
 ```sql
--- Default: emit on watermark
+-- Configure allowed lateness
 SELECT COUNT(*) FROM events
 GROUP BY TUMBLE(event_time, INTERVAL '1' HOUR)
-EMIT ON WATERMARK;
+ALLOW LATENESS INTERVAL '5' MINUTE;
 
--- Periodic: emit every 10 seconds
+-- Route late data to side output
 SELECT SUM(amount) FROM orders
 GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR)
-EMIT EVERY INTERVAL '10' SECOND;
+LATE DATA TO late_orders;
 
--- On update: emit after every change
+-- Combined
 SELECT AVG(temperature) FROM sensors
-GROUP BY TUMBLE(reading_time, INTERVAL '5' MINUTE)
-EMIT ON UPDATE;
+GROUP BY TUMBLE(reading_time, INTERVAL '1' HOUR)
+ALLOW LATENESS INTERVAL '10' MINUTE
+LATE DATA TO late_readings;
 ```
-
-**Periodic Timer Encoding:**
-- Periodic timers use high bit of first key byte as marker
-- This distinguishes them from final watermark timers
-- Both timer types use 16-byte keys (WindowId)
 
 ---
 
 ## Quick Reference
 
 ### Current Focus
-- **Phase**: 1 - Core Engine (92% complete)
-- **Completed**: F001 (Reactor), F002 (Memory-Mapped State Store), F003 (State Store Interface), F004 (Tumbling Windows), F005 (DataFusion Integration), F006 (Basic SQL Parser), F007 (Write-Ahead Log), F008 (Basic Checkpointing), F009 (Event Time Processing), F010 (Watermarks), F011 (EMIT Clause)
-- **Remaining**: F012 (Late Data Handling)
+- **Phase**: 1 - Core Engine (100% COMPLETE! 🎉)
+- **Completed**: All 12 features: F001-F012
 
 ### Key Files
 ```
 crates/laminar-core/src/operator/
-├── mod.rs              # Operator trait, Event, Output, Timer
-└── window.rs           # TumblingWindowOperator, EmitStrategy, Aggregators
+├── mod.rs              # Operator trait, Event, Output (incl. SideOutput), Timer
+└── window.rs           # TumblingWindowOperator, EmitStrategy, LateDataConfig, LateDataMetrics
 
 crates/laminar-sql/src/parser/
 ├── mod.rs              # Parser exports
-├── statements.rs       # StreamingStatement, EmitClause, WindowFunction
-└── parser_simple.rs    # StreamingParser with EMIT clause parsing
+├── statements.rs       # StreamingStatement, EmitClause, LateDataClause, WindowFunction
+└── parser_simple.rs    # StreamingParser with EMIT and late data clause parsing
 ```
 
 ### Useful Commands
@@ -131,18 +127,33 @@ cargo test --all
 ### Recent Decisions
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-01-24 | LateDataConfig with Optional side output | Simple API, drop by default |
+| 2026-01-24 | Use current_watermark() for late detection | Can't rely on emitted watermarks only |
+| 2026-01-24 | Separate LateEvent vs SideOutput variants | Clear distinction between unconfigured and configured late handling |
 | 2026-01-24 | 3 emit strategies | Trade-off between latency and efficiency |
 | 2026-01-24 | High-bit timer key encoding | Distinguish periodic from final timers in 16 bytes |
-| 2026-01-24 | OnUpdate emits in process() | Immediate feedback without waiting for timer |
 | 2026-01-24 | 5 watermark strategies | Different sources need different strategies |
-| 2026-01-24 | WatermarkTracker for multi-source | Joins need aligned watermarks |
-| 2026-01-22 | Migrate bincode → rkyv | Zero-copy deserialization (~1.2ns access) |
 
 ---
 
 ## History
 
 ### Previous Sessions
+
+<details>
+<summary>Session - 2026-01-24 (EMIT Clause - F011)</summary>
+
+**Accomplished**:
+- ✅ Implemented F011 - EMIT Clause with 3 strategies
+- ✅ OnWatermark, Periodic, OnUpdate emit modes
+- ✅ Periodic timer system with special key encoding
+- ✅ Added 12 new tests
+
+**Notes**:
+- EmitStrategy controls latency/efficiency trade-off
+- Periodic timers distinguished from final timers via high bit
+
+</details>
 
 <details>
 <summary>Session - 2026-01-24 (Watermarks - F010)</summary>
