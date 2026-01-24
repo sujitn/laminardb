@@ -15,18 +15,24 @@ fxhash = { workspace = true }
 crossbeam = { workspace = true }
 parking_lot = { workspace = true }
 bytes = { workspace = true }
+memmap2 = { workspace = true }
+bumpalo = { workspace = true }
+uuid = { workspace = true }
+smallvec = { workspace = true }
 
 # Arrow for columnar data
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-cast = { workspace = true }
+chrono = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Serialization for state
-bincode = { workspace = true }
+# Serialization for state (rkyv for zero-copy, serde for compatibility)
+rkyv = { workspace = true }
 serde = { workspace = true }
 
 # Async for Ring 1 communication
@@ -35,9 +41,6 @@ async-trait = { workspace = true }
 
 # Observability
 tracing = { workspace = true }
-
-# Thread-per-core
-num_cpus = "1.16"
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -65,5 +68,5 @@ name = "throughput_bench"
 harness = false
 
 [[bench]]
-name = "tpc_bench"
+name = "window_bench"
 harness = false
