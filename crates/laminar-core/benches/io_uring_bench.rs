@@ -2,7 +2,7 @@
 //!
 //! These benchmarks only run on Linux with io_uring support.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion};
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 mod linux_benchmarks {

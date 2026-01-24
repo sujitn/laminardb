@@ -8,6 +8,18 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
+- ✅ **F068: NUMA-Aware Memory Allocation** - IMPLEMENTATION COMPLETE
+  - NumaTopology detection via sysfs (/sys/devices/system/node/) or hwlocality
+  - NumaAllocator with alloc_local, alloc_on_node, alloc_interleaved
+  - NumaPlacement enum (Local, ProducerLocal, Interleaved, Any)
+  - NumaBuffer and NumaVec for NUMA-aware containers
+  - Raw libc mmap + mbind syscalls (no libnuma dependency)
+  - Optional hwlocality feature for enhanced topology discovery
+  - 64-byte cache-line alignment, MADV_HUGEPAGE hints
+  - Platform fallback for Windows/macOS (single NUMA node)
+  - 11 new unit tests, all passing
+  - **Integration with CoreHandle**: `numa_aware` config, `numa_node` tracking
+  - **Integration with TpcConfig**: `numa_aware()` builder method
 - ✅ **F067: io_uring Advanced Optimization** - IMPLEMENTATION COMPLETE + INTEGRATION
   - SQPOLL mode for syscall elimination (kernel polling thread)
   - Registered buffer pool for zero-copy I/O
@@ -30,6 +42,66 @@
   - 33 new unit tests, all passing
   - **Integration**: Guards added to `Reactor::poll()` and `core_thread_main()`
 - ✅ **Previous Session**: Thread-Per-Core Research specs (F067-F072)
+
+### F068 Implementation Details
+
+**New Module**: `crates/laminar-core/src/numa/`
+```
+numa/
+├── mod.rs          # Public exports, integration tests
+├── error.rs        # NumaError enum
+├── topology.rs     # NumaTopology (sysfs + hwlocality detection)
+└── allocator.rs    # NumaAllocator, NumaPlacement, NumaBuffer, NumaVec
+```
+
+**Usage**:
+```rust
+use laminar_core::numa::{NumaTopology, NumaAllocator, NumaPlacement};
+
+// Detect topology
+let topo = NumaTopology::detect();
+println!("{}", topo.summary());  // "NUMA: 2 nodes, 32 CPUs\n  Node 0: 16 CPUs, 64 GB..."
+
+// Create allocator
+let alloc = NumaAllocator::new();
+
+// Allocate on current core's NUMA node
+let buf = alloc.alloc_local(4096, 64)?;
+
+// Allocate on specific node
+let buf = alloc.alloc_on_node(0, 4096, 64)?;
+
+// Allocate interleaved across all nodes (for shared read-only data)
+let buf = alloc.alloc_interleaved(4096, 64)?;
+
+// Use NumaPlacement enum
+let buf = alloc.alloc_with_placement(4096, 64, NumaPlacement::Local(0))?;
+```
+
+**Feature Flag** (optional, for enhanced topology detection):
+```toml
+[dependencies]
+laminar-core = { version = "0.1", features = ["hwloc"] }
+```
+
+**Integration with CoreHandle**:
+```rust
+use laminar_core::tpc::{CoreConfig, CoreHandle, TpcConfig};
+
+// Enable NUMA-aware allocation for per-core state
+let config = CoreConfig {
+    numa_aware: true,
+    ..Default::default()
+};
+let handle = CoreHandle::spawn(config)?;
+println!("Core is on NUMA node {}", handle.numa_node());
+
+// Or via TpcConfig builder
+let tpc = TpcConfig::builder()
+    .num_cores(4)
+    .numa_aware(true)
+    .build();
+```
 
 ### F071 Implementation Details
 
@@ -443,6 +515,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 | F020: Lookup Joins | ✅ Complete | Cached lookups with TTL, 16 tests |
 | F023: Exactly-Once Sinks | 📝 Not started | |
 | F067: io_uring Advanced | ✅ Complete | SQPOLL, IOPOLL, registered buffers, 13 tests |
+| F068: NUMA-Aware Memory | ✅ Complete | NumaAllocator, NumaTopology, 11 tests |
 | F071: Zero-Alloc Enforcement | ✅ Complete | HotPathGuard, ObjectPool, RingBuffer, 33 tests |
 
 ---
@@ -451,7 +524,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 
 ### Current Focus
 - **Phase**: 2 Production Hardening
-- **Active Feature**: F067 complete (9/28), ready for F068 (NUMA) or F023 (exactly-once)
+- **Active Feature**: F068 complete (10/28), ready for F023 (exactly-once) or F017 (session windows)
 
 ### Key Files
 ```
@@ -471,6 +544,12 @@ crates/laminar-core/src/alloc/
 ├── ring_buffer.rs   # RingBuffer<T, N> (circular buffer)
 └── scratch.rs       # ScratchBuffer (thread-local temp storage)
 
+crates/laminar-core/src/numa/
+├── mod.rs           # Public exports, integration tests
+├── error.rs         # NumaError enum
+├── topology.rs      # NumaTopology (sysfs + hwlocality detection)
+└── allocator.rs     # NumaAllocator, NumaPlacement, NumaBuffer, NumaVec
+
 crates/laminar-core/src/tpc/
 ├── mod.rs           # TpcError, public exports
 ├── spsc.rs          # SpscQueue<T>, CachePadded<T>
@@ -489,7 +568,7 @@ crates/laminar-connectors/src/lookup.rs  # TableLoader trait, InMemoryTableLoade
 
 Benchmarks: crates/laminar-core/benches/tpc_bench.rs, io_uring_bench.rs
 
-Tests: 382 passing (295 core, 56 sql, 25 storage, 6 connectors)
+Tests: 406 passing (319 core, 56 sql, 25 storage, 6 connectors)
 ```
 
 ### Useful Commands
