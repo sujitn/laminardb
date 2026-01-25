@@ -38,6 +38,7 @@ pub mod io_uring;
 pub mod numa;
 pub mod operator;
 pub mod reactor;
+pub mod sink;
 pub mod state;
 pub mod time;
 pub mod tpc;
@@ -78,4 +79,8 @@ pub enum Error {
     /// NUMA errors
     #[error("NUMA error: {0}")]
     Numa(#[from] numa::NumaError),
+
+    /// Sink errors
+    #[error("Sink error: {0}")]
+    Sink(#[from] sink::SinkError),
 }

@@ -8,7 +8,19 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
-- ✅ **F059: FIRST/LAST Value Aggregates** - IMPLEMENTATION COMPLETE
+- ✅ **F023: Exactly-Once Sinks** - IMPLEMENTATION COMPLETE
+  - New `sink` module in `crates/laminar-core/src/sink/`
+  - `ExactlyOnceSink` trait for transactional sinks
+  - `IdempotentSink` wrapper for non-transactional sinks with deduplication
+  - `SinkCheckpoint` and `SinkCheckpointManager` for recovery
+  - `DeduplicationStore` trait with `InMemoryDedup` and `BloomFilterDedup` implementations
+  - `TransactionState` and `TransactionCoordinator` for 2PC support
+  - `TwoPhaseCommitSink` trait for distributed transactions
+  - `RecordIdExtractor` trait with `DefaultIdExtractor` and `ColumnIdExtractor`
+  - 48 new unit tests, all passing
+  - **Total tests**: 517 (425 core + 61 sql + 25 storage + 6 connectors)
+
+- ✅ **F059: FIRST/LAST Value Aggregates** - IMPLEMENTATION COMPLETE (previous session)
   - `FirstValueAggregator` and `FirstValueAccumulator` for i64
   - `LastValueAggregator` and `LastValueAccumulator` for i64
   - `FirstValueF64Aggregator` and `FirstValueF64Accumulator` for f64
@@ -718,7 +730,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 | F019: Stream-Stream Joins | ✅ Complete | Inner/Left/Right/Full, 14 tests |
 | F020: Lookup Joins | ✅ Complete | Cached lookups with TTL, 16 tests |
 | F011B: EMIT Clause Extension | ✅ Complete | OnWindowClose, Changelog, Final, 15 tests |
-| F023: Exactly-Once Sinks | 📝 Not started | Now unblocked by F063 |
+| F023: Exactly-Once Sinks | ✅ Complete | Transactional + idempotent sinks, 48 tests |
 | F059: FIRST/LAST Aggregates | ✅ Complete | Essential for OHLC bars, 18 tests |
 | F063: Changelog/Retraction | ✅ Complete | Z-set foundation, 31 tests |
 | F067: io_uring Advanced | ✅ Complete | SQPOLL, IOPOLL, registered buffers, 13 tests |
@@ -731,10 +743,19 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 
 ### Current Focus
 - **Phase**: 2 Production Hardening
-- **Active Feature**: F063 complete (12/29), ready for F023 (exactly-once sinks) or F059 (FIRST/LAST)
+- **Active Feature**: F023 complete (14/29), ready for F022 (incremental checkpointing) or F017 (session windows)
 
 ### Key Files
 ```
+crates/laminar-core/src/sink/
+├── mod.rs           # Public exports, ExactlyOnceSink trait
+├── error.rs         # SinkError enum
+├── traits.rs        # ExactlyOnceSink, TransactionId, SinkCapabilities
+├── checkpoint.rs    # SinkCheckpoint, SinkCheckpointManager, SinkOffset
+├── dedup.rs         # DeduplicationStore, InMemoryDedup, BloomFilterDedup
+├── transaction.rs   # TransactionState, TransactionCoordinator, TwoPhaseCommitSink
+└── idempotent.rs    # IdempotentSink wrapper, RecordIdExtractor
+
 crates/laminar-core/src/io_uring/
 ├── mod.rs           # Public exports, platform detection
 ├── config.rs        # IoUringConfig, RingMode (SqPoll, IoPoll)
@@ -777,7 +798,7 @@ crates/laminar-connectors/src/lookup.rs  # TableLoader trait, InMemoryTableLoade
 
 Benchmarks: crates/laminar-core/benches/tpc_bench.rs, io_uring_bench.rs
 
-Tests: 451 passing (359 core, 61 sql, 25 storage, 6 connectors)
+Tests: 517 passing (425 core, 61 sql, 25 storage, 6 connectors)
 ```
 
 ### Useful Commands
