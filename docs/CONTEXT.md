@@ -8,7 +8,21 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
-- ✅ **F022: Incremental Checkpointing** - IMPLEMENTATION COMPLETE
+- ✅ **F062: Per-Core WAL Segments** - IMPLEMENTATION COMPLETE
+  - New `per_core_wal` module in `crates/laminar-storage/src/per_core_wal/`
+  - `PerCoreWalEntry` - Epoch-based entry with deterministic ordering
+  - `CoreWalWriter` - Per-core WAL writer (lock-free, no cross-core sync)
+  - `PerCoreWalReader` - Reader with torn write and checksum validation
+  - `PerCoreWalManager` - Coordinates all core writers with epoch management
+  - `CheckpointCoordinator` - Merges segments during checkpoint
+  - `PerCoreRecoveryManager` - Recovery from multiple segments
+  - Record format: `[length: 4][crc32: 4][data: length]` (compatible with F007)
+  - Entries ordered by (epoch, timestamp_ns, core_id, sequence)
+  - Core invariant: `Checkpoint(epoch) + WAL.replay(epoch..current) = Consistent State`
+  - 58 new unit tests, all passing
+  - **Total tests**: 577 (448 core + 61 sql + 120 storage + 6 connectors)
+
+- ✅ **F022: Incremental Checkpointing** - IMPLEMENTATION COMPLETE (previous session)
   - New `incremental` module in `crates/laminar-storage/src/incremental/`
   - `StateChangelogEntry` - 32-byte zero-allocation changelog entry for Ring 0
   - `StateChangelogBuffer` - SPSC ring buffer for changelog with atomic indices
@@ -685,15 +699,15 @@ let outputs = operator.process_side(&payment_event, JoinSide::Right, &mut ctx);
 ```
 
 ### Where We Left Off
-Phase 2 features continue. F022 Incremental Checkpointing is now complete (15/29 features).
+Phase 2 features continue. F062 Per-Core WAL Segments is now complete (17/29 features).
 
 ### Immediate Next Steps
 
 1. **Continue Phase 2** - Production Hardening
-   - F062: Per-Core WAL Segments (P1)
    - F021: Temporal Joins (P2)
    - F069: Three-Ring I/O Architecture (P1)
    - F070: Task Budget Enforcement (P1)
+   - F060: Cascading Materialized Views (P1)
 
 ### Open Issues
 
@@ -765,6 +779,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 | F068: NUMA-Aware Memory | ✅ Complete | NumaAllocator, NumaTopology, 11 tests |
 | F071: Zero-Alloc Enforcement | ✅ Complete | HotPathGuard, ObjectPool, RingBuffer, 33 tests |
 | F022: Incremental Checkpointing | ✅ Complete | RocksDB backend, SPSC changelog, recovery, 37 tests |
+| F062: Per-Core WAL Segments | ✅ Complete | Lock-free per-core writers, epoch ordering, 58 tests |
 
 ---
 
@@ -772,7 +787,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 
 ### Current Focus
 - **Phase**: 2 Production Hardening
-- **Active Feature**: F022 complete (16/29), ready for F062 (per-core WAL) or F021 (temporal joins)
+- **Active Feature**: F062 complete (17/29), ready for F021 (temporal joins) or F069 (three-ring I/O)
 
 ### Key Files
 ```
@@ -833,9 +848,19 @@ crates/laminar-storage/src/incremental/
 ├── manager.rs       # IncrementalCheckpointManager, CheckpointConfig
 └── recovery.rs      # RecoveryManager, RecoveryConfig, RecoveredState
 
+crates/laminar-storage/src/per_core_wal/
+├── mod.rs           # F062: Public exports, architecture docs
+├── error.rs         # PerCoreWalError enum
+├── entry.rs         # PerCoreWalEntry, WalOperation (epoch-ordered)
+├── writer.rs        # CoreWalWriter (lock-free per-core writes)
+├── reader.rs        # PerCoreWalReader (torn write, checksum validation)
+├── manager.rs       # PerCoreWalManager, PerCoreWalConfig
+├── coordinator.rs   # CheckpointCoordinator (merge segments)
+└── recovery.rs      # PerCoreRecoveryManager, PerCoreRecoveredState
+
 Benchmarks: crates/laminar-core/benches/tpc_bench.rs, io_uring_bench.rs
 
-Tests: 577 passing (448 core, 61 sql, 62 storage, 6 connectors)
+Tests: 635 passing (448 core, 61 sql, 120 storage, 6 connectors)
 ```
 
 ### Useful Commands

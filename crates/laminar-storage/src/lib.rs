@@ -7,6 +7,7 @@
 //! - [`wal`]: Write-ahead log for durability and exactly-once semantics
 //! - [`checkpoint`]: Basic checkpointing for fast recovery
 //! - [`incremental`]: F022 Incremental checkpointing with `RocksDB` backend
+//! - [`per_core_wal`]: F062 Per-core WAL segments for thread-per-core architecture
 //! - [`lakehouse`]: Delta Lake and Iceberg sink support
 //! - [`wal_state_store`]: Combines `MmapStateStore` with WAL for durability
 
@@ -24,6 +25,9 @@ pub mod checkpoint;
 
 /// Incremental checkpointing (F022) - Three-tier architecture with RocksDB backend
 pub mod incremental;
+
+/// Per-core WAL segments (F062) - Thread-per-core WAL for lock-free writes
+pub mod per_core_wal;
 
 /// Lakehouse format integration - Delta Lake and Iceberg sink support
 pub mod lakehouse;
@@ -43,6 +47,13 @@ pub use incremental::{
     IncrementalCheckpointError, IncrementalCheckpointManager, IncrementalCheckpointMetadata,
     RecoveredState, RecoveryConfig, RecoveryManager, StateChangelogBuffer, StateChangelogEntry,
     StateOp,
+};
+
+// Re-export per-core WAL types
+pub use per_core_wal::{
+    recover_per_core, CheckpointCoordinator, CoreWalWriter, PerCoreRecoveredState,
+    PerCoreRecoveryManager, PerCoreWalConfig, PerCoreWalEntry, PerCoreWalError, PerCoreWalManager,
+    PerCoreWalReader, SegmentStats, WalOperation,
 };
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]

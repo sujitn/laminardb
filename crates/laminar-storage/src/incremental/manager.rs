@@ -208,6 +208,13 @@ pub struct IncrementalCheckpointManager {
     /// `RocksDB` instance (when feature enabled).
     #[cfg(feature = "rocksdb")]
     db: Option<rocksdb::DB>,
+    /// In-memory state store (used when RocksDB not enabled).
+    #[cfg(not(feature = "rocksdb"))]
+    state: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+    /// Source offsets for exactly-once semantics.
+    source_offsets: HashMap<String, u64>,
+    /// Current watermark.
+    watermark: Option<i64>,
 }
 
 impl IncrementalCheckpointManager {
@@ -233,6 +240,10 @@ impl IncrementalCheckpointManager {
             latest_checkpoint_id: latest_id,
             #[cfg(feature = "rocksdb")]
             db: None,
+            #[cfg(not(feature = "rocksdb"))]
+            state: std::collections::HashMap::new(),
+            source_offsets: HashMap::new(),
+            watermark: None,
         })
     }
 
@@ -293,6 +304,62 @@ impl IncrementalCheckpointManager {
     #[must_use]
     pub fn epoch(&self) -> u64 {
         self.current_epoch.load(Ordering::SeqCst)
+    }
+
+    /// Puts a key-value pair into the state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `RocksDB` write fails.
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), IncrementalCheckpointError> {
+        #[cfg(feature = "rocksdb")]
+        if let Some(ref db) = self.db {
+            db.put(key, value)?;
+        }
+        #[cfg(not(feature = "rocksdb"))]
+        {
+            self.state.insert(key.to_vec(), value.to_vec());
+        }
+        Ok(())
+    }
+
+    /// Deletes a key from the state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `RocksDB` delete fails.
+    pub fn delete(&mut self, key: &[u8]) -> Result<(), IncrementalCheckpointError> {
+        #[cfg(feature = "rocksdb")]
+        if let Some(ref db) = self.db {
+            db.delete(key)?;
+        }
+        #[cfg(not(feature = "rocksdb"))]
+        {
+            self.state.remove(key);
+        }
+        Ok(())
+    }
+
+    /// Sets a source offset for exactly-once semantics.
+    pub fn set_source_offset(&mut self, source: String, offset: u64) {
+        self.source_offsets.insert(source, offset);
+    }
+
+    /// Returns the source offsets.
+    #[must_use]
+    pub fn source_offsets(&self) -> &HashMap<String, u64> {
+        &self.source_offsets
+    }
+
+    /// Sets the current watermark.
+    pub fn set_watermark(&mut self, watermark: i64) {
+        self.watermark = Some(watermark);
+    }
+
+    /// Returns the current watermark.
+    #[must_use]
+    pub fn watermark(&self) -> Option<i64> {
+        self.watermark
     }
 
     /// Returns the latest checkpoint ID.
@@ -553,14 +620,23 @@ impl IncrementalCheckpointManager {
     ///
     /// Returns an error if cleanup fails.
     pub fn cleanup_old_checkpoints(&self) -> Result<(), IncrementalCheckpointError> {
+        self.cleanup_old_checkpoints_keep(self.config.max_retained)
+    }
+
+    /// Cleans up old checkpoints, keeping only `keep_count` most recent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cleanup fails.
+    pub fn cleanup_old_checkpoints_keep(&self, keep_count: usize) -> Result<(), IncrementalCheckpointError> {
         let checkpoints = self.list_checkpoints()?;
 
-        if checkpoints.len() <= self.config.max_retained {
+        if checkpoints.len() <= keep_count {
             return Ok(());
         }
 
         // Remove checkpoints beyond retention limit
-        for checkpoint in checkpoints.iter().skip(self.config.max_retained) {
+        for checkpoint in checkpoints.iter().skip(keep_count) {
             let checkpoint_dir = checkpoint.checkpoint_path(&self.config.checkpoint_dir);
             if checkpoint_dir.exists() {
                 debug!(

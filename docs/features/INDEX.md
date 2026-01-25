@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 29 | 14 | 0 | 0 | 15 |
+| Phase 2 | 29 | 13 | 0 | 0 | 16 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **75** | **48** | **0** | **1** | **26** |
+| **Total** | **75** | **47** | **0** | **1** | **27** |
 
 ## Status Legend
 
@@ -106,7 +106,7 @@
 | F057 | Stream Join Optimizations | P1 | 📝 | [Link](phase-2/F057-stream-join-optimizations.md) |
 | F059 | FIRST/LAST Value Aggregates | P0 | ✅ | [Link](phase-2/F059-first-last-aggregates.md) |
 | F060 | Cascading Materialized Views | P1 | 📝 | [Link](phase-2/F060-cascading-materialized-views.md) |
-| F062 | Per-Core WAL Segments | P1 | 📝 | [Link](phase-2/F062-per-core-wal.md) |
+| F062 | Per-Core WAL Segments | P1 | ✅ | [Link](phase-2/F062-per-core-wal.md) |
 | **F011B** | **EMIT Clause Extension** | **P0** | ✅ | [Link](phase-2/F011B-emit-clause-extension.md) |
 | **F063** | **Changelog/Retraction (Z-Sets)** | **P0** | ✅ | [Link](phase-2/F063-changelog-retraction.md) |
 | **F064** | **Per-Partition Watermarks** | **P1** | 📝 | [Link](phase-2/F064-per-partition-watermarks.md) |
@@ -207,7 +207,7 @@ F063 (Changelog/Retraction) ──────────────┘
 | **Checkpoint blocks Ring 0** | "Ring 0 <500ns, checkpoint in Ring 1" | ❌ Blocking | Async in Ring 1 | F022 |
 | **No changelog buffer** | "Zero-alloc offset references" | ❌ Missing | ChangelogRef in Ring 0 | F022 |
 | **No incremental checkpoints** | "RocksDB hard-linked SSTables" | ❌ Full snapshots | <10% for 1% changes | F022 |
-| **No per-core WAL** | "Required for thread-per-core" | ❌ Single WAL | Per-core segments | F062 |
+| ~~No per-core WAL~~ | "Required for thread-per-core" | ✅ Implemented | Per-core segments | F062 |
 | **No WAL truncation** | "Bound storage after checkpoint" | ❌ Growing WAL | Truncate after checkpoint | F022 |
 
 **Three-Tier Architecture (Target)**:
