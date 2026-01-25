@@ -44,6 +44,7 @@ pub mod sink;
 pub mod state;
 pub mod time;
 pub mod tpc;
+pub mod xdp;
 
 // Re-export key types
 pub use reactor::{ReactorConfig, Reactor};
@@ -89,4 +90,8 @@ pub enum Error {
     /// Materialized view errors
     #[error("MV error: {0}")]
     Mv(#[from] mv::MvError),
+
+    /// XDP/eBPF errors
+    #[error("XDP error: {0}")]
+    Xdp(#[from] xdp::XdpError),
 }

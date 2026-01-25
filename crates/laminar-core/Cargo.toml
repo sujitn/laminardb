@@ -17,6 +17,8 @@ allocation-tracking = []
 io-uring = ["dep:io-uring"]
 # Enable hwlocality for enhanced NUMA topology discovery
 hwloc = ["dep:hwlocality"]
+# Enable XDP/eBPF network optimization (Linux 4.15+ only)
+xdp = ["dep:libbpf-rs"]
 
 [dependencies]
 # Performance critical - no allocations on hot path
@@ -64,6 +66,7 @@ hwlocality = { version = "1.0.0-alpha.8", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
 io-uring = { workspace = true, optional = true }
+libbpf-rs = { version = "0.24", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["processthreadsapi", "winbase", "basetsd"] }

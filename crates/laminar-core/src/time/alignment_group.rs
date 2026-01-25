@@ -969,7 +969,7 @@ mod tests {
         group.report_watermark(1, 50_000);
 
         // Check alignment should resume source 0
-        let actions = group.check_alignment();
+        let _actions = group.check_alignment();
         // Note: check_alignment only runs if update_interval has passed
         // For this test, we check should_resume directly
         assert!(group.should_resume(0));
