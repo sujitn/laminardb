@@ -176,7 +176,7 @@ mod tests {
         let batches = df.collect().await.unwrap();
 
         // Verify results
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(total_rows, 5);
     }
 
@@ -232,7 +232,7 @@ mod tests {
             .unwrap();
         let batches = df.collect().await.unwrap();
 
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(total_rows, 3); // 30, 40, 50
     }
 
@@ -293,7 +293,7 @@ mod tests {
         let batches = df.collect().await.unwrap();
 
         // Verify we got results (ordering may vary due to streaming nature)
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
         assert_eq!(total_rows, 3);
     }
 

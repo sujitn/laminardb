@@ -420,7 +420,7 @@ mod tests {
         let schema = test_schema();
         let source = ChannelStreamSource::new(Arc::clone(&schema));
 
-        let debug_str = format!("{:?}", source);
+        let debug_str = format!("{source:?}");
         assert!(debug_str.contains("ChannelStreamSource"));
         assert!(debug_str.contains("capacity"));
     }

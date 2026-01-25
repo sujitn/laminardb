@@ -705,8 +705,8 @@ mod tests {
         assert_eq!(config.exclusive_credits, 8);
         assert_eq!(config.floating_credits, 16);
         assert_eq!(config.overflow_strategy, OverflowStrategy::Drop);
-        assert_eq!(config.high_watermark, 0.9);
-        assert_eq!(config.low_watermark, 0.6);
+        assert!((config.high_watermark - 0.9).abs() < f64::EPSILON);
+        assert!((config.low_watermark - 0.6).abs() < f64::EPSILON);
         assert_eq!(config.total_credits(), 24);
     }
 

@@ -514,6 +514,14 @@ impl CdcOperation {
 /// ```rust,no_run
 /// use laminar_core::operator::window::{ChangelogRecord, CdcOperation};
 /// use laminar_core::operator::Event;
+/// # use std::sync::Arc;
+/// # use arrow_array::RecordBatch;
+/// # use arrow_schema::Schema;
+/// # let schema = Arc::new(Schema::empty());
+/// # let batch = RecordBatch::new_empty(schema);
+/// # let event = Event { timestamp: 0, data: batch.clone() };
+/// # let old_event = event.clone();
+/// # let new_event = event.clone();
 ///
 /// // Create an insert record
 /// let record = ChangelogRecord::insert(event, 1000);
@@ -644,10 +652,9 @@ impl TumblingWindowAssigner {
     ///
     /// Panics if the size is zero.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn new(size: Duration) -> Self {
-        // Truncation is acceptable: window sizes > 2^63 ms (~292 million years) are not practical
-        let size_ms = size.as_millis() as i64;
+        // Ensure window size fits in i64 and is positive
+        let size_ms = i64::try_from(size.as_millis()).expect("Window size must fit in i64");
         assert!(size_ms > 0, "Window size must be positive");
         Self { size_ms }
     }
@@ -705,9 +712,8 @@ pub trait ResultToI64 {
 }
 
 impl ResultToI64 for u64 {
-    #[allow(clippy::cast_possible_wrap)]
     fn to_i64(&self) -> i64 {
-        *self as i64
+        i64::try_from(*self).unwrap_or(i64::MAX)
     }
 }
 
@@ -724,8 +730,9 @@ impl ResultToI64 for Option<i64> {
 }
 
 impl ResultToI64 for Option<f64> {
-    #[allow(clippy::cast_possible_truncation)]
     fn to_i64(&self) -> i64 {
+        // Standard SQL behavior: truncate float to int
+        #[allow(clippy::cast_possible_truncation)]
         self.map(|f| f as i64).unwrap_or(0)
     }
 }
@@ -1394,8 +1401,9 @@ impl Accumulator for FirstValueF64Accumulator {
     type Input = (f64, i64); // (value, timestamp)
     type Output = Option<f64>;
 
-    #[allow(clippy::cast_possible_wrap)]
     fn add(&mut self, (value, timestamp): (f64, i64)) {
+        // SAFETY: We strictly use this as storage bits and convert back via from_bits
+        #[allow(clippy::cast_possible_wrap)]
         let value_bits = value.to_bits() as i64;
         match self.timestamp {
             None => {
@@ -1509,8 +1517,9 @@ impl Accumulator for LastValueF64Accumulator {
     type Input = (f64, i64); // (value, timestamp)
     type Output = Option<f64>;
 
-    #[allow(clippy::cast_possible_wrap)]
     fn add(&mut self, (value, timestamp): (f64, i64)) {
+        // SAFETY: We strictly use this as storage bits and convert back via from_bits
+        #[allow(clippy::cast_possible_wrap)]
         let value_bits = value.to_bits() as i64;
         match self.timestamp {
             None => {
@@ -1695,8 +1704,10 @@ where
     /// * `assigner` - Window assigner for determining window boundaries
     /// * `aggregator` - Aggregation function to apply within windows
     /// * `allowed_lateness` - Grace period for late data after window close
+    /// # Panics
+    ///
+    /// Panics if allowed lateness does not fit in i64.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn new(
         assigner: TumblingWindowAssigner,
         aggregator: A,
@@ -1706,8 +1717,9 @@ where
         Self {
             assigner,
             aggregator,
-            // Truncation is acceptable: lateness > 2^63 ms (~292 million years) is not practical
-            allowed_lateness_ms: allowed_lateness.as_millis() as i64,
+            // Ensure lateness fits in i64
+            allowed_lateness_ms: i64::try_from(allowed_lateness.as_millis())
+                .expect("Allowed lateness must fit in i64"),
             registered_windows: std::collections::HashSet::new(),
             periodic_timer_windows: std::collections::HashSet::new(),
             emit_strategy: EmitStrategy::default(),
@@ -1720,8 +1732,10 @@ where
     }
 
     /// Creates a new tumbling window operator with a custom operator ID.
+    /// # Panics
+    ///
+    /// Panics if allowed lateness does not fit in i64.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn with_id(
         assigner: TumblingWindowAssigner,
         aggregator: A,
@@ -1731,8 +1745,9 @@ where
         Self {
             assigner,
             aggregator,
-            // Truncation is acceptable: lateness > 2^63 ms (~292 million years) is not practical
-            allowed_lateness_ms: allowed_lateness.as_millis() as i64,
+            // Ensure lateness fits in i64
+            allowed_lateness_ms: i64::try_from(allowed_lateness.as_millis())
+                .expect("Allowed lateness must fit in i64"),
             registered_windows: std::collections::HashSet::new(),
             periodic_timer_windows: std::collections::HashSet::new(),
             emit_strategy: EmitStrategy::default(),
@@ -1909,7 +1924,6 @@ where
     /// The timer key uses a special encoding to distinguish from final timers:
     /// - Final timers: raw `WindowId` bytes (16 bytes)
     /// - Periodic timers: `WindowId` with high bit set in first byte
-    #[allow(clippy::cast_possible_truncation)]
     fn maybe_register_periodic_timer(
         &mut self,
         window_id: WindowId,
@@ -1918,7 +1932,7 @@ where
         if let EmitStrategy::Periodic(interval) = &self.emit_strategy {
             if !self.periodic_timer_windows.contains(&window_id) {
                 // Register first periodic timer at processing_time + interval
-                let interval_ms = interval.as_millis() as i64;
+                let interval_ms = i64::try_from(interval.as_millis()).expect("Interval must fit in i64");
                 let trigger_time = ctx.processing_time + interval_ms;
 
                 // Create a key with high bit set to distinguish from final timers
@@ -1996,7 +2010,6 @@ where
     }
 
     /// Handles periodic timer expiration for intermediate emissions.
-    #[allow(clippy::cast_possible_truncation)]
     fn handle_periodic_timer(
         &mut self,
         window_id: WindowId,
@@ -2018,7 +2031,7 @@ where
 
         // Schedule next periodic timer if still within window
         if let EmitStrategy::Periodic(interval) = &self.emit_strategy {
-            let interval_ms = interval.as_millis() as i64;
+            let interval_ms = i64::try_from(interval.as_millis()).expect("Interval must fit in i64");
             let next_trigger = ctx.processing_time + interval_ms;
 
             // Only schedule if the window hasn't closed yet

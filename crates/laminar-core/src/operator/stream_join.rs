@@ -937,7 +937,7 @@ mod tests {
         );
 
         assert_eq!(operator.join_type(), JoinType::Inner);
-        assert_eq!(operator.time_bound_ms(), 3600_000);
+        assert_eq!(operator.time_bound_ms(), 3_600_000);
     }
 
     #[test]

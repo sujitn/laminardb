@@ -699,7 +699,7 @@ mod tests {
 
         let frag_after = store.fragmentation();
         assert!(frag_after < frag_before);
-        assert_eq!(frag_after, 0.0); // Should be zero after compaction
+        assert!(frag_after.abs() < f64::EPSILON); // Should be zero after compaction
 
         // Verify data integrity
         assert_eq!(store.get(b"key1").unwrap(), Bytes::from("new_value1"));

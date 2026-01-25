@@ -125,11 +125,10 @@ impl SlidingWindowAssigner {
     /// - Slide is zero or negative
     /// - Slide is greater than size (use tumbling windows instead)
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn new(size: Duration, slide: Duration) -> Self {
-        // Truncation is acceptable: window sizes > 2^63 ms (~292 million years) are not practical
-        let size_ms = size.as_millis() as i64;
-        let slide_ms = slide.as_millis() as i64;
+        // Ensure size and slide fit in i64
+        let size_ms = i64::try_from(size.as_millis()).expect("Window size must fit in i64");
+        let slide_ms = i64::try_from(slide.as_millis()).expect("Slide interval must fit in i64");
 
         assert!(size_ms > 0, "Window size must be positive");
         assert!(slide_ms > 0, "Slide interval must be positive");
@@ -140,8 +139,8 @@ impl SlidingWindowAssigner {
 
         // Calculate the number of windows each event belongs to
         // This is ceil(size / slide)
-        // Truncation is acceptable: number of windows per event will never exceed reasonable limits
-        let windows_per_event = ((size_ms + slide_ms - 1) / slide_ms) as usize;
+        let windows_per_event = usize::try_from((size_ms + slide_ms - 1) / slide_ms)
+            .expect("Windows per event should fit in usize");
 
         Self {
             size_ms,
@@ -156,7 +155,7 @@ impl SlidingWindowAssigner {
     ///
     /// Panics if size or slide is zero/negative, or if slide > size.
     #[must_use]
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
     pub fn from_millis(size_ms: i64, slide_ms: i64) -> Self {
         assert!(size_ms > 0, "Window size must be positive");
         assert!(slide_ms > 0, "Slide interval must be positive");
@@ -166,7 +165,7 @@ impl SlidingWindowAssigner {
         );
 
         // Truncation is acceptable: number of windows per event will never exceed reasonable limits
-        let windows_per_event = ((size_ms + slide_ms - 1) / slide_ms) as usize;
+        let windows_per_event = usize::try_from((size_ms + slide_ms - 1) / slide_ms).unwrap_or(usize::MAX);
 
         Self {
             size_ms,
@@ -325,14 +324,16 @@ where
     /// * `assigner` - Window assigner for determining window boundaries
     /// * `aggregator` - Aggregation function to apply within windows
     /// * `allowed_lateness` - Grace period for late data after window close
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    /// # Panics
+    ///
+    /// Panics if allowed lateness does not fit in i64.
     pub fn new(assigner: SlidingWindowAssigner, aggregator: A, allowed_lateness: Duration) -> Self {
         let operator_num = SLIDING_OPERATOR_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
             assigner,
             aggregator,
-            allowed_lateness_ms: allowed_lateness.as_millis() as i64,
+            allowed_lateness_ms: i64::try_from(allowed_lateness.as_millis())
+                .expect("Allowed lateness must fit in i64"),
             registered_windows: std::collections::HashSet::new(),
             periodic_timer_windows: std::collections::HashSet::new(),
             emit_strategy: EmitStrategy::default(),
@@ -345,8 +346,9 @@ where
     }
 
     /// Creates a new sliding window operator with a custom operator ID.
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    /// # Panics
+    ///
+    /// Panics if allowed lateness does not fit in i64.
     pub fn with_id(
         assigner: SlidingWindowAssigner,
         aggregator: A,
@@ -356,7 +358,8 @@ where
         Self {
             assigner,
             aggregator,
-            allowed_lateness_ms: allowed_lateness.as_millis() as i64,
+            allowed_lateness_ms: i64::try_from(allowed_lateness.as_millis())
+                .expect("Allowed lateness must fit in i64"),
             registered_windows: std::collections::HashSet::new(),
             periodic_timer_windows: std::collections::HashSet::new(),
             emit_strategy: EmitStrategy::default(),
@@ -485,11 +488,10 @@ where
     }
 
     /// Registers a periodic timer for intermediate emissions.
-    #[allow(clippy::cast_possible_truncation)]
     fn maybe_register_periodic_timer(&mut self, window_id: WindowId, ctx: &mut OperatorContext) {
         if let EmitStrategy::Periodic(interval) = &self.emit_strategy {
             if !self.periodic_timer_windows.contains(&window_id) {
-                let interval_ms = interval.as_millis() as i64;
+                let interval_ms = i64::try_from(interval.as_millis()).expect("Interval must fit in i64");
                 let trigger_time = ctx.processing_time + interval_ms;
                 let key = Self::periodic_timer_key(&window_id);
                 ctx.timers.register_timer(trigger_time, Some(key), Some(ctx.operator_index));
@@ -558,7 +560,6 @@ where
     }
 
     /// Handles periodic timer expiration for intermediate emissions.
-    #[allow(clippy::cast_possible_truncation)]
     fn handle_periodic_timer(
         &mut self,
         window_id: WindowId,
@@ -576,7 +577,7 @@ where
         }
 
         if let EmitStrategy::Periodic(interval) = &self.emit_strategy {
-            let interval_ms = interval.as_millis() as i64;
+            let interval_ms = i64::try_from(interval.as_millis()).expect("Interval must fit in i64");
             let next_trigger = ctx.processing_time + interval_ms;
             let window_close_time = window_id.end + self.allowed_lateness_ms;
             if next_trigger < window_close_time {
@@ -1158,13 +1159,13 @@ mod tests {
         }
 
         // Trigger first window [0, 1000)
-        let timer1 = Timer {
+        let t1 = Timer {
             key: WindowId::new(0, 1000).to_key(),
             timestamp: 1000,
         };
         let outputs1 = {
             let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-            operator.on_timer(timer1, &mut ctx)
+            operator.on_timer(t1, &mut ctx)
         };
 
         assert_eq!(outputs1.len(), 1);
@@ -1180,13 +1181,13 @@ mod tests {
         }
 
         // Trigger second window [500, 1500)
-        let timer2 = Timer {
+        let t2 = Timer {
             key: WindowId::new(500, 1500).to_key(),
             timestamp: 1500,
         };
         let outputs2 = {
             let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-            operator.on_timer(timer2, &mut ctx)
+            operator.on_timer(t2, &mut ctx)
         };
 
         assert_eq!(outputs2.len(), 1);

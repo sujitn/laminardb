@@ -499,11 +499,10 @@ mod tests {
 
     #[test]
     fn test_concurrent_producer_consumer() {
+        const ITEMS: i32 = 10_000;
         let queue = Arc::new(SpscQueue::<i32>::new(1024));
         let queue_producer = Arc::clone(&queue);
         let queue_consumer = Arc::clone(&queue);
-
-        const ITEMS: i32 = 10_000;
 
         // Producer thread
         let producer = thread::spawn(move || {
@@ -533,7 +532,16 @@ mod tests {
         // Verify all items received in order
         assert_eq!(received.len(), ITEMS as usize);
         for (i, &item) in received.iter().enumerate() {
-            assert_eq!(item, i as i32, "Item out of order at index {i}");
+            assert_eq!(item, i32::try_from(i).unwrap(), "Item out of order at index {i}");
+        }
+    }
+
+    #[derive(Debug)]
+    struct DropCounter(Arc<AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -544,13 +552,7 @@ mod tests {
 
         let drop_count = Arc::new(AtomicUsize::new(0));
 
-        #[derive(Debug)]
-        struct DropCounter(Arc<AtomicUsize>);
-        impl Drop for DropCounter {
-            fn drop(&mut self) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
+
 
         {
             let queue: SpscQueue<DropCounter> = SpscQueue::new(8);
@@ -573,7 +575,7 @@ mod tests {
         queue.push(1).unwrap();
         queue.push(2).unwrap();
 
-        let debug_str = format!("{:?}", queue);
+        let debug_str = format!("{queue:?}");
         assert!(debug_str.contains("SpscQueue"));
         assert!(debug_str.contains("capacity"));
         assert!(debug_str.contains("len"));

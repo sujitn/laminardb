@@ -897,7 +897,7 @@ mod tests {
     ) -> OperatorContext<'a> {
         OperatorContext {
             event_time: 0,
-            processing_time: 1000000, // 1 second in microseconds
+            processing_time: 1_000_000, // 1 second in microseconds
             timers,
             state,
             watermark_generator: watermark_gen,
@@ -1035,7 +1035,7 @@ mod tests {
 
         // Now process order for non-existing customer
         let order2 = create_order_event(2000, "cust_999", 200);
-        ctx.processing_time = 2000000;
+        ctx.processing_time = 2_000_000;
         let outputs = operator.process_with_lookup(&order2, &mut ctx, |_| None);
 
         // Left join should emit event with nulls
@@ -1071,7 +1071,7 @@ mod tests {
 
         // Second lookup - cache hit
         let order2 = create_order_event(2000, "cust_1", 200);
-        ctx.processing_time = 2000000;
+        ctx.processing_time = 2_000_000;
         operator.process_with_lookup(&order2, &mut ctx, |key| lookup_table.get(key).cloned());
 
         assert_eq!(operator.metrics().cache_misses, 1); // Still 1
@@ -1289,10 +1289,10 @@ mod tests {
     #[test]
     fn test_cache_entry_serialization() {
         let batch = create_customer_batch("test", "Test", "gold");
-        let entry = CacheEntry::found(1000000, &batch).unwrap();
+        let entry = CacheEntry::found(1_000_000, &batch).unwrap();
 
         assert!(entry.found);
-        assert_eq!(entry.inserted_at, 1000000);
+        assert_eq!(entry.inserted_at, 1_000_000);
 
         // Verify round-trip
         let restored = entry.to_batch().unwrap().unwrap();
@@ -1314,7 +1314,7 @@ mod tests {
 
     #[test]
     fn test_not_found_cache_entry() {
-        let entry = CacheEntry::not_found(1000000);
+        let entry = CacheEntry::not_found(1_000_000);
 
         assert!(!entry.found);
         assert!(entry.data.is_empty());
@@ -1352,7 +1352,7 @@ mod tests {
         for i in 0..5 {
             let order = create_order_event(1000 + i * 100, "cust_1", 100 + i);
             let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-            ctx.processing_time = (1_000_000 + i as i64 * 100_000) as i64;
+            ctx.processing_time = 1_000_000 + i * 100_000;
             let outputs =
                 operator.process_with_lookup(&order, &mut ctx, |key| lookup_table.get(key).cloned());
             assert_eq!(outputs.iter().filter(|o| matches!(o, Output::Event(_))).count(), 1);

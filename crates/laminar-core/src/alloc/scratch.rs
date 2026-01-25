@@ -346,7 +346,7 @@ mod tests {
 
         // u64 requires 8-byte alignment
         let val: &mut u64 = buf.alloc();
-        let ptr = val as *const u64 as usize;
+        let ptr = std::ptr::from_ref::<u64>(val) as usize;
         assert_eq!(ptr % 8, 0, "u64 should be 8-byte aligned");
     }
 
@@ -378,7 +378,7 @@ mod tests {
 
         for i in 0..10 {
             let slice = buf.alloc_slice(50);
-            slice[0] = i as u8;
+            slice[0] = u8::try_from(i).unwrap();
         }
 
         assert_eq!(buf.used(), 500);

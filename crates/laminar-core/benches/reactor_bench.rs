@@ -89,9 +89,10 @@ fn bench_reactor_throughput(c: &mut Criterion) {
             BenchmarkId::from_parameter(batch_size),
             batch_size,
             |b, &batch_size| {
-                let mut config = ReactorConfig::default();
-                config.batch_size = batch_size;
-                let mut reactor = Reactor::new(config).unwrap();
+                let mut reactor = Reactor::new(ReactorConfig {
+                    batch_size,
+                    ..Default::default()
+                }).unwrap();
                 reactor.add_operator(Box::new(PassthroughOperator));
 
                 // Pre-create events
@@ -120,10 +121,11 @@ fn bench_reactor_events_per_second(c: &mut Criterion) {
     group.throughput(Throughput::Elements(100000)); // 100k events
 
     group.bench_function("100k_events", |b| {
-        let mut config = ReactorConfig::default();
-        config.batch_size = 10000;
-        config.event_buffer_size = 100000;
-        let mut reactor = Reactor::new(config).unwrap();
+        let mut reactor = Reactor::new(ReactorConfig {
+            batch_size: 10000,
+            event_buffer_size: 100000,
+            ..Default::default()
+        }).unwrap();
         reactor.add_operator(Box::new(PassthroughOperator));
 
         b.iter(|| {

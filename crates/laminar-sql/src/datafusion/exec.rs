@@ -310,7 +310,7 @@ mod tests {
         // Verify it implements DisplayAs by checking the name
         assert_eq!(exec.name(), "StreamingScanExec");
         // Debug format should contain the struct info
-        let debug = format!("{:?}", exec);
+        let debug = format!("{exec:?}");
         assert!(debug.contains("StreamingScanExec"));
     }
 

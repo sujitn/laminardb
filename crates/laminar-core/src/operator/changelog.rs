@@ -1456,7 +1456,7 @@ mod tests {
         let envelope = CdcEnvelope::insert(
             serde_json::json!({"id": 1, "amount": 100}),
             source,
-            1706140800000,
+            1_706_140_800_000,
         );
 
         assert_eq!(envelope.op, "c");
@@ -1470,7 +1470,7 @@ mod tests {
     fn test_cdc_envelope_delete() {
         let source = CdcSource::new("laminardb", "default", "orders");
         let envelope =
-            CdcEnvelope::delete(serde_json::json!({"id": 1}), source, 1706140800000);
+            CdcEnvelope::delete(serde_json::json!({"id": 1}), source, 1_706_140_800_000);
 
         assert_eq!(envelope.op, "d");
         assert!(envelope.is_delete());
@@ -1486,7 +1486,7 @@ mod tests {
             serde_json::json!({"id": 1, "amount": 100}),
             serde_json::json!({"id": 1, "amount": 150}),
             source,
-            1706140800000,
+            1_706_140_800_000,
         );
 
         assert_eq!(envelope.op, "u");
@@ -1502,7 +1502,7 @@ mod tests {
         let envelope = CdcEnvelope::insert(
             serde_json::json!({"id": 1, "amount": 100}),
             source,
-            1706140800000,
+            1_706_140_800_000,
         );
 
         let json = envelope.to_json().unwrap();
@@ -1518,7 +1518,7 @@ mod tests {
         let envelope = CdcEnvelope::insert(
             serde_json::json!({"user_id": 123, "name": "Alice"}),
             source,
-            1706140800000,
+            1_706_140_800_000,
         );
 
         let json = envelope.to_json().unwrap();

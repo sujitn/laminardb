@@ -96,7 +96,8 @@ fn bench_accumulator(c: &mut Criterion) {
     group.bench_function("count_add", |b| {
         let mut acc = CountAccumulator::default();
         b.iter(|| {
-            acc.add(black_box(()));
+            black_box(());
+            acc.add(());
         })
     });
 

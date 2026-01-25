@@ -702,8 +702,10 @@ mod tests {
 
     #[test]
     fn test_reactor_queue_full() {
-        let mut config = ReactorConfig::default();
-        config.event_buffer_size = 2; // Very small buffer
+        let config = ReactorConfig {
+            event_buffer_size: 2, // Very small buffer
+            ..ReactorConfig::default()
+        };
         let mut reactor = Reactor::new(config).unwrap();
 
         let array = Arc::new(Int64Array::from(vec![1]));
@@ -712,7 +714,7 @@ mod tests {
         // Fill the queue
         for i in 0..2 {
             let event = Event {
-                timestamp: i as i64,
+                timestamp: i64::from(i),
                 data: batch.clone(),
             };
             assert!(reactor.submit(event).is_ok());
@@ -731,8 +733,10 @@ mod tests {
 
     #[test]
     fn test_reactor_batch_processing() {
-        let mut config = ReactorConfig::default();
-        config.batch_size = 2; // Small batch size
+        let config = ReactorConfig {
+            batch_size: 2, // Small batch size
+            ..ReactorConfig::default()
+        };
         let mut reactor = Reactor::new(config).unwrap();
 
         reactor.add_operator(Box::new(PassthroughOperator));
@@ -743,7 +747,7 @@ mod tests {
         // Submit 5 events
         for i in 0..5 {
             let event = Event {
-                timestamp: i as i64,
+                timestamp: i64::from(i),
                 data: batch.clone(),
             };
             reactor.submit(event).unwrap();

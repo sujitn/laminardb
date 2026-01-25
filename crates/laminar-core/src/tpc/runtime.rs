@@ -765,7 +765,7 @@ mod tests {
 
         let runtime = ThreadPerCoreRuntime::new(config).unwrap();
 
-        let debug_str = format!("{:?}", runtime);
+        let debug_str = format!("{runtime:?}");
         assert!(debug_str.contains("ThreadPerCoreRuntime"));
         assert!(debug_str.contains("num_cores"));
 
