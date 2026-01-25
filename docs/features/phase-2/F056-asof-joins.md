@@ -5,12 +5,12 @@
 | Field | Value |
 |-------|-------|
 | **ID** | F056 |
-| **Status** | 📝 Draft |
+| **Status** | ✅ Done |
 | **Priority** | P1 |
 | **Phase** | 2 |
 | **Effort** | L (1-2 weeks) |
 | **Dependencies** | F019, F003 |
-| **Owner** | TBD |
+| **Owner** | Implemented |
 | **Research** | [Stream Joins Research 2026](../../research/laminardb-stream-joins-research-review-2026.md) |
 
 ## Summary
@@ -370,16 +370,16 @@ fn test_state_cleanup() {
 
 ## Acceptance Criteria
 
-- [ ] Backward ASOF join working with BTreeMap state
-- [ ] Forward ASOF join working
-- [ ] Nearest ASOF join working
-- [ ] Tolerance-based filtering implemented
-- [ ] Watermark-based state cleanup
-- [ ] Inner and Left outer join types
-- [ ] Checkpoint/restore working
-- [ ] SQL syntax parsing (ASOF JOIN, MATCH_CONDITION, TOLERANCE)
-- [ ] 15+ unit tests passing
-- [ ] Performance: O(log n) lookup per event
+- [x] Backward ASOF join working with BTreeMap state
+- [x] Forward ASOF join working
+- [x] Nearest ASOF join working
+- [x] Tolerance-based filtering implemented
+- [x] Watermark-based state cleanup
+- [x] Inner and Left outer join types
+- [x] Checkpoint/restore working
+- [ ] SQL syntax parsing (ASOF JOIN, MATCH_CONDITION, TOLERANCE) - Phase 4/F006B
+- [x] 15+ unit tests passing (22 tests)
+- [x] Performance: O(log n) lookup per event
 
 ## Performance Targets
 

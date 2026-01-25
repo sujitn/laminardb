@@ -129,6 +129,7 @@ pub enum OperatorError {
     ProcessingFailed(String),
 }
 
+pub mod asof_join;
 pub mod changelog;
 pub mod lookup_join;
 pub mod session_window;

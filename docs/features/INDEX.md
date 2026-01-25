@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 29 | 9 | 0 | 0 | 20 |
+| Phase 2 | 29 | 8 | 0 | 0 | 21 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **75** | **43** | **0** | **1** | **31** |
+| **Total** | **75** | **42** | **0** | **1** | **32** |
 
 ## Status Legend
 
@@ -102,7 +102,7 @@
 | F022 | Incremental Checkpointing | P1 | ✅ | [Link](phase-2/F022-incremental-checkpointing.md) |
 | F023 | Exactly-Once Sinks | P0 | 📝 | [Link](phase-2/F023-exactly-once-sinks.md) |
 | F024 | Two-Phase Commit | P1 | 📝 | [Link](phase-2/F024-two-phase-commit.md) |
-| F056 | ASOF Joins | P1 | 📝 | [Link](phase-2/F056-asof-joins.md) |
+| F056 | ASOF Joins | P1 | ✅ | [Link](phase-2/F056-asof-joins.md) |
 | F057 | Stream Join Optimizations | P1 | 📝 | [Link](phase-2/F057-stream-join-optimizations.md) |
 | F059 | FIRST/LAST Value Aggregates | P0 | ✅ | [Link](phase-2/F059-first-last-aggregates.md) |
 | F060 | Cascading Materialized Views | P1 | ✅ | [Link](phase-2/F060-cascading-materialized-views.md) |
@@ -223,7 +223,7 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 
 | Gap | Source | Current | Target | Feature |
 |-----|--------|---------|--------|---------|
-| ASOF Joins | DuckDB/Pinot 2025 | ❌ Missing | Full support | F056 |
+| ASOF Joins | DuckDB/Pinot 2025 | ✅ Done | Full support | F056 |
 | CPU-Friendly Encoding | RisingWave July 2025 | ❌ Missing | 50% perf gain | F057 |
 | Asymmetric Compaction | Epsio 2025 | ❌ Missing | Reduced overhead | F057 |
 | Temporal Join (versioned) | RisingWave 2025 | 📝 Draft | Full impl | F021 |
@@ -237,7 +237,7 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 |-----|------------------|---------|--------|---------|
 | **FIRST_VALUE/LAST_VALUE** | "OHLC is just SQL aggregates" | ❌ Missing | Essential for OHLC | F059 |
 | Cascading MVs | Multi-resolution OHLC (1s→1m→1h) | ❌ Missing | MVs reading MVs | F060 |
-| ASOF Joins | Financial enrichment (trade+quote) | 📝 Draft | Phase 2 P1 | F056 |
+| ASOF Joins | Financial enrichment (trade+quote) | ✅ Done | Phase 2 P1 | F056 |
 | Historical Backfill | "Unified live + historical query" | ❌ Missing | Phase 3 P2 | F061 |
 | SAMPLE BY Syntax | QuestDB-style time sampling | ❌ Missing | Nice to have (sugar) | - |
 
@@ -486,7 +486,7 @@ F063 ──▶ F027/F028 (CDC Connectors need changelog format)
 
 | Gap | Feature | Source | Fix |
 |-----|---------|--------|-----|
-| **No ASOF joins** | F056 | DuckDB/Pinot 2025 | NEW SPEC |
+| ~~No ASOF joins~~ | F056 | DuckDB/Pinot 2025 | ✅ **Done** |
 | **No CPU-friendly encoding** | F057 | RisingWave July 2025 | NEW SPEC |
 | **No async state access** | F058 | Flink 2.0 VLDB 2025 | NEW SPEC (Phase 3) |
 | Temporal join incomplete | F021 | RisingWave 2025 | UPDATED SPEC |
