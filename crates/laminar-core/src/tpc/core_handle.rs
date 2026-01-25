@@ -307,9 +307,77 @@ impl CoreHandle {
     /// Polls the outbox for outputs.
     ///
     /// Returns up to `max_count` outputs.
+    ///
+    /// # Note
+    ///
+    /// This method allocates memory. For zero-allocation polling, use
+    /// [`poll_outputs_into`](Self::poll_outputs_into) or [`poll_each`](Self::poll_each) instead.
     #[must_use]
     pub fn poll_outputs(&self, max_count: usize) -> Vec<Output> {
         self.outbox.pop_batch(max_count)
+    }
+
+    /// Polls the outbox for outputs into a pre-allocated buffer (zero-allocation).
+    ///
+    /// Outputs are appended to `buffer`. Returns the number of outputs added.
+    /// The buffer should have sufficient capacity to avoid reallocation.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut buffer = Vec::with_capacity(1024);
+    ///
+    /// // First poll - fills buffer
+    /// let count1 = core_handle.poll_outputs_into(&mut buffer, 100);
+    ///
+    /// // Process outputs...
+    /// for output in &buffer[..count1] {
+    ///     process(output);
+    /// }
+    ///
+    /// // Clear and reuse buffer for next poll (no allocation)
+    /// buffer.clear();
+    /// let count2 = core_handle.poll_outputs_into(&mut buffer, 100);
+    /// ```
+    #[inline]
+    pub fn poll_outputs_into(&self, buffer: &mut Vec<Output>, max_count: usize) -> usize {
+        let start_len = buffer.len();
+
+        self.outbox.pop_each(max_count, |output| {
+            buffer.push(output);
+            true
+        });
+
+        buffer.len() - start_len
+    }
+
+    /// Polls the outbox with a callback for each output (zero-allocation).
+    ///
+    /// Processing stops when:
+    /// - `max_count` outputs have been processed
+    /// - The outbox becomes empty
+    /// - The callback returns `false`
+    ///
+    /// Returns the number of outputs processed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Process outputs without any allocation
+    /// let count = core_handle.poll_each(100, |output| {
+    ///     match output {
+    ///         Output::Event(event) => handle_event(event),
+    ///         _ => {}
+    ///     }
+    ///     true // Continue processing
+    /// });
+    /// ```
+    #[inline]
+    pub fn poll_each<F>(&self, max_count: usize, f: F) -> usize
+    where
+        F: FnMut(Output) -> bool,
+    {
+        self.outbox.pop_each(max_count, f)
     }
 
     /// Polls a single output from the outbox.
@@ -844,6 +912,135 @@ mod tests {
         let handle = CoreHandle::spawn(config).unwrap();
         // On any system, numa_node should be a valid value (0 on non-NUMA systems)
         assert!(handle.numa_node() < 64);
+
+        handle.shutdown_and_join().unwrap();
+    }
+
+    #[test]
+    fn test_poll_outputs_into() {
+        let config = CoreConfig {
+            core_id: 0,
+            cpu_affinity: None,
+            inbox_capacity: 1024,
+            outbox_capacity: 1024,
+            reactor_config: ReactorConfig::default(),
+            backpressure: super::BackpressureConfig::default(),
+            numa_aware: false,
+            #[cfg(all(target_os = "linux", feature = "io-uring"))]
+            io_uring_config: None,
+        };
+
+        let handle = CoreHandle::spawn_with_operators(
+            config,
+            vec![Box::new(PassthroughOperator)],
+        ).unwrap();
+
+        // Send events
+        for i in 0..10 {
+            handle.send_event(make_event(i)).unwrap();
+        }
+
+        // Wait for processing
+        thread::sleep(Duration::from_millis(100));
+
+        // Poll into pre-allocated buffer
+        let mut buffer = Vec::with_capacity(100);
+        let count = handle.poll_outputs_into(&mut buffer, 100);
+
+        assert!(count > 0);
+        assert_eq!(buffer.len(), count);
+
+        // Reuse buffer - no new allocation
+        let cap_before = buffer.capacity();
+        buffer.clear();
+        let _ = handle.poll_outputs_into(&mut buffer, 100);
+        assert_eq!(buffer.capacity(), cap_before); // Capacity unchanged
+
+        handle.shutdown_and_join().unwrap();
+    }
+
+    #[test]
+    fn test_poll_each() {
+        let config = CoreConfig {
+            core_id: 0,
+            cpu_affinity: None,
+            inbox_capacity: 1024,
+            outbox_capacity: 1024,
+            reactor_config: ReactorConfig::default(),
+            backpressure: super::BackpressureConfig::default(),
+            numa_aware: false,
+            #[cfg(all(target_os = "linux", feature = "io-uring"))]
+            io_uring_config: None,
+        };
+
+        let handle = CoreHandle::spawn_with_operators(
+            config,
+            vec![Box::new(PassthroughOperator)],
+        ).unwrap();
+
+        // Send events
+        for i in 0..10 {
+            handle.send_event(make_event(i)).unwrap();
+        }
+
+        // Wait for processing
+        thread::sleep(Duration::from_millis(100));
+
+        // Poll with callback
+        let mut event_count = 0;
+        let count = handle.poll_each(100, |output| {
+            if matches!(output, Output::Event(_)) {
+                event_count += 1;
+            }
+            true
+        });
+
+        assert!(count > 0);
+        assert!(event_count > 0);
+
+        handle.shutdown_and_join().unwrap();
+    }
+
+    #[test]
+    fn test_poll_each_early_stop() {
+        let config = CoreConfig {
+            core_id: 0,
+            cpu_affinity: None,
+            inbox_capacity: 1024,
+            outbox_capacity: 1024,
+            reactor_config: ReactorConfig::default(),
+            backpressure: super::BackpressureConfig::default(),
+            numa_aware: false,
+            #[cfg(all(target_os = "linux", feature = "io-uring"))]
+            io_uring_config: None,
+        };
+
+        let handle = CoreHandle::spawn_with_operators(
+            config,
+            vec![Box::new(PassthroughOperator)],
+        ).unwrap();
+
+        // Send events
+        for i in 0..20 {
+            handle.send_event(make_event(i)).unwrap();
+        }
+
+        // Wait for processing
+        thread::sleep(Duration::from_millis(100));
+
+        // Poll with early stop after 5 items
+        let mut processed = 0;
+        let count = handle.poll_each(100, |_| {
+            processed += 1;
+            processed < 5 // Stop after 5
+        });
+
+        assert_eq!(count, 5);
+        assert_eq!(processed, 5);
+
+        // There should be more items remaining
+        let remaining = handle.outbox_len();
+        assert!(remaining > 0);
 
         handle.shutdown_and_join().unwrap();
     }

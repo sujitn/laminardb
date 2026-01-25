@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 29 | 11 | 0 | 0 | 18 |
+| Phase 2 | 29 | 10 | 0 | 0 | 19 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **75** | **45** | **0** | **1** | **29** |
+| **Total** | **75** | **44** | **0** | **1** | **30** |
 
 ## Status Legend
 
@@ -118,7 +118,7 @@
 | **F070** | **Task Budget Enforcement** | **P1** | ✅ | [Link](phase-2/F070-task-budget-enforcement.md) |
 | **F071** | **Zero-Allocation Enforcement** | **P0** | ✅ | [Link](phase-2/F071-zero-allocation-enforcement.md) |
 | **F072** | **XDP/eBPF Network Optimization** | **P2** | 📝 | [Link](phase-2/F072-xdp-network-optimization.md) |
-| **F073** | **Zero-Allocation Polling** | **P1** | 📝 | [Link](phase-2/F073-zero-allocation-polling.md) |
+| **F073** | **Zero-Allocation Polling** | **P1** | ✅ | [Link](phase-2/F073-zero-allocation-polling.md) |
 
 ### Phase 2 Thread-Per-Core Research Gap Analysis (NEW)
 

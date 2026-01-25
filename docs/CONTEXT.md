@@ -8,7 +8,18 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
-- ✅ **F070: Task Budget Enforcement** - IMPLEMENTATION COMPLETE
+- ✅ **F073: Zero-Allocation Polling** - IMPLEMENTATION COMPLETE
+  - New zero-allocation APIs for SPSC queue: `pop_batch_into()`, `pop_each()`
+  - New zero-allocation APIs for CoreHandle: `poll_outputs_into()`, `poll_each()`
+  - New zero-allocation APIs for ThreadPerCoreRuntime: `poll_into()`, `poll_each()`, `poll_core_into()`, `poll_core_each()`
+  - New `OutputBuffer` type for reusable pre-allocated output collection
+  - New `RouterError` enum with static variants (no heap allocation on error paths)
+  - Original allocating APIs preserved with notes pointing to zero-alloc alternatives
+  - 31 new unit tests for zero-allocation APIs
+  - Zero-allocation verification tests with `HotPathGuard`
+  - **Total tests**: 713 (526 core + 61 sql + 120 storage + 6 connectors)
+
+- ✅ **F070: Task Budget Enforcement** - IMPLEMENTATION COMPLETE (previous session)
   - New `budget` module in `crates/laminar-core/src/budget/`
   - `TaskBudget` - RAII budget tracker with automatic metrics on drop
   - Ring 0 budgets: event (500ns), batch (5μs), lookup (200ns), window (10μs)
