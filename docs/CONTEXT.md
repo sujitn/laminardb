@@ -8,7 +8,18 @@
 **Duration**: Continued session
 
 ### What Was Accomplished
-- ✅ **F063: Changelog/Retraction (Z-Sets)** - IMPLEMENTATION COMPLETE
+- ✅ **F059: FIRST/LAST Value Aggregates** - IMPLEMENTATION COMPLETE
+  - `FirstValueAggregator` and `FirstValueAccumulator` for i64
+  - `LastValueAggregator` and `LastValueAccumulator` for i64
+  - `FirstValueF64Aggregator` and `FirstValueF64Accumulator` for f64
+  - `LastValueF64Aggregator` and `LastValueF64Accumulator` for f64
+  - Timestamp-ordered semantics (earliest/latest by event time)
+  - Proper merge behavior for distributed aggregation
+  - Checkpoint/restore support via rkyv serialization
+  - 18 new unit tests including OHLC simulation
+  - **Total tests**: 469 (377 core + 61 sql + 25 storage + 6 connectors)
+
+- ✅ **F063: Changelog/Retraction (Z-Sets)** - IMPLEMENTATION COMPLETE (previous session)
   - New `changelog` module in `crates/laminar-core/src/operator/changelog.rs`
   - `ChangelogRef` - Zero-allocation changelog reference for Ring 0 (12 bytes)
   - `ChangelogBuffer` - Pre-allocated buffer for hot path (no allocation after warmup)
@@ -708,6 +719,7 @@ handle.credit_metrics();       // Acquired, released, blocked, dropped
 | F020: Lookup Joins | ✅ Complete | Cached lookups with TTL, 16 tests |
 | F011B: EMIT Clause Extension | ✅ Complete | OnWindowClose, Changelog, Final, 15 tests |
 | F023: Exactly-Once Sinks | 📝 Not started | Now unblocked by F063 |
+| F059: FIRST/LAST Aggregates | ✅ Complete | Essential for OHLC bars, 18 tests |
 | F063: Changelog/Retraction | ✅ Complete | Z-set foundation, 31 tests |
 | F067: io_uring Advanced | ✅ Complete | SQPOLL, IOPOLL, registered buffers, 13 tests |
 | F068: NUMA-Aware Memory | ✅ Complete | NumaAllocator, NumaTopology, 11 tests |

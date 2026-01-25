@@ -1098,6 +1098,515 @@ impl Aggregator for AvgAggregator {
     }
 }
 
+// ============================================================================
+// FIRST_VALUE / LAST_VALUE Aggregators (F059)
+// ============================================================================
+
+/// `FIRST_VALUE` aggregator - returns the first value seen in a window.
+///
+/// Tracks the value with the earliest timestamp in the window.
+/// For deterministic results, uses event timestamp, not arrival order.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use laminar_core::operator::window::FirstValueAggregator;
+///
+/// // Track first price by timestamp
+/// let first_price = FirstValueAggregator::new(0, 1); // price col 0, timestamp col 1
+/// ```
+#[derive(Debug, Clone)]
+pub struct FirstValueAggregator {
+    /// Column index to extract value from
+    value_column_index: usize,
+    /// Column index for event timestamp (for ordering)
+    timestamp_column_index: usize,
+}
+
+/// Accumulator for `FIRST_VALUE` aggregation.
+///
+/// Stores the value with the earliest timestamp seen so far.
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub struct FirstValueAccumulator {
+    /// The first value seen (None if no values yet)
+    value: Option<i64>,
+    /// Timestamp of the first value (for merge ordering)
+    timestamp: Option<i64>,
+}
+
+impl FirstValueAggregator {
+    /// Creates a new `FIRST_VALUE` aggregator.
+    ///
+    /// # Arguments
+    ///
+    /// * `value_column_index` - Column to extract value from
+    /// * `timestamp_column_index` - Column for event timestamp ordering
+    #[must_use]
+    pub fn new(value_column_index: usize, timestamp_column_index: usize) -> Self {
+        Self {
+            value_column_index,
+            timestamp_column_index,
+        }
+    }
+}
+
+impl Accumulator for FirstValueAccumulator {
+    type Input = (i64, i64); // (value, timestamp)
+    type Output = Option<i64>;
+
+    fn add(&mut self, (value, timestamp): (i64, i64)) {
+        match self.timestamp {
+            None => {
+                // First value
+                self.value = Some(value);
+                self.timestamp = Some(timestamp);
+            }
+            Some(existing_ts) if timestamp < existing_ts => {
+                // Earlier timestamp - replace
+                self.value = Some(value);
+                self.timestamp = Some(timestamp);
+            }
+            _ => {
+                // Later or equal timestamp - keep existing
+            }
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        match (self.timestamp, other.timestamp) {
+            (None, Some(_)) => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            (Some(self_ts), Some(other_ts)) if other_ts < self_ts => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            _ => {
+                // Keep self
+            }
+        }
+    }
+
+    fn result(&self) -> Option<i64> {
+        self.value
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value.is_none()
+    }
+}
+
+impl Aggregator for FirstValueAggregator {
+    type Acc = FirstValueAccumulator;
+
+    fn create_accumulator(&self) -> FirstValueAccumulator {
+        FirstValueAccumulator::default()
+    }
+
+    fn extract(&self, event: &Event) -> Option<(i64, i64)> {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::Int64Type;
+
+        let batch = &event.data;
+        if self.value_column_index >= batch.num_columns()
+            || self.timestamp_column_index >= batch.num_columns()
+        {
+            return None;
+        }
+
+        // Extract value
+        let value_col = batch.column(self.value_column_index);
+        let value_array = value_col.as_primitive_opt::<Int64Type>()?;
+        let value = value_array.iter().flatten().next()?;
+
+        // Extract timestamp
+        let ts_col = batch.column(self.timestamp_column_index);
+        let ts_array = ts_col.as_primitive_opt::<Int64Type>()?;
+        let timestamp = ts_array.iter().flatten().next()?;
+
+        Some((value, timestamp))
+    }
+}
+
+/// `LAST_VALUE` aggregator - returns the last value seen in a window.
+///
+/// Tracks the value with the latest timestamp in the window.
+/// For deterministic results, uses event timestamp, not arrival order.
+/// When timestamps are equal, the later arrival wins.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use laminar_core::operator::window::LastValueAggregator;
+///
+/// // Track last (closing) price by timestamp
+/// let last_price = LastValueAggregator::new(0, 1); // price col 0, timestamp col 1
+/// ```
+#[derive(Debug, Clone)]
+pub struct LastValueAggregator {
+    /// Column index to extract value from
+    value_column_index: usize,
+    /// Column index for event timestamp (for ordering)
+    timestamp_column_index: usize,
+}
+
+/// Accumulator for `LAST_VALUE` aggregation.
+///
+/// Stores the value with the latest timestamp seen so far.
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub struct LastValueAccumulator {
+    /// The last value seen (None if no values yet)
+    value: Option<i64>,
+    /// Timestamp of the last value (for merge ordering)
+    timestamp: Option<i64>,
+}
+
+impl LastValueAggregator {
+    /// Creates a new `LAST_VALUE` aggregator.
+    ///
+    /// # Arguments
+    ///
+    /// * `value_column_index` - Column to extract value from
+    /// * `timestamp_column_index` - Column for event timestamp ordering
+    #[must_use]
+    pub fn new(value_column_index: usize, timestamp_column_index: usize) -> Self {
+        Self {
+            value_column_index,
+            timestamp_column_index,
+        }
+    }
+}
+
+impl Accumulator for LastValueAccumulator {
+    type Input = (i64, i64); // (value, timestamp)
+    type Output = Option<i64>;
+
+    fn add(&mut self, (value, timestamp): (i64, i64)) {
+        match self.timestamp {
+            None => {
+                // First value
+                self.value = Some(value);
+                self.timestamp = Some(timestamp);
+            }
+            Some(existing_ts) if timestamp > existing_ts => {
+                // Later timestamp - replace
+                self.value = Some(value);
+                self.timestamp = Some(timestamp);
+            }
+            Some(existing_ts) if timestamp == existing_ts => {
+                // Same timestamp - keep latest arrival (replace)
+                self.value = Some(value);
+            }
+            _ => {
+                // Earlier timestamp - keep existing
+            }
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        match (self.timestamp, other.timestamp) {
+            (None, Some(_)) => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            (Some(self_ts), Some(other_ts)) if other_ts > self_ts => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            (Some(self_ts), Some(other_ts)) if other_ts == self_ts => {
+                // Same timestamp - use other (simulate later arrival)
+                self.value = other.value;
+            }
+            _ => {
+                // Keep self
+            }
+        }
+    }
+
+    fn result(&self) -> Option<i64> {
+        self.value
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value.is_none()
+    }
+}
+
+impl Aggregator for LastValueAggregator {
+    type Acc = LastValueAccumulator;
+
+    fn create_accumulator(&self) -> LastValueAccumulator {
+        LastValueAccumulator::default()
+    }
+
+    fn extract(&self, event: &Event) -> Option<(i64, i64)> {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::Int64Type;
+
+        let batch = &event.data;
+        if self.value_column_index >= batch.num_columns()
+            || self.timestamp_column_index >= batch.num_columns()
+        {
+            return None;
+        }
+
+        // Extract value
+        let value_col = batch.column(self.value_column_index);
+        let value_array = value_col.as_primitive_opt::<Int64Type>()?;
+        let value = value_array.iter().flatten().next()?;
+
+        // Extract timestamp
+        let ts_col = batch.column(self.timestamp_column_index);
+        let ts_array = ts_col.as_primitive_opt::<Int64Type>()?;
+        let timestamp = ts_array.iter().flatten().next()?;
+
+        Some((value, timestamp))
+    }
+}
+
+// ============================================================================
+// FIRST_VALUE / LAST_VALUE for Float64 (F059)
+// ============================================================================
+
+/// Accumulator for `FIRST_VALUE` aggregation on f64 values.
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub struct FirstValueF64Accumulator {
+    /// The first value seen (None if no values yet)
+    value: Option<i64>, // Store as bits for rkyv compatibility
+    /// Timestamp of the first value (for merge ordering)
+    timestamp: Option<i64>,
+}
+
+impl FirstValueF64Accumulator {
+    /// Gets the result as f64.
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)]
+    pub fn result_f64(&self) -> Option<f64> {
+        self.value.map(|bits| f64::from_bits(bits as u64))
+    }
+}
+
+impl Accumulator for FirstValueF64Accumulator {
+    type Input = (f64, i64); // (value, timestamp)
+    type Output = Option<f64>;
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn add(&mut self, (value, timestamp): (f64, i64)) {
+        let value_bits = value.to_bits() as i64;
+        match self.timestamp {
+            None => {
+                self.value = Some(value_bits);
+                self.timestamp = Some(timestamp);
+            }
+            Some(existing_ts) if timestamp < existing_ts => {
+                self.value = Some(value_bits);
+                self.timestamp = Some(timestamp);
+            }
+            _ => {}
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        match (self.timestamp, other.timestamp) {
+            (None, Some(_)) => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            (Some(self_ts), Some(other_ts)) if other_ts < self_ts => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::cast_sign_loss)]
+    fn result(&self) -> Option<f64> {
+        self.value.map(|bits| f64::from_bits(bits as u64))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value.is_none()
+    }
+}
+
+/// `FIRST_VALUE` aggregator for f64 columns.
+#[derive(Debug, Clone)]
+pub struct FirstValueF64Aggregator {
+    /// Column index to extract value from
+    value_column_index: usize,
+    /// Column index for event timestamp (for ordering)
+    timestamp_column_index: usize,
+}
+
+impl FirstValueF64Aggregator {
+    /// Creates a new `FIRST_VALUE` aggregator for f64 columns.
+    #[must_use]
+    pub fn new(value_column_index: usize, timestamp_column_index: usize) -> Self {
+        Self {
+            value_column_index,
+            timestamp_column_index,
+        }
+    }
+}
+
+impl Aggregator for FirstValueF64Aggregator {
+    type Acc = FirstValueF64Accumulator;
+
+    fn create_accumulator(&self) -> FirstValueF64Accumulator {
+        FirstValueF64Accumulator::default()
+    }
+
+    fn extract(&self, event: &Event) -> Option<(f64, i64)> {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Float64Type, Int64Type};
+
+        let batch = &event.data;
+        if self.value_column_index >= batch.num_columns()
+            || self.timestamp_column_index >= batch.num_columns()
+        {
+            return None;
+        }
+
+        // Extract value as f64
+        let value_col = batch.column(self.value_column_index);
+        let value_array = value_col.as_primitive_opt::<Float64Type>()?;
+        let value = value_array.iter().flatten().next()?;
+
+        // Extract timestamp
+        let ts_col = batch.column(self.timestamp_column_index);
+        let ts_array = ts_col.as_primitive_opt::<Int64Type>()?;
+        let timestamp = ts_array.iter().flatten().next()?;
+
+        Some((value, timestamp))
+    }
+}
+
+/// Accumulator for `LAST_VALUE` aggregation on f64 values.
+#[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub struct LastValueF64Accumulator {
+    /// The last value seen (None if no values yet)
+    value: Option<i64>, // Store as bits for rkyv compatibility
+    /// Timestamp of the last value (for merge ordering)
+    timestamp: Option<i64>,
+}
+
+impl LastValueF64Accumulator {
+    /// Gets the result as f64.
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)]
+    pub fn result_f64(&self) -> Option<f64> {
+        self.value.map(|bits| f64::from_bits(bits as u64))
+    }
+}
+
+impl Accumulator for LastValueF64Accumulator {
+    type Input = (f64, i64); // (value, timestamp)
+    type Output = Option<f64>;
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn add(&mut self, (value, timestamp): (f64, i64)) {
+        let value_bits = value.to_bits() as i64;
+        match self.timestamp {
+            None => {
+                self.value = Some(value_bits);
+                self.timestamp = Some(timestamp);
+            }
+            Some(existing_ts) if timestamp > existing_ts => {
+                self.value = Some(value_bits);
+                self.timestamp = Some(timestamp);
+            }
+            Some(existing_ts) if timestamp == existing_ts => {
+                self.value = Some(value_bits);
+            }
+            _ => {}
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        match (self.timestamp, other.timestamp) {
+            (None, Some(_)) => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            (Some(self_ts), Some(other_ts)) if other_ts > self_ts => {
+                self.value = other.value;
+                self.timestamp = other.timestamp;
+            }
+            (Some(self_ts), Some(other_ts)) if other_ts == self_ts => {
+                self.value = other.value;
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::cast_sign_loss)]
+    fn result(&self) -> Option<f64> {
+        self.value.map(|bits| f64::from_bits(bits as u64))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value.is_none()
+    }
+}
+
+/// `LAST_VALUE` aggregator for f64 columns.
+#[derive(Debug, Clone)]
+pub struct LastValueF64Aggregator {
+    /// Column index to extract value from
+    value_column_index: usize,
+    /// Column index for event timestamp (for ordering)
+    timestamp_column_index: usize,
+}
+
+impl LastValueF64Aggregator {
+    /// Creates a new `LAST_VALUE` aggregator for f64 columns.
+    #[must_use]
+    pub fn new(value_column_index: usize, timestamp_column_index: usize) -> Self {
+        Self {
+            value_column_index,
+            timestamp_column_index,
+        }
+    }
+}
+
+impl Aggregator for LastValueF64Aggregator {
+    type Acc = LastValueF64Accumulator;
+
+    fn create_accumulator(&self) -> LastValueF64Accumulator {
+        LastValueF64Accumulator::default()
+    }
+
+    fn extract(&self, event: &Event) -> Option<(f64, i64)> {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Float64Type, Int64Type};
+
+        let batch = &event.data;
+        if self.value_column_index >= batch.num_columns()
+            || self.timestamp_column_index >= batch.num_columns()
+        {
+            return None;
+        }
+
+        // Extract value as f64
+        let value_col = batch.column(self.value_column_index);
+        let value_array = value_col.as_primitive_opt::<Float64Type>()?;
+        let value = value_array.iter().flatten().next()?;
+
+        // Extract timestamp
+        let ts_col = batch.column(self.timestamp_column_index);
+        let ts_array = ts_col.as_primitive_opt::<Int64Type>()?;
+        let timestamp = ts_array.iter().flatten().next()?;
+
+        Some((value, timestamp))
+    }
+}
+
 /// State key prefix for window accumulators (4 bytes)
 const WINDOW_STATE_PREFIX: &[u8; 4] = b"win:";
 
@@ -2944,5 +3453,305 @@ mod tests {
         } else {
             panic!("Expected Changelog output");
         }
+    }
+
+    // ========================================================================
+    // FIRST_VALUE / LAST_VALUE Tests (F059)
+    // ========================================================================
+
+    #[test]
+    fn test_first_value_single_event() {
+        let mut acc = FirstValueAccumulator::default();
+        assert!(acc.is_empty());
+        assert_eq!(acc.result(), None);
+
+        acc.add((100, 1000));
+        assert!(!acc.is_empty());
+        assert_eq!(acc.result(), Some(100));
+    }
+
+    #[test]
+    fn test_first_value_multiple_events() {
+        let mut acc = FirstValueAccumulator::default();
+        acc.add((100, 1000)); // timestamp 1000
+        acc.add((200, 500)); // timestamp 500 (earlier)
+        acc.add((300, 1500)); // timestamp 1500 (later)
+
+        // Earliest timestamp wins
+        assert_eq!(acc.result(), Some(200));
+    }
+
+    #[test]
+    fn test_first_value_same_timestamp() {
+        let mut acc = FirstValueAccumulator::default();
+        acc.add((100, 1000));
+        acc.add((200, 1000)); // Same timestamp - keep first
+
+        assert_eq!(acc.result(), Some(100));
+    }
+
+    #[test]
+    fn test_first_value_merge() {
+        let mut acc1 = FirstValueAccumulator::default();
+        acc1.add((100, 1000));
+
+        let mut acc2 = FirstValueAccumulator::default();
+        acc2.add((200, 500)); // Earlier
+
+        acc1.merge(&acc2);
+        assert_eq!(acc1.result(), Some(200)); // 500 < 1000
+    }
+
+    #[test]
+    fn test_first_value_merge_empty() {
+        let mut acc1 = FirstValueAccumulator::default();
+        acc1.add((100, 1000));
+
+        let acc2 = FirstValueAccumulator::default(); // Empty
+
+        acc1.merge(&acc2);
+        assert_eq!(acc1.result(), Some(100)); // Keep acc1
+
+        let mut acc3 = FirstValueAccumulator::default(); // Empty
+        acc3.merge(&acc1);
+        assert_eq!(acc3.result(), Some(100)); // Take acc1's value
+    }
+
+    #[test]
+    fn test_last_value_single_event() {
+        let mut acc = LastValueAccumulator::default();
+        assert!(acc.is_empty());
+        assert_eq!(acc.result(), None);
+
+        acc.add((100, 1000));
+        assert!(!acc.is_empty());
+        assert_eq!(acc.result(), Some(100));
+    }
+
+    #[test]
+    fn test_last_value_multiple_events() {
+        let mut acc = LastValueAccumulator::default();
+        acc.add((100, 1000));
+        acc.add((200, 500)); // Earlier - ignored
+        acc.add((300, 1500)); // Latest timestamp wins
+
+        assert_eq!(acc.result(), Some(300));
+    }
+
+    #[test]
+    fn test_last_value_same_timestamp() {
+        let mut acc = LastValueAccumulator::default();
+        acc.add((100, 1000));
+        acc.add((200, 1000)); // Same timestamp - keep latest arrival
+
+        assert_eq!(acc.result(), Some(200));
+    }
+
+    #[test]
+    fn test_last_value_merge() {
+        let mut acc1 = LastValueAccumulator::default();
+        acc1.add((100, 1000));
+
+        let mut acc2 = LastValueAccumulator::default();
+        acc2.add((200, 1500)); // Later
+
+        acc1.merge(&acc2);
+        assert_eq!(acc1.result(), Some(200)); // 1500 > 1000
+    }
+
+    #[test]
+    fn test_last_value_merge_same_timestamp() {
+        let mut acc1 = LastValueAccumulator::default();
+        acc1.add((100, 1000));
+
+        let mut acc2 = LastValueAccumulator::default();
+        acc2.add((200, 1000)); // Same timestamp
+
+        acc1.merge(&acc2);
+        assert_eq!(acc1.result(), Some(200)); // Take other on same timestamp
+    }
+
+    #[test]
+    fn test_first_value_f64_basic() {
+        let mut acc = FirstValueF64Accumulator::default();
+        acc.add((100.5, 1000));
+        acc.add((200.5, 500)); // Earlier
+        acc.add((300.5, 1500)); // Later
+
+        let result = acc.result().unwrap();
+        assert!((result - 200.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_last_value_f64_basic() {
+        let mut acc = LastValueF64Accumulator::default();
+        acc.add((100.5, 1000));
+        acc.add((200.5, 500)); // Earlier
+        acc.add((300.5, 1500)); // Later
+
+        let result = acc.result().unwrap();
+        assert!((result - 300.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_first_value_aggregator_extract() {
+        let aggregator = FirstValueAggregator::new(0, 1);
+
+        // Create event with value and timestamp columns
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("price", DataType::Int64, false),
+            Field::new("ts", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![100])),
+                Arc::new(Int64Array::from(vec![1000])),
+            ],
+        )
+        .unwrap();
+        let event = Event {
+            timestamp: 1000,
+            data: batch,
+        };
+
+        let extracted = aggregator.extract(&event);
+        assert_eq!(extracted, Some((100, 1000)));
+    }
+
+    #[test]
+    fn test_last_value_aggregator_extract() {
+        let aggregator = LastValueAggregator::new(0, 1);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("price", DataType::Int64, false),
+            Field::new("ts", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![100])),
+                Arc::new(Int64Array::from(vec![1000])),
+            ],
+        )
+        .unwrap();
+        let event = Event {
+            timestamp: 1000,
+            data: batch,
+        };
+
+        let extracted = aggregator.extract(&event);
+        assert_eq!(extracted, Some((100, 1000)));
+    }
+
+    #[test]
+    fn test_first_value_aggregator_invalid_column() {
+        let aggregator = FirstValueAggregator::new(5, 6); // Out of bounds
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "price",
+            DataType::Int64,
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![100]))]).unwrap();
+        let event = Event {
+            timestamp: 1000,
+            data: batch,
+        };
+
+        assert_eq!(aggregator.extract(&event), None);
+    }
+
+    #[test]
+    fn test_ohlc_simulation() {
+        // Simulate OHLC bar generation:
+        // Open = FIRST_VALUE(price)
+        // High = MAX(price)
+        // Low = MIN(price)
+        // Close = LAST_VALUE(price)
+        // Volume = SUM(quantity)
+
+        // Trades: (price, timestamp, quantity)
+        // t=100: price=100, qty=10
+        // t=200: price=105, qty=5
+        // t=300: price=98, qty=15
+        // t=400: price=102, qty=8
+
+        let mut first = FirstValueAccumulator::default();
+        let mut max = MaxAccumulator::default();
+        let mut min = MinAccumulator::default();
+        let mut last = LastValueAccumulator::default();
+        let mut sum = SumAccumulator::default();
+
+        // Process trades
+        first.add((100, 100));
+        max.add(100);
+        min.add(100);
+        last.add((100, 100));
+        sum.add(10);
+
+        first.add((105, 200));
+        max.add(105);
+        min.add(105);
+        last.add((105, 200));
+        sum.add(5);
+
+        first.add((98, 300));
+        max.add(98);
+        min.add(98);
+        last.add((98, 300));
+        sum.add(15);
+
+        first.add((102, 400));
+        max.add(102);
+        min.add(102);
+        last.add((102, 400));
+        sum.add(8);
+
+        // Expected OHLC: open=100, high=105, low=98, close=102, volume=38
+        assert_eq!(first.result(), Some(100), "Open");
+        assert_eq!(max.result(), Some(105), "High");
+        assert_eq!(min.result(), Some(98), "Low");
+        assert_eq!(last.result(), Some(102), "Close");
+        assert_eq!(sum.result(), 38, "Volume");
+    }
+
+    #[test]
+    fn test_first_value_checkpoint_restore() {
+        let mut acc = FirstValueAccumulator::default();
+        acc.add((100, 1000));
+        acc.add((200, 500)); // Earlier - this wins
+
+        // Serialize
+        let bytes = rkyv::to_bytes::<RkyvError>(&acc)
+            .expect("serialize")
+            .to_vec();
+
+        // Deserialize
+        let restored =
+            rkyv::from_bytes::<FirstValueAccumulator, RkyvError>(&bytes).expect("deserialize");
+
+        assert_eq!(restored.result(), Some(200));
+        assert_eq!(restored.timestamp, Some(500));
+    }
+
+    #[test]
+    fn test_last_value_checkpoint_restore() {
+        let mut acc = LastValueAccumulator::default();
+        acc.add((100, 1000));
+        acc.add((300, 1500)); // Later - this wins
+
+        // Serialize
+        let bytes = rkyv::to_bytes::<RkyvError>(&acc)
+            .expect("serialize")
+            .to_vec();
+
+        // Deserialize
+        let restored =
+            rkyv::from_bytes::<LastValueAccumulator, RkyvError>(&bytes).expect("deserialize");
+
+        assert_eq!(restored.result(), Some(300));
+        assert_eq!(restored.timestamp, Some(1500));
     }
 }

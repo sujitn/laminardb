@@ -5,7 +5,7 @@
 | Field | Value |
 |-------|-------|
 | **ID** | F059 |
-| **Status** | 📝 Draft |
+| **Status** | ✅ Done |
 | **Priority** | P0 |
 | **Phase** | 2 |
 | **Effort** | S (2-3 days) |

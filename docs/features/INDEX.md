@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
 | Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 29 | 17 | 0 | 0 | 12 |
+| Phase 2 | 29 | 16 | 0 | 0 | 13 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **75** | **51** | **0** | **1** | **23** |
+| **Total** | **75** | **50** | **0** | **1** | **24** |
 
 ## Status Legend
 
@@ -104,7 +104,7 @@
 | F024 | Two-Phase Commit | P1 | 📝 | [Link](phase-2/F024-two-phase-commit.md) |
 | F056 | ASOF Joins | P1 | 📝 | [Link](phase-2/F056-asof-joins.md) |
 | F057 | Stream Join Optimizations | P1 | 📝 | [Link](phase-2/F057-stream-join-optimizations.md) |
-| F059 | FIRST/LAST Value Aggregates | P0 | 📝 | [Link](phase-2/F059-first-last-aggregates.md) |
+| F059 | FIRST/LAST Value Aggregates | P0 | ✅ | [Link](phase-2/F059-first-last-aggregates.md) |
 | F060 | Cascading Materialized Views | P1 | 📝 | [Link](phase-2/F060-cascading-materialized-views.md) |
 | F062 | Per-Core WAL Segments | P1 | 📝 | [Link](phase-2/F062-per-core-wal.md) |
 | **F011B** | **EMIT Clause Extension** | **P0** | ✅ | [Link](phase-2/F011B-emit-clause-extension.md) |
