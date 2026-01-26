@@ -5,7 +5,7 @@
 | Field | Value |
 |-------|-------|
 | **ID** | F023 |
-| **Status** | 📝 Draft |
+| **Status** | ✅ Done |
 | **Priority** | P0 |
 | **Phase** | 2 |
 | **Effort** | L (1-2 weeks) |
@@ -63,7 +63,7 @@ impl IdempotentSink {
 
 ## Completion Checklist
 
-- [ ] Transactional sinks working
-- [ ] Idempotent fallback implemented
-- [ ] Recovery tested (no duplicates)
-- [ ] Multiple sink types supported
+- [x] Transactional sinks working — `TransactionalSink<S>` buffers writes, flushes on commit
+- [x] Idempotent fallback implemented — `IdempotentSink` with deduplication (pre-existing)
+- [x] Recovery tested (no duplicates) — 5 integration tests in `sink/mod.rs`
+- [x] Multiple sink types supported — TransactionalSink + IdempotentSink via `ExactlyOnceSinkAdapter`

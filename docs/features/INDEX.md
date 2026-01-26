@@ -5,12 +5,12 @@
 | Phase | Total | Draft | In Progress | Hardening | Done |
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 1 | 11 |
-| Phase 1.5 | 1 | 1 | 0 | 0 | 0 |
-| Phase 2 | 29 | 1 | 0 | 0 | 28 |
+| Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
+| Phase 2 | 30 | 1 | 0 | 0 | 29 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **75** | **35** | **0** | **1** | **39** |
+| **Total** | **76** | **34** | **0** | **1** | **41** |
 
 ## Status Legend
 
@@ -56,37 +56,40 @@
 
 ## Phase 1.5: SQL Parser Production Upgrade
 
-> **Status**: 📝 Draft - Blocks Phase 3 connectors and advanced SQL features
+> **Status**: ✅ **COMPLETE** - All 6 phases implemented
 
 | ID | Feature | Priority | Status | Effort | Spec |
 |----|---------|----------|--------|--------|------|
-| F006B | Production SQL Parser | P0 | 📝 | L (2-3 weeks) | [Link](phase-1/F006B-production-sql-parser.md) |
+| F006B | Production SQL Parser | P0 | ✅ | L (2-3 weeks) | [Link](phase-1/F006B-production-sql-parser.md) |
 
-### F006B Implementation Phases
+### F006B Implementation Phases - ALL COMPLETE ✅
 
-| Phase | Scope | Effort | Dependencies |
-|-------|-------|--------|--------------|
-| 1 | CREATE SOURCE/SINK parsing | 2-3 days | None |
-| 2 | Window function extraction (TUMBLE/HOP/SESSION) | 3-4 days | Phase 1 |
-| 3 | EMIT/Late Data integration | 2-3 days | Phase 2 |
-| 4 | Join query parsing (stream-stream, lookup) | 3-4 days | Phase 1 |
-| 5 | Query planner integration | 4-5 days | Phases 2, 3, 4 |
-| 6 | Aggregator detection (COUNT/SUM/MIN/MAX/AVG) | 2-3 days | Phase 4 |
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | CREATE SOURCE/SINK parsing | ✅ Done |
+| 2 | Window function extraction (TUMBLE/HOP/SESSION) | ✅ Done |
+| 3 | EMIT/Late Data integration | ✅ Done |
+| 4 | Join query parsing (stream-stream, lookup) | ✅ Done |
+| 5 | Query planner integration | ✅ Done |
+| 6 | Aggregator detection (COUNT/SUM/MIN/MAX/AVG) | ✅ Done |
 
-### Key Deliverables
+### Key Deliverables - ALL COMPLETE ✅
 
-- [ ] Fix hardcoded CREATE SOURCE/SINK (`parser_simple.rs:60-76`)
-- [ ] Fix hardcoded window args (`window_rewriter.rs:88-100`)
-- [ ] Implement `rewrite_select()` (`window_rewriter.rs:47-54`)
-- [ ] Replace `todo!()` in planner (`planner/mod.rs:22-25`)
-- [ ] New modules: `translator/`, `parser/join_parser.rs`, `parser/aggregation_parser.rs`
-- [ ] 30+ new test cases
+- [x] CREATE SOURCE/SINK parsing (`parser/streaming_parser.rs`)
+- [x] Window function extraction (`parser/window_rewriter.rs`)
+- [x] EMIT/Late Data integration (`parser/emit_parser.rs`)
+- [x] Join query parsing (`parser/join_parser.rs`)
+- [x] Query planner integration (`planner/mod.rs`)
+- [x] Aggregation detection (`parser/aggregation_parser.rs`)
+- [x] Window translator (`translator/window_translator.rs`)
+- [x] Join translator (`translator/join_translator.rs`)
+- [x] 129 tests in laminar-sql (exceeded 30+ target)
 
 ---
 
 ## Phase 2: Production Hardening
 
-> **Status**: 🚧 In Progress (28/29 features complete)
+> **Status**: 🚧 In Progress (29/30 features complete)
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
@@ -100,7 +103,7 @@
 | F020 | Lookup Joins | P0 | ✅ | [Link](phase-2/F020-lookup-joins.md) |
 | F021 | Temporal Joins | P2 | ✅ | [Link](phase-2/F021-temporal-joins.md) |
 | F022 | Incremental Checkpointing | P1 | ✅ | [Link](phase-2/F022-incremental-checkpointing.md) |
-| F023 | Exactly-Once Sinks | P0 | 📝 | [Link](phase-2/F023-exactly-once-sinks.md) |
+| F023 | Exactly-Once Sinks | P0 | ✅ | [Link](phase-2/F023-exactly-once-sinks.md) |
 | F024 | Two-Phase Commit | P1 | ✅ | [Link](phase-2/F024-two-phase-commit.md) |
 | F056 | ASOF Joins | P1 | ✅ | [Link](phase-2/F056-asof-joins.md) |
 | F057 | Stream Join Optimizations | P1 | ✅ | [Link](phase-2/F057-stream-join-optimizations.md) |
@@ -119,6 +122,7 @@
 | **F071** | **Zero-Allocation Enforcement** | **P0** | ✅ | [Link](phase-2/F071-zero-allocation-enforcement.md) |
 | **F072** | **XDP/eBPF Network Optimization** | **P2** | ✅ | [Link](phase-2/F072-xdp-network-optimization.md) |
 | **F073** | **Zero-Allocation Polling** | **P1** | ✅ | [Link](phase-2/F073-zero-allocation-polling.md) |
+| **F005B** | **Advanced DataFusion Integration** | **P1** | 📝 | [Link](phase-2/F005B-advanced-datafusion-integration.md) |
 
 ### Phase 2 Thread-Per-Core Research Gap Analysis (NEW)
 
@@ -308,24 +312,41 @@ F001 (Reactor) ──┬──▶ F002 (State Store)
                  ├──▶ F004 (Tumbling Windows)
                  └──▶ F009 (Event Time)
                           │
-F005 (DataFusion) ───────▶ F006 (SQL Parser) ⚠️ POC
+F005 (DataFusion) ✅ ────▶ F006 (SQL Parser) 🔧
                           │
 F007 (WAL) ──────────────▶ F008 (Checkpointing)
                           │
 F009 (Event Time) ───────▶ F010 (Watermarks) ──▶ F012 (Late Data)
                                               ──▶ F011 (EMIT)
 
-Phase 1.5 (SQL Parser Production - F006B):
+Phase 1.5 (SQL Parser Production - F006B) ✅ COMPLETE:
 ┌─────────────────────────────────────────────────────────────────┐
-│   F006 ──▶ Phase1 (CREATE SOURCE/SINK)                          │
+│   F006 ──▶ Phase1 (CREATE SOURCE/SINK) ✅                       │
 │                │                                                │
-│                ├──▶ Phase2 (Windows) ──▶ Phase3 (EMIT)          │
-│                │                              │                 │
-│                └──▶ Phase4 (Joins) ───────────┤                 │
-│                                               ▼                 │
-│                                        Phase5 (Planner)         │
-│                                               │                 │
-│   Configures: F004, F016, F019, F020 ◀────────┘                 │
+│                ├──▶ Phase2 (Windows) ✅ ──▶ Phase3 (EMIT) ✅    │
+│                │                                │               │
+│                └──▶ Phase4 (Joins) ✅ ──────────┤               │
+│                                                 ▼               │
+│                                          Phase5 (Planner) ✅    │
+│                                                 │               │
+│   Configures: F004, F016, F019, F020 ◀──────────┘               │
+│                                                                 │
+│   Output: parser/, planner/, translator/ modules (129 tests)    │
+└─────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+DataFusion Integration (F005B):
+┌─────────────────────────────────────────────────────────────────┐
+│   F005 (Basic) ──▶ F005B (Advanced)                             │
+│        ✅              📝                                       │
+│                         │                                       │
+│   F006B (Parser) ──────▶├──▶ Window UDFs (TUMBLE/HOP/SESSION)   │
+│        ✅               │                                       │
+│                         ├──▶ WATERMARK UDF                      │
+│                         │                                       │
+│                         └──▶ LogicalPlan from StreamingStatement│
+│                                     │                           │
+│   End-to-end SQL execution ◀────────┘                           │
 └─────────────────────────────────────────────────────────────────┘
                           │
                           ▼

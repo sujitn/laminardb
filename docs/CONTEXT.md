@@ -5,34 +5,32 @@
 
 ## Last Session
 
-**Date**: 2026-01-25
+**Date**: 2026-01-26
 
 ### What Was Accomplished
-- F072: XDP/eBPF Network Optimization - complete (34 tests, packet header, CPU steering, Linux loader)
-- F066: Watermark Alignment Groups - complete (25 tests, Pause/WarnOnly/DropExcess modes, coordinator)
-- F021: Temporal Joins - complete (22 tests, event-time/process-time, append-only/non-append-only)
-- F024: Two-Phase Commit - complete (20 new tests, presumed abort semantics, crash recovery)
-- F057: Stream Join Optimizations - complete (15 new tests, CPU-friendly encoding, asymmetric compaction, per-key tracking)
-- F065: Keyed Watermarks - complete (23 tests, per-key tracking with 99%+ accuracy)
-- F064: Per-Partition Watermarks - complete (26 tests, TPC integration)
-- F056: ASOF Joins - complete (22 tests, Backward/Forward/Nearest directions)
-- F060: Cascading Materialized Views - complete
-- F073: Zero-Allocation Polling - complete
-- F070: Task Budget Enforcement - complete
-- F069: Three-Ring I/O Architecture - complete
-- F062: Per-Core WAL Segments - complete
-- F022: Incremental Checkpointing - complete
+- F023: Exactly-Once Sinks - COMPLETE (28 new tests)
+  - `TransactionalSink<S>`: buffers writes, flushes only on commit, rollback discards
+  - `ExactlyOnceSinkAdapter<E>`: epoch-based transaction management bridging reactor::Sink to ExactlyOnceSink
+  - 5 recovery integration tests: transactional recovery, idempotent recovery, full adapter pipeline, multiple sink types, checkpoint manager
+  - New modules: `sink/transactional.rs`, `sink/adapter.rs`
 
-**Total tests**: 933 (746 core + 61 sql + 120 storage + 6 connectors)
+Previous session:
+- F006B: Production SQL Parser - COMPLETE (129 tests)
+- F005B: Advanced DataFusion Integration spec created
+- F072, F066, F021-F024, F056-F057, F060-F073 all complete
+
+**Total tests**: 1029 (774 core + 129 sql + 120 storage + 6 connectors)
 
 ### Where We Left Off
-**Phase 2 Production Hardening: 29/29 features complete (100%). PHASE 2 COMPLETE!**
+**Phase 2 Production Hardening: 29/30 features complete (97%)**
+- Remaining: F005B (Advanced DataFusion Integration)
 
 ### Immediate Next Steps
-1. Phase 3: Connectors & Integration (F025-F034)
+1. F005B: Advanced DataFusion Integration (P1) - streaming UDFs, LogicalPlan
+2. Phase 3: Connectors & Integration (F025-F034)
 
 ### Open Issues
-None - Phase 2 underway.
+None - Phase 2 nearly complete.
 
 ---
 
@@ -49,7 +47,7 @@ None - Phase 2 underway.
 | F019: Stream-Stream Joins | Done | Inner/Left/Right/Full |
 | F020: Lookup Joins | Done | Cached with TTL |
 | F011B: EMIT Extension | Done | OnWindowClose, Changelog, Final |
-| F023: Exactly-Once Sinks | Done | Transactional + idempotent |
+| F023: Exactly-Once Sinks | Done | TransactionalSink, ExactlyOnceSinkAdapter, 28 tests |
 | F059: FIRST/LAST | Done | Essential for OHLC |
 | F063: Changelog/Retraction | Done | Z-set foundation |
 | F067: io_uring Advanced | Done | SQPOLL, IOPOLL |
@@ -69,6 +67,15 @@ None - Phase 2 underway.
 | F021: Temporal Joins | Done | Event-time/process-time, append-only/non-append-only, 22 tests |
 | F066: Watermark Alignment Groups | Done | Pause/WarnOnly/DropExcess, coordinator, 25 tests |
 | F072: XDP/eBPF | Done | Packet header, CPU steering, Linux loader, 34 tests |
+| F005B: Advanced DataFusion | Spec | Streaming UDFs, LogicalPlan creation |
+
+---
+
+## Phase 1.5 Progress (SQL Parser)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| F006B: Production SQL Parser | Done | 129 tests, all 6 phases complete |
 
 ---
 
@@ -82,6 +89,8 @@ laminar-core/src/
   mv/           # F060: Cascading MVs
   budget/       # F070: Task budgets
   sink/         # F023: Exactly-once sinks
+    transactional  # F023: TransactionalSink<S> with buffer+commit
+    adapter        # F023: ExactlyOnceSinkAdapter epoch-based bridge
   io_uring/     # F067, F069: io_uring + three-ring
   xdp/          # F072: XDP/eBPF network optimization
   alloc/        # F071: Zero-allocation
@@ -90,6 +99,20 @@ laminar-core/src/
   operator/     # Windows, joins, changelog
     asof_join   # F056: ASOF joins
     temporal_join # F021: Temporal joins
+
+laminar-sql/src/       # F006B: Production SQL Parser
+  parser/              # SQL parsing with streaming extensions
+    streaming_parser   # CREATE SOURCE/SINK
+    window_rewriter    # TUMBLE/HOP/SESSION extraction
+    emit_parser        # EMIT clause parsing
+    late_data_parser   # Late data handling
+    join_parser        # Stream-stream/lookup join analysis
+    aggregation_parser # COUNT/SUM/MIN/MAX/AVG/FIRST/LAST detection
+  planner/             # StreamingPlanner, QueryPlan
+  translator/          # Operator configuration builders
+    window_translator  # WindowOperatorConfig
+    join_translator    # JoinOperatorConfig (stream/lookup)
+  datafusion/          # F005: DataFusion integration (F005B extends)
 
 laminar-storage/src/
   incremental/  # F022: Checkpointing
