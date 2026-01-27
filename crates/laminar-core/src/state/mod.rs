@@ -61,6 +61,8 @@
 //! ```
 
 use bytes::Bytes;
+use std::collections::BTreeMap;
+use std::ops::Bound;
 use rkyv::{
     api::high::{HighDeserializer, HighSerializer, HighValidator},
     bytecheck::CheckBytes,
@@ -69,7 +71,6 @@ use rkyv::{
     util::AlignedVec,
     Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize,
 };
-use std::collections::BTreeMap;
 use std::ops::Range;
 
 /// Compute the lexicographic successor of a byte prefix.
@@ -491,17 +492,21 @@ impl StateStore for InMemoryStore {
         self.data.get(key).cloned()
     }
 
+    #[inline]
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), StateError> {
         let value_bytes = Bytes::copy_from_slice(value);
 
-        // Update existing key in-place to avoid key allocation
-        if let Some(existing) = self.data.get_mut(key) {
-            self.size_bytes -= existing.len();
-            self.size_bytes += value.len();
-            *existing = value_bytes;
-        } else {
-            self.size_bytes += key.len() + value.len();
-            self.data.insert(key.to_vec(), value_bytes);
+        // Entry API: single tree traversal for both insert and update
+        match self.data.entry(key.to_vec()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                self.size_bytes -= entry.get().len();
+                self.size_bytes += value.len();
+                *entry.get_mut() = value_bytes;
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                self.size_bytes += key.len() + value.len();
+                entry.insert(value_bytes);
+            }
         }
         Ok(())
     }
@@ -528,14 +533,14 @@ impl StateStore for InMemoryStore {
         if let Some(end) = prefix_successor(prefix) {
             Box::new(
                 self.data
-                    .range::<Vec<u8>, _>(prefix.to_vec()..end)
+                    .range::<[u8], _>((Bound::Included(prefix), Bound::Excluded(end.as_slice())))
                     .map(|(k, v)| (Bytes::copy_from_slice(k), v.clone())),
             )
         } else {
             // All-0xFF prefix: scan from prefix to end
             Box::new(
                 self.data
-                    .range::<Vec<u8>, _>(prefix.to_vec()..)
+                    .range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
                     .map(|(k, v)| (Bytes::copy_from_slice(k), v.clone())),
             )
         }
@@ -547,7 +552,7 @@ impl StateStore for InMemoryStore {
     ) -> Box<dyn Iterator<Item = (Bytes, Bytes)> + 'a> {
         Box::new(
             self.data
-                .range::<Vec<u8>, _>(range.start.to_vec()..range.end.to_vec())
+                .range::<[u8], _>((Bound::Included(range.start), Bound::Excluded(range.end)))
                 .map(|(k, v)| (Bytes::copy_from_slice(k), v.clone())),
         )
     }

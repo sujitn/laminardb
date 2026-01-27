@@ -33,7 +33,7 @@ use bytes::Bytes;
 use memmap2::MmapMut;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::ops::Range;
+use std::ops::{Bound, Range};
 use std::path::{Path, PathBuf};
 
 use super::{prefix_successor, StateError, StateSnapshot, StateStore};
@@ -416,6 +416,7 @@ impl StateStore for MmapStateStore {
         })
     }
 
+    #[inline]
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), StateError> {
         // Write value to storage
         let offset = self.storage.write(value)?;
@@ -427,13 +428,16 @@ impl StateStore for MmapStateStore {
         };
         self.next_version += 1;
 
-        // Update existing key in-place to avoid key allocation
-        if let Some(existing) = self.index.get_mut(key) {
-            self.size_bytes = self.size_bytes - existing.len + value.len();
-            *existing = entry;
-        } else {
-            self.size_bytes += key.len() + value.len();
-            self.index.insert(key.to_vec(), entry);
+        // Entry API: single tree traversal for both insert and update
+        match self.index.entry(key.to_vec()) {
+            std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                self.size_bytes = self.size_bytes - occupied.get().len + value.len();
+                *occupied.get_mut() = entry;
+            }
+            std::collections::btree_map::Entry::Vacant(vacant) => {
+                self.size_bytes += key.len() + value.len();
+                vacant.insert(entry);
+            }
         }
         Ok(())
     }
@@ -460,7 +464,7 @@ impl StateStore for MmapStateStore {
         if let Some(end) = prefix_successor(prefix) {
             Box::new(
                 self.index
-                    .range::<Vec<u8>, _>(prefix.to_vec()..end)
+                    .range::<[u8], _>((Bound::Included(prefix), Bound::Excluded(end.as_slice())))
                     .map(|(k, entry)| {
                         let value = self.storage.get(entry.offset, entry.len);
                         (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
@@ -469,7 +473,7 @@ impl StateStore for MmapStateStore {
         } else {
             Box::new(
                 self.index
-                    .range::<Vec<u8>, _>(prefix.to_vec()..)
+                    .range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
                     .map(|(k, entry)| {
                         let value = self.storage.get(entry.offset, entry.len);
                         (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
@@ -484,7 +488,7 @@ impl StateStore for MmapStateStore {
     ) -> Box<dyn Iterator<Item = (Bytes, Bytes)> + 'a> {
         Box::new(
             self.index
-                .range::<Vec<u8>, _>(range.start.to_vec()..range.end.to_vec())
+                .range::<[u8], _>((Bound::Included(range.start), Bound::Excluded(range.end)))
                 .map(|(k, entry)| {
                     let value = self.storage.get(entry.offset, entry.len);
                     (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
