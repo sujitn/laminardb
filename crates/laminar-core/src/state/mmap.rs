@@ -1,20 +1,20 @@
 //! Memory-mapped state store implementation.
 //!
 //! This module provides a high-performance key-value state store using memory-mapped
-//! files for persistence and `FxHashMap` for fast lookups. It supports both in-memory
+//! files for persistence and `BTreeMap` for sorted key access. It supports both in-memory
 //! and persistent modes.
 //!
 //! # Design
 //!
 //! The store uses a two-tier architecture:
-//! - **Index tier**: `FxHashMap` mapping keys to value entries (offset, length)
+//! - **Index tier**: `BTreeMap` mapping keys to value entries (offset, length)
 //! - **Data tier**: Either arena-allocated memory or memory-mapped file
 //!
 //! # Performance Characteristics
 //!
-//! - **Get**: O(1), < 500ns typical (hash lookup + pointer follow)
-//! - **Put**: O(1) amortized, may trigger file growth
-//! - **Prefix scan**: O(n) where n is total entries
+//! - **Get**: O(log n), < 500ns typical (tree lookup + pointer follow)
+//! - **Put**: O(log n), may trigger file growth
+//! - **Prefix scan**: O(log n + k) where k is matching entries
 //!
 //! # Usage
 //!
@@ -30,13 +30,13 @@
 //! ```
 
 use bytes::Bytes;
-use fxhash::FxHashMap;
 use memmap2::MmapMut;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use super::{StateError, StateSnapshot, StateStore};
+use super::{prefix_successor, StateError, StateSnapshot, StateStore};
 
 /// Header size in the mmap file (magic + version + entry count + data offset).
 const MMAP_HEADER_SIZE: usize = 32;
@@ -192,7 +192,8 @@ impl Storage {
 ///
 /// This store provides high-performance key-value storage with optional
 /// persistence via memory-mapped files. It achieves sub-500ns lookup latency
-/// by using `FxHashMap` for the index and direct memory access for values.
+/// by using `BTreeMap` for the index (enabling O(log n + k) prefix/range scans)
+/// and direct memory access for values.
 ///
 /// # Modes
 ///
@@ -205,7 +206,7 @@ impl Storage {
 /// access within a reactor.
 pub struct MmapStateStore {
     /// Index mapping keys to value entries.
-    index: FxHashMap<Vec<u8>, ValueEntry>,
+    index: BTreeMap<Vec<u8>, ValueEntry>,
     /// Storage backend (arena or mmap).
     storage: Storage,
     /// Total size of keys + values for size tracking.
@@ -225,7 +226,7 @@ impl MmapStateStore {
     #[must_use]
     pub fn in_memory(capacity: usize) -> Self {
         Self {
-            index: FxHashMap::default(),
+            index: BTreeMap::new(),
             storage: Storage::Arena {
                 data: vec![0u8; capacity],
                 write_pos: 0,
@@ -282,7 +283,7 @@ impl MmapStateStore {
         } else {
             // Initialize new file
             Self::init_mmap_header(&mut mmap);
-            (FxHashMap::default(), 0, 1)
+            (BTreeMap::new(), 0, 1)
         };
 
         let size_bytes = index.iter().map(|(k, v)| k.len() + v.len).sum();
@@ -313,7 +314,7 @@ impl MmapStateStore {
     #[allow(clippy::type_complexity)]
     fn load_from_mmap(
         mmap: &MmapMut,
-    ) -> Result<(FxHashMap<Vec<u8>, ValueEntry>, usize, u64), StateError> {
+    ) -> Result<(BTreeMap<Vec<u8>, ValueEntry>, usize, u64), StateError> {
         // Check magic number
         let magic = u64::from_le_bytes(mmap[0..8].try_into().unwrap());
         if magic != MMAP_MAGIC {
@@ -333,7 +334,7 @@ impl MmapStateStore {
         // For now, we don't persist the index in the file, so we start fresh
         // A full implementation would store the index at the end of the file
         // and rebuild it on load. For F002 scope, we focus on the mmap data storage.
-        Ok((FxHashMap::default(), 0, 1))
+        Ok((BTreeMap::new(), 0, 1))
     }
 
     /// Check if this store is persistent.
@@ -450,15 +451,31 @@ impl StateStore for MmapStateStore {
         &'a self,
         prefix: &'a [u8],
     ) -> Box<dyn Iterator<Item = (Bytes, Bytes)> + 'a> {
-        Box::new(
-            self.index
-                .iter()
-                .filter(move |(k, _)| k.starts_with(prefix))
-                .map(|(k, entry)| {
-                    let value = self.storage.get(entry.offset, entry.len);
-                    (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
-                }),
-        )
+        if prefix.is_empty() {
+            return Box::new(self.index.iter().map(|(k, entry)| {
+                let value = self.storage.get(entry.offset, entry.len);
+                (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
+            }));
+        }
+        if let Some(end) = prefix_successor(prefix) {
+            Box::new(
+                self.index
+                    .range::<Vec<u8>, _>(prefix.to_vec()..end)
+                    .map(|(k, entry)| {
+                        let value = self.storage.get(entry.offset, entry.len);
+                        (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
+                    }),
+            )
+        } else {
+            Box::new(
+                self.index
+                    .range::<Vec<u8>, _>(prefix.to_vec()..)
+                    .map(|(k, entry)| {
+                        let value = self.storage.get(entry.offset, entry.len);
+                        (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))
+                    }),
+            )
+        }
     }
 
     fn range_scan<'a>(
@@ -467,8 +484,7 @@ impl StateStore for MmapStateStore {
     ) -> Box<dyn Iterator<Item = (Bytes, Bytes)> + 'a> {
         Box::new(
             self.index
-                .iter()
-                .filter(move |(k, _)| k.as_slice() >= range.start && k.as_slice() < range.end)
+                .range::<Vec<u8>, _>(range.start.to_vec()..range.end.to_vec())
                 .map(|(k, entry)| {
                     let value = self.storage.get(entry.offset, entry.len);
                     (Bytes::copy_from_slice(k), Bytes::copy_from_slice(value))

@@ -4,13 +4,13 @@
 
 | Phase | Total | Draft | In Progress | Hardening | Done |
 |-------|-------|-------|-------------|-----------|------|
-| Phase 1 | 12 | 0 | 0 | 1 | 11 |
+| Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
 | Phase 3 | 12 | 12 | 0 | 0 | 0 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **80** | **33** | **0** | **1** | **46** |
+| **Total** | **80** | **33** | **0** | **0** | **47** |
 
 ## Status Legend
 
@@ -31,10 +31,10 @@
 |----|---------|----------|--------|------|------|
 | F001 | Core Reactor Event Loop | P0 | ✅ | No io_uring (P1) | [Link](phase-1/F001-core-reactor-event-loop.md) |
 | F002 | Memory-Mapped State Store | P0 | ✅ | No CoW/huge pages (P1) | [Link](phase-1/F002-memory-mapped-state-store.md) |
-| F003 | State Store Interface | P0 | ✅ | Prefix scan O(n) (P2) | [Link](phase-1/F003-state-store-interface.md) |
+| F003 | State Store Interface | P0 | ✅ | None (prefix_scan now O(log n + k)) | [Link](phase-1/F003-state-store-interface.md) |
 | F004 | Tumbling Windows | P0 | ✅ | None | [Link](phase-1/F004-tumbling-windows.md) |
 | F005 | DataFusion Integration | P0 | ✅ | No EXPLAIN (P2) | [Link](phase-1/F005-datafusion-integration.md) |
-| F006 | Basic SQL Parser | P0 | 🔧 | **POC only** (P1) | [Link](phase-1/F006-basic-sql-parser.md) |
+| F006 | Basic SQL Parser | P0 | ✅ | Superseded by F006B | [Link](phase-1/F006-basic-sql-parser.md) |
 | F007 | Write-Ahead Log | P1 | ✅ | CRC32, fdatasync, torn write - all fixed | [Link](phase-1/F007-write-ahead-log.md) |
 | F008 | Basic Checkpointing | P1 | 🔧 | Blocking I/O (P1 for Phase 2) | [Link](phase-1/F008-basic-checkpointing.md) |
 | F009 | Event Time Processing | P1 | ✅ | None | [Link](phase-1/F009-event-time-processing.md) |
