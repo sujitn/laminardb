@@ -107,6 +107,21 @@ impl StreamingPlanner {
                 emit_clause,
             } => self.plan_continuous_query(name, query, emit_clause.as_ref()),
             StreamingStatement::Standard(stmt) => self.plan_standard_statement(stmt),
+            StreamingStatement::DropSource { .. }
+            | StreamingStatement::DropSink { .. }
+            | StreamingStatement::DropMaterializedView { .. }
+            | StreamingStatement::Show(_)
+            | StreamingStatement::Describe { .. }
+            | StreamingStatement::Explain { .. }
+            | StreamingStatement::CreateMaterializedView { .. }
+            | StreamingStatement::InsertInto { .. } => {
+                // These statements are handled directly by the database facade
+                // and don't need query planning. Return as Standard pass-through.
+                Err(PlanningError::UnsupportedSql(format!(
+                    "Statement type {:?} is handled by the database layer, not the planner",
+                    std::mem::discriminant(statement)
+                )))
+            }
         }
     }
 

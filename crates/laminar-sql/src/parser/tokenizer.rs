@@ -29,14 +29,48 @@ pub enum StreamingDdlKind {
         /// Whether OR REPLACE was specified
         or_replace: bool,
     },
+    /// DROP SOURCE [IF EXISTS]
+    DropSource {
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+    /// DROP SINK [IF EXISTS]
+    DropSink {
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+    /// DROP MATERIALIZED VIEW [IF EXISTS]
+    DropMaterializedView {
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+    /// SHOW SOURCES
+    ShowSources,
+    /// SHOW SINKS
+    ShowSinks,
+    /// SHOW QUERIES
+    ShowQueries,
+    /// SHOW MATERIALIZED VIEWS
+    ShowMaterializedViews,
+    /// DESCRIBE <object>
+    DescribeSource,
+    /// EXPLAIN <streaming query>
+    ExplainStreaming,
+    /// CREATE [OR REPLACE] MATERIALIZED VIEW
+    CreateMaterializedView {
+        /// Whether OR REPLACE was specified
+        or_replace: bool,
+    },
     /// Not a streaming DDL statement
     None,
 }
 
 /// Detect which streaming DDL type (if any) the token stream represents.
 ///
-/// Examines the first few significant tokens to determine if this is
-/// a CREATE SOURCE, CREATE SINK, or CREATE CONTINUOUS QUERY statement.
+/// Examines the first few significant tokens to determine the statement type.
+/// Recognizes CREATE SOURCE/SINK/CONTINUOUS QUERY/MATERIALIZED VIEW,
+/// DROP SOURCE/SINK/MATERIALIZED VIEW, SHOW SOURCES/SINKS/QUERIES/MATERIALIZED VIEWS,
+/// DESCRIBE, and EXPLAIN statements.
 /// Whitespace tokens are skipped during detection.
 pub fn detect_streaming_ddl(tokens: &[TokenWithSpan]) -> StreamingDdlKind {
     let significant: Vec<&TokenWithSpan> = tokens
@@ -48,16 +82,41 @@ pub fn detect_streaming_ddl(tokens: &[TokenWithSpan]) -> StreamingDdlKind {
         return StreamingDdlKind::None;
     }
 
-    // First token must be CREATE
-    let is_create = matches!(
-        &significant[0].token,
-        Token::Word(Word { keyword: Keyword::CREATE, .. })
-    );
-    if !is_create {
+    // Dispatch based on the first token
+    match &significant[0].token {
+        Token::Word(Word {
+            keyword: Keyword::CREATE,
+            ..
+        }) => detect_create_ddl(&significant),
+        Token::Word(Word {
+            keyword: Keyword::DROP,
+            ..
+        }) => detect_drop_ddl(&significant),
+        Token::Word(w) if is_word_ci(w, "SHOW") => detect_show_ddl(&significant),
+        Token::Word(
+            Word {
+                keyword: Keyword::DESCRIBE,
+                ..
+            }
+            | Word {
+                keyword: Keyword::DESC,
+                ..
+            },
+        ) => StreamingDdlKind::DescribeSource,
+        Token::Word(Word {
+            keyword: Keyword::EXPLAIN,
+            ..
+        }) => detect_explain_ddl(&significant),
+        _ => StreamingDdlKind::None,
+    }
+}
+
+/// Detect CREATE-based DDL statements.
+fn detect_create_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
+    if significant.len() < 2 {
         return StreamingDdlKind::None;
     }
 
-    // Check second token for SOURCE/SINK/CONTINUOUS or OR (for OR REPLACE)
     match &significant[1].token {
         Token::Word(w) if is_word_ci(w, "SOURCE") => {
             StreamingDdlKind::CreateSource { or_replace: false }
@@ -67,6 +126,22 @@ pub fn detect_streaming_ddl(tokens: &[TokenWithSpan]) -> StreamingDdlKind {
         }
         Token::Word(w) if is_word_ci(w, "CONTINUOUS") => {
             StreamingDdlKind::CreateContinuousQuery { or_replace: false }
+        }
+        Token::Word(Word {
+            keyword: Keyword::MATERIALIZED,
+            ..
+        }) => {
+            // CREATE MATERIALIZED VIEW
+            if significant.len() >= 3 {
+                if let Token::Word(Word {
+                    keyword: Keyword::VIEW,
+                    ..
+                }) = &significant[2].token
+                {
+                    return StreamingDdlKind::CreateMaterializedView { or_replace: false };
+                }
+            }
+            StreamingDdlKind::None
         }
         Token::Word(Word {
             keyword: Keyword::OR,
@@ -79,7 +154,7 @@ pub fn detect_streaming_ddl(tokens: &[TokenWithSpan]) -> StreamingDdlKind {
                     Token::Word(Word { keyword: Keyword::REPLACE, .. })
                 );
                 if is_replace {
-                    return classify_after_or_replace(&significant[3].token);
+                    return classify_after_or_replace(&significant[3].token, significant);
                 }
             }
             StreamingDdlKind::None
@@ -88,8 +163,117 @@ pub fn detect_streaming_ddl(tokens: &[TokenWithSpan]) -> StreamingDdlKind {
     }
 }
 
+/// Detect DROP-based DDL statements.
+fn detect_drop_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
+    if significant.len() < 2 {
+        return StreamingDdlKind::None;
+    }
+
+    match &significant[1].token {
+        Token::Word(w) if is_word_ci(w, "SOURCE") => {
+            let if_exists = has_if_exists(significant, 2);
+            StreamingDdlKind::DropSource { if_exists }
+        }
+        Token::Word(w) if is_word_ci(w, "SINK") => {
+            let if_exists = has_if_exists(significant, 2);
+            StreamingDdlKind::DropSink { if_exists }
+        }
+        Token::Word(Word {
+            keyword: Keyword::MATERIALIZED,
+            ..
+        }) => {
+            // DROP MATERIALIZED VIEW
+            if significant.len() >= 3 {
+                if let Token::Word(Word {
+                    keyword: Keyword::VIEW,
+                    ..
+                }) = &significant[2].token
+                {
+                    let if_exists = has_if_exists(significant, 3);
+                    return StreamingDdlKind::DropMaterializedView { if_exists };
+                }
+            }
+            StreamingDdlKind::None
+        }
+        _ => StreamingDdlKind::None,
+    }
+}
+
+/// Detect SHOW-based DDL statements.
+fn detect_show_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
+    if significant.len() < 2 {
+        return StreamingDdlKind::None;
+    }
+
+    match &significant[1].token {
+        Token::Word(w) if is_word_ci(w, "SOURCES") => StreamingDdlKind::ShowSources,
+        Token::Word(w) if is_word_ci(w, "SINKS") => StreamingDdlKind::ShowSinks,
+        Token::Word(w) if is_word_ci(w, "QUERIES") => StreamingDdlKind::ShowQueries,
+        Token::Word(Word {
+            keyword: Keyword::MATERIALIZED,
+            ..
+        }) => {
+            // SHOW MATERIALIZED VIEWS
+            if significant.len() >= 3 {
+                if let Token::Word(w) = &significant[2].token {
+                    if is_word_ci(w, "VIEWS") {
+                        return StreamingDdlKind::ShowMaterializedViews;
+                    }
+                }
+            }
+            StreamingDdlKind::None
+        }
+        _ => StreamingDdlKind::None,
+    }
+}
+
+/// Detect EXPLAIN statements that wrap streaming queries.
+fn detect_explain_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
+    if significant.len() < 2 {
+        return StreamingDdlKind::None;
+    }
+
+    // EXPLAIN followed by SELECT or CREATE (streaming DDL)
+    match &significant[1].token {
+        Token::Word(
+            Word {
+                keyword: Keyword::SELECT,
+                ..
+            }
+            | Word {
+                keyword: Keyword::CREATE,
+                ..
+            },
+        ) => StreamingDdlKind::ExplainStreaming,
+        _ => StreamingDdlKind::None,
+    }
+}
+
+/// Check if IF EXISTS appears at the given offset in the significant tokens.
+fn has_if_exists(significant: &[&TokenWithSpan], offset: usize) -> bool {
+    if significant.len() > offset + 1 {
+        let is_if = matches!(
+            &significant[offset].token,
+            Token::Word(Word { keyword: Keyword::IF, .. })
+        );
+        let is_exists = matches!(
+            &significant[offset + 1].token,
+            Token::Word(Word { keyword: Keyword::EXISTS, .. })
+        );
+        is_if && is_exists
+    } else {
+        false
+    }
+}
+
 /// Classify the token after CREATE OR REPLACE.
-fn classify_after_or_replace(token: &Token) -> StreamingDdlKind {
+///
+/// Also handles `CREATE OR REPLACE MATERIALIZED VIEW` by checking the
+/// next token in the significant tokens array.
+fn classify_after_or_replace(
+    token: &Token,
+    significant: &[&TokenWithSpan],
+) -> StreamingDdlKind {
     match token {
         Token::Word(w) if is_word_ci(w, "SOURCE") => {
             StreamingDdlKind::CreateSource { or_replace: true }
@@ -99,6 +283,23 @@ fn classify_after_or_replace(token: &Token) -> StreamingDdlKind {
         }
         Token::Word(w) if is_word_ci(w, "CONTINUOUS") => {
             StreamingDdlKind::CreateContinuousQuery { or_replace: true }
+        }
+        Token::Word(Word {
+            keyword: Keyword::MATERIALIZED,
+            ..
+        }) => {
+            // CREATE OR REPLACE MATERIALIZED VIEW
+            // significant[0]=CREATE [1]=OR [2]=REPLACE [3]=MATERIALIZED [4]=VIEW
+            if significant.len() >= 5 {
+                if let Token::Word(Word {
+                    keyword: Keyword::VIEW,
+                    ..
+                }) = &significant[4].token
+                {
+                    return StreamingDdlKind::CreateMaterializedView { or_replace: true };
+                }
+            }
+            StreamingDdlKind::None
         }
         _ => StreamingDdlKind::None,
     }
@@ -322,5 +523,139 @@ mod tests {
 
         let options = parse_with_options(&mut parser).unwrap();
         assert!(options.is_empty());
+    }
+
+    // ==================== New DDL Detection Tests ====================
+
+    #[test]
+    fn test_detect_drop_source() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DROP SOURCE events")),
+            StreamingDdlKind::DropSource { if_exists: false }
+        );
+    }
+
+    #[test]
+    fn test_detect_drop_source_if_exists() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DROP SOURCE IF EXISTS events")),
+            StreamingDdlKind::DropSource { if_exists: true }
+        );
+    }
+
+    #[test]
+    fn test_detect_drop_sink() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DROP SINK output")),
+            StreamingDdlKind::DropSink { if_exists: false }
+        );
+    }
+
+    #[test]
+    fn test_detect_drop_sink_if_exists() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DROP SINK IF EXISTS output")),
+            StreamingDdlKind::DropSink { if_exists: true }
+        );
+    }
+
+    #[test]
+    fn test_detect_drop_materialized_view() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DROP MATERIALIZED VIEW live_stats")),
+            StreamingDdlKind::DropMaterializedView { if_exists: false }
+        );
+    }
+
+    #[test]
+    fn test_detect_drop_materialized_view_if_exists() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DROP MATERIALIZED VIEW IF EXISTS live_stats")),
+            StreamingDdlKind::DropMaterializedView { if_exists: true }
+        );
+    }
+
+    #[test]
+    fn test_detect_show_sources() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("SHOW SOURCES")),
+            StreamingDdlKind::ShowSources
+        );
+    }
+
+    #[test]
+    fn test_detect_show_sinks() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("SHOW SINKS")),
+            StreamingDdlKind::ShowSinks
+        );
+    }
+
+    #[test]
+    fn test_detect_show_queries() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("SHOW QUERIES")),
+            StreamingDdlKind::ShowQueries
+        );
+    }
+
+    #[test]
+    fn test_detect_show_materialized_views() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("SHOW MATERIALIZED VIEWS")),
+            StreamingDdlKind::ShowMaterializedViews
+        );
+    }
+
+    #[test]
+    fn test_detect_describe() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("DESCRIBE events")),
+            StreamingDdlKind::DescribeSource
+        );
+    }
+
+    #[test]
+    fn test_detect_explain_select() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("EXPLAIN SELECT * FROM events")),
+            StreamingDdlKind::ExplainStreaming
+        );
+    }
+
+    #[test]
+    fn test_detect_create_materialized_view() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize(
+                "CREATE MATERIALIZED VIEW live_stats AS SELECT COUNT(*) FROM events"
+            )),
+            StreamingDdlKind::CreateMaterializedView { or_replace: false }
+        );
+    }
+
+    #[test]
+    fn test_detect_create_or_replace_materialized_view() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize(
+                "CREATE OR REPLACE MATERIALIZED VIEW live_stats AS SELECT COUNT(*) FROM events"
+            )),
+            StreamingDdlKind::CreateMaterializedView { or_replace: true }
+        );
+    }
+
+    #[test]
+    fn test_detect_show_case_insensitive() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("show sources")),
+            StreamingDdlKind::ShowSources
+        );
+    }
+
+    #[test]
+    fn test_detect_drop_source_case_insensitive() {
+        assert_eq!(
+            detect_streaming_ddl(&tokenize("drop source events")),
+            StreamingDdlKind::DropSource { if_exists: false }
+        );
     }
 }

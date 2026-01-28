@@ -8,6 +8,9 @@ members = [
     "crates/laminar-admin",
     "crates/laminar-observe",
     "crates/laminar-server",
+    "crates/laminar-derive",
+    "crates/laminar-db",
+    "crates/laminardb",
 ]
 resolver = "2"
 
@@ -57,6 +60,10 @@ datafusion = "52.0"
 datafusion-common = "52.0"
 datafusion-expr = "52.0"
 datafusion-sql = "52.0"
+sqlparser = "0.60"
+
+# Async
+tokio-stream = "0.1"
 
 # Collections
 smallvec = { version = "1.15", features = ["const_new", "union"] }

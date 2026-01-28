@@ -317,8 +317,8 @@ impl<T: Record> Source<T> {
     /// Returns `StreamingError::SchemaMismatch` if the batch schema doesn't match.
     /// Returns `StreamingError::ChannelClosed` if the sink has been dropped.
     pub fn push_arrow(&self, batch: RecordBatch) -> Result<(), StreamingError> {
-        // Validate schema matches
-        if batch.schema() != self.inner.schema {
+        // Validate schema matches (skip for type-erased sources with empty schema)
+        if !self.inner.schema.fields().is_empty() && batch.schema() != self.inner.schema {
             return Err(StreamingError::SchemaMismatch {
                 expected: self
                     .inner

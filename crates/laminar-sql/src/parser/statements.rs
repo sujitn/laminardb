@@ -11,6 +11,19 @@ use sqlparser::ast::{ColumnDef, Expr, Ident, ObjectName};
 use super::window_rewriter::WindowRewriter;
 use super::ParseError;
 
+/// SHOW command variants for listing streaming objects.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShowCommand {
+    /// SHOW SOURCES - list all registered sources
+    Sources,
+    /// SHOW SINKS - list all registered sinks
+    Sinks,
+    /// SHOW QUERIES - list all running continuous queries
+    Queries,
+    /// SHOW MATERIALIZED VIEWS - list all materialized views
+    MaterializedViews,
+}
+
 /// Streaming-specific SQL statements
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamingStatement {
@@ -31,6 +44,73 @@ pub enum StreamingStatement {
         query: Box<StreamingStatement>,
         /// EMIT clause if present
         emit_clause: Option<EmitClause>,
+    },
+
+    /// DROP SOURCE statement
+    DropSource {
+        /// Source name to drop
+        name: ObjectName,
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+
+    /// DROP SINK statement
+    DropSink {
+        /// Sink name to drop
+        name: ObjectName,
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+
+    /// DROP MATERIALIZED VIEW statement
+    DropMaterializedView {
+        /// View name to drop
+        name: ObjectName,
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+        /// Whether CASCADE was specified
+        cascade: bool,
+    },
+
+    /// SHOW SOURCES/SINKS/QUERIES/MATERIALIZED VIEWS
+    Show(ShowCommand),
+
+    /// DESCRIBE source, sink, or other streaming object
+    Describe {
+        /// Object name to describe
+        name: ObjectName,
+        /// Whether EXTENDED was specified for additional detail
+        extended: bool,
+    },
+
+    /// EXPLAIN a streaming query plan
+    Explain {
+        /// The statement to explain
+        statement: Box<StreamingStatement>,
+    },
+
+    /// CREATE MATERIALIZED VIEW
+    CreateMaterializedView {
+        /// View name
+        name: ObjectName,
+        /// The backing query
+        query: Box<StreamingStatement>,
+        /// Optional EMIT clause
+        emit_clause: Option<EmitClause>,
+        /// Whether OR REPLACE was specified
+        or_replace: bool,
+        /// Whether IF NOT EXISTS was specified
+        if_not_exists: bool,
+    },
+
+    /// INSERT INTO a streaming source or table
+    InsertInto {
+        /// Target table or source name
+        table_name: ObjectName,
+        /// Column names (empty if not specified)
+        columns: Vec<Ident>,
+        /// Row values
+        values: Vec<Vec<Expr>>,
     },
 }
 
@@ -416,5 +496,179 @@ mod tests {
         let clause = LateDataClause::side_output_only("late_events".to_string());
         assert!(clause.allowed_lateness.is_none());
         assert_eq!(clause.side_output, Some("late_events".to_string()));
+    }
+
+    // ==================== ShowCommand Tests ====================
+
+    #[test]
+    fn test_show_command_variants() {
+        let sources = ShowCommand::Sources;
+        let sinks = ShowCommand::Sinks;
+        let queries = ShowCommand::Queries;
+        let mvs = ShowCommand::MaterializedViews;
+
+        assert_eq!(sources, ShowCommand::Sources);
+        assert_eq!(sinks, ShowCommand::Sinks);
+        assert_eq!(queries, ShowCommand::Queries);
+        assert_eq!(mvs, ShowCommand::MaterializedViews);
+    }
+
+    #[test]
+    fn test_show_command_clone() {
+        let cmd = ShowCommand::Sources;
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+    }
+
+    // ==================== New StreamingStatement Variant Tests ====================
+
+    #[test]
+    fn test_drop_source_statement() {
+        let stmt = StreamingStatement::DropSource {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("events"))]),
+            if_exists: true,
+        };
+        match stmt {
+            StreamingStatement::DropSource { name, if_exists } => {
+                assert_eq!(name.to_string(), "events");
+                assert!(if_exists);
+            }
+            _ => panic!("Expected DropSource"),
+        }
+    }
+
+    #[test]
+    fn test_drop_sink_statement() {
+        let stmt = StreamingStatement::DropSink {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("output"))]),
+            if_exists: false,
+        };
+        match stmt {
+            StreamingStatement::DropSink { name, if_exists } => {
+                assert_eq!(name.to_string(), "output");
+                assert!(!if_exists);
+            }
+            _ => panic!("Expected DropSink"),
+        }
+    }
+
+    #[test]
+    fn test_drop_materialized_view_statement() {
+        let stmt = StreamingStatement::DropMaterializedView {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("live_stats"))]),
+            if_exists: true,
+            cascade: true,
+        };
+        match stmt {
+            StreamingStatement::DropMaterializedView {
+                name,
+                if_exists,
+                cascade,
+            } => {
+                assert_eq!(name.to_string(), "live_stats");
+                assert!(if_exists);
+                assert!(cascade);
+            }
+            _ => panic!("Expected DropMaterializedView"),
+        }
+    }
+
+    #[test]
+    fn test_show_statement() {
+        let stmt = StreamingStatement::Show(ShowCommand::Sources);
+        match stmt {
+            StreamingStatement::Show(ShowCommand::Sources) => (),
+            _ => panic!("Expected Show(Sources)"),
+        }
+    }
+
+    #[test]
+    fn test_describe_statement() {
+        let stmt = StreamingStatement::Describe {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("events"))]),
+            extended: true,
+        };
+        match stmt {
+            StreamingStatement::Describe { name, extended } => {
+                assert_eq!(name.to_string(), "events");
+                assert!(extended);
+            }
+            _ => panic!("Expected Describe"),
+        }
+    }
+
+    #[test]
+    fn test_explain_statement() {
+        // Build an inner Standard statement using sqlparser
+        let dialect = sqlparser::dialect::GenericDialect {};
+        let stmts = sqlparser::parser::Parser::parse_sql(&dialect, "SELECT 1").unwrap();
+        let inner = StreamingStatement::Standard(Box::new(stmts.into_iter().next().unwrap()));
+
+        let stmt = StreamingStatement::Explain {
+            statement: Box::new(inner),
+        };
+        match stmt {
+            StreamingStatement::Explain { statement } => {
+                assert!(matches!(*statement, StreamingStatement::Standard(_)));
+            }
+            _ => panic!("Expected Explain"),
+        }
+    }
+
+    #[test]
+    fn test_create_materialized_view_statement() {
+        // Build a query statement using sqlparser
+        let dialect = sqlparser::dialect::GenericDialect {};
+        let stmts =
+            sqlparser::parser::Parser::parse_sql(&dialect, "SELECT COUNT(*) FROM events").unwrap();
+        let query = StreamingStatement::Standard(Box::new(stmts.into_iter().next().unwrap()));
+
+        let stmt = StreamingStatement::CreateMaterializedView {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("live_stats"))]),
+            query: Box::new(query),
+            emit_clause: Some(EmitClause::OnWindowClose),
+            or_replace: false,
+            if_not_exists: true,
+        };
+        match stmt {
+            StreamingStatement::CreateMaterializedView {
+                name,
+                emit_clause,
+                or_replace,
+                if_not_exists,
+                ..
+            } => {
+                assert_eq!(name.to_string(), "live_stats");
+                assert_eq!(emit_clause, Some(EmitClause::OnWindowClose));
+                assert!(!or_replace);
+                assert!(if_not_exists);
+            }
+            _ => panic!("Expected CreateMaterializedView"),
+        }
+    }
+
+    #[test]
+    fn test_insert_into_statement() {
+        let stmt = StreamingStatement::InsertInto {
+            table_name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("events"))]),
+            columns: vec![Ident::new("id"), Ident::new("name")],
+            values: vec![vec![
+                Expr::Value(sqlparser::ast::Value::Number("1".to_string(), false).into()),
+                Expr::Value(sqlparser::ast::Value::SingleQuotedString("test".to_string()).into()),
+            ]],
+        };
+        match stmt {
+            StreamingStatement::InsertInto {
+                table_name,
+                columns,
+                values,
+            } => {
+                assert_eq!(table_name.to_string(), "events");
+                assert_eq!(columns.len(), 2);
+                assert_eq!(values.len(), 1);
+                assert_eq!(values[0].len(), 2);
+            }
+            _ => panic!("Expected InsertInto"),
+        }
     }
 }

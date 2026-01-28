@@ -8,6 +8,28 @@
 **Date**: 2026-01-28
 
 ### What Was Accomplished
+- **Developer API Overhaul** - 3 new crates, SQL parser extensions, 5 examples
+  - **laminar-derive** crate: `#[derive(Record)]` and `#[derive(FromRecordBatch)]` proc macros
+    - Supports bool, i8-i64, u8-u64, f32, f64, String, Vec<u8>, Option<T>
+    - Attributes: `#[event_time]`, `#[column("name")]`, `#[nullable]`
+  - **laminar-db** crate: `LaminarDB` database facade (28 tests)
+    - `LaminarDB::open()`, `execute(sql)`, `source::<T>(name)`, `source_untyped(name)`
+    - `SourceCatalog` with register/drop/describe/list for sources, sinks, queries
+    - `QueryHandle`, `TypedSubscription<T>`, `SourceHandle<T>`, `UntypedSourceHandle`
+    - Full SQL dispatch: CREATE/DROP SOURCE/SINK, SHOW, DESCRIBE, EXPLAIN, INSERT INTO, CREATE MV
+    - Pipeline lifecycle: `cancel_query(id)`, `source_count()`, `sink_count()`, `active_query_count()`
+    - EXPLAIN handler returns streaming plan info as metadata RecordBatch
+  - **laminardb** convenience crate: re-exports all public types + `prelude` module
+    - Re-exports ASOF join types: `AsofDirection`, `AsofJoinConfig`, `AsofJoinType`
+  - **SQL Parser Extensions** (365 tests total, up from 298):
+    - New `StreamingStatement` variants: DropSource, DropSink, DropMaterializedView, Show, Describe, Explain, CreateMaterializedView, InsertInto
+    - Parser functions: parse_drop_source, parse_drop_sink, parse_describe, etc.
+    - Planner updated with wildcard arm for DB-layer statements
+    - Fixed sqlparser 0.60 breaking changes: `insert.table` (TableObject), `insert.source`
+  - **5 runnable examples**: basic_source, derive_macros, show_describe, multiple_sources, streaming_pipeline
+  - **Core fix**: `push_arrow` skips schema validation for type-erased (empty schema) sources
+
+Previous session:
 - F-STREAM-001 to F-STREAM-007: Streaming API Implementation - ALL COMPLETE (99 tests)
   - F-STREAM-001: Ring Buffer (15 tests)
     - Lock-free heap-allocated ring buffer with CachePadded indices
@@ -51,11 +73,12 @@
 Previous session:
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1275 (977 core + 298 sql + 120 storage + 6 connectors)
+**Total tests**: 1502 (983 core + 365 sql + 120 storage + 28 laminar-db + 6 connectors)
 
 ### Where We Left Off
 **Phase 3 Connectors & Integration: 7/21 features COMPLETE (33%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007)
+- Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - Next: External connectors (F025-F034)
 
 ### Immediate Next Steps
@@ -65,7 +88,7 @@ Previous session:
 4. F-STREAM-013: Checkpointing (optional)
 
 ### Open Issues
-None - Streaming API foundation complete.
+None - Developer API foundation complete.
 
 ---
 
