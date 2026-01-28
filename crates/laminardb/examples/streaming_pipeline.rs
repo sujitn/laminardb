@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         default_buffer_size: 4096,
         default_backpressure: BackpressureStrategy::DropOldest,
         storage_dir: None,
+        checkpoint: None,
     };
     let db2 = LaminarDB::open_with_config(config)?;
     db2.execute("CREATE SOURCE fast_source (id INT, value DOUBLE)")

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use laminar_core::streaming::BackpressureStrategy;
+use laminar_core::streaming::{BackpressureStrategy, StreamCheckpointConfig};
 
 /// Configuration for a `LaminarDB` instance.
 #[derive(Debug, Clone)]
@@ -13,6 +13,8 @@ pub struct LaminarConfig {
     pub default_backpressure: BackpressureStrategy,
     /// Storage directory for WAL and checkpoints (`None` = in-memory only).
     pub storage_dir: Option<PathBuf>,
+    /// Streaming checkpoint configuration (`None` = disabled).
+    pub checkpoint: Option<StreamCheckpointConfig>,
 }
 
 impl Default for LaminarConfig {
@@ -21,6 +23,7 @@ impl Default for LaminarConfig {
             default_buffer_size: 65536,
             default_backpressure: BackpressureStrategy::Block,
             storage_dir: None,
+            checkpoint: None,
         }
     }
 }

@@ -7,6 +7,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::prelude::SessionContext;
 
 use laminar_core::streaming;
+use laminar_core::streaming::StreamCheckpointManager;
 use laminar_sql::parser::{parse_streaming_sql, ShowCommand, StreamingStatement};
 use laminar_sql::planner::StreamingPlanner;
 use laminar_sql::translator::streaming_ddl;
@@ -48,6 +49,7 @@ pub struct LaminarDB {
     ctx: SessionContext,
     config: LaminarConfig,
     shutdown: std::sync::atomic::AtomicBool,
+    checkpoint_manager: parking_lot::Mutex<StreamCheckpointManager>,
 }
 
 impl LaminarDB {
@@ -66,12 +68,18 @@ impl LaminarDB {
             config.default_backpressure,
         ));
 
+        let checkpoint_manager = match &config.checkpoint {
+            Some(cp_config) => StreamCheckpointManager::new(cp_config.clone()),
+            None => StreamCheckpointManager::disabled(),
+        };
+
         Ok(Self {
             catalog,
             planner: parking_lot::Mutex::new(StreamingPlanner::new()),
             ctx,
             config,
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            checkpoint_manager: parking_lot::Mutex::new(checkpoint_manager),
         })
     }
 
@@ -183,22 +191,40 @@ impl LaminarDB {
             None
         };
 
-        if create.or_replace {
-            self.catalog.register_source_or_replace(
+        let entry = if create.or_replace {
+            Some(self.catalog.register_source_or_replace(
                 name,
                 schema,
                 watermark_col,
                 buffer_size,
                 None,
-            );
+            ))
         } else if create.if_not_exists {
             if self.catalog.get_source(name).is_none() {
-                self.catalog
-                    .register_source(name, schema, watermark_col, buffer_size, None)?;
+                Some(
+                    self.catalog
+                        .register_source(name, schema, watermark_col, buffer_size, None)?,
+                )
+            } else {
+                None
             }
         } else {
-            self.catalog
-                .register_source(name, schema, watermark_col, buffer_size, None)?;
+            Some(
+                self.catalog
+                    .register_source(name, schema, watermark_col, buffer_size, None)?,
+            )
+        };
+
+        // Auto-register source with checkpoint manager if enabled
+        if let Some(ref entry) = entry {
+            let mut mgr = self.checkpoint_manager.lock();
+            if mgr.is_enabled() {
+                mgr.register_source(
+                    &entry.name,
+                    entry.source.sequence_counter(),
+                    entry.source.watermark_atomic(),
+                );
+            }
         }
 
         // Also register in the planner
@@ -492,6 +518,33 @@ impl LaminarDB {
             .collect()
     }
 
+    /// Returns whether streaming checkpointing is enabled.
+    pub fn is_checkpoint_enabled(&self) -> bool {
+        self.checkpoint_manager.lock().is_enabled()
+    }
+
+    /// Triggers a streaming checkpoint, capturing source sequences and
+    /// watermarks.
+    ///
+    /// Returns the checkpoint ID on success.
+    pub fn checkpoint(&self) -> Result<Option<u64>, DbError> {
+        self.checkpoint_manager
+            .lock()
+            .checkpoint()
+            .map_err(|e| DbError::Checkpoint(e.to_string()))
+    }
+
+    /// Returns the most recent streaming checkpoint for restore.
+    pub fn restore_checkpoint(
+        &self,
+    ) -> Result<streaming::StreamCheckpoint, DbError> {
+        self.checkpoint_manager
+            .lock()
+            .restore()
+            .cloned()
+            .map_err(|e| DbError::Checkpoint(e.to_string()))
+    }
+
     /// Shut down the database gracefully.
     pub fn close(&self) {
         self.shutdown
@@ -626,6 +679,7 @@ impl std::fmt::Debug for LaminarDB {
         f.debug_struct("LaminarDB")
             .field("sources", &self.catalog.list_sources().len())
             .field("sinks", &self.catalog.list_sinks().len())
+            .field("checkpoint_enabled", &self.is_checkpoint_enabled())
             .field("shutdown", &self.is_closed())
             .finish_non_exhaustive()
     }

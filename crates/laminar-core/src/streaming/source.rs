@@ -27,7 +27,7 @@
 //! let source2 = source.clone();
 //! ```
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
@@ -111,14 +111,19 @@ pub(crate) enum SourceMessage<T> {
 struct SourceWatermark {
     /// Current watermark value.
     /// Atomically updated to support multi-producer scenarios.
-    current: AtomicI64,
+    /// Wrapped in `Arc` so the checkpoint manager can read it without locking.
+    current: Arc<AtomicI64>,
 }
 
 impl SourceWatermark {
     fn new() -> Self {
         Self {
-            current: AtomicI64::new(i64::MIN),
+            current: Arc::new(AtomicI64::new(i64::MIN)),
         }
+    }
+
+    fn from_arc(arc: Arc<AtomicI64>) -> Self {
+        Self { current: arc }
     }
 
     fn update(&self, timestamp: i64) {
@@ -140,6 +145,10 @@ impl SourceWatermark {
     fn get(&self) -> i64 {
         self.current.load(Ordering::Acquire)
     }
+
+    fn arc(&self) -> Arc<AtomicI64> {
+        Arc::clone(&self.current)
+    }
 }
 
 /// Shared state for a Source/Sink pair.
@@ -155,6 +164,10 @@ struct SourceInner<T: Record> {
 
     /// Source name (for debugging/metrics).
     name: Option<String>,
+
+    /// Monotonic sequence counter, incremented on each successful push.
+    /// Wrapped in `Arc` so the checkpoint manager can read it without locking.
+    sequence: Arc<AtomicU64>,
 }
 
 /// A streaming data source.
@@ -199,6 +212,7 @@ impl<T: Record> Source<T> {
             watermark: SourceWatermark::new(),
             schema: schema.clone(),
             name: config.name,
+            sequence: Arc::new(AtomicU64::new(0)),
         });
 
         let source = Self { inner };
@@ -222,7 +236,10 @@ impl<T: Record> Source<T> {
         self.inner
             .producer
             .push(SourceMessage::Record(record))
-            .map_err(|_| StreamingError::ChannelFull)
+            .map_err(|_| StreamingError::ChannelFull)?;
+
+        self.inner.sequence.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Tries to push a record without blocking.
@@ -245,7 +262,10 @@ impl<T: Record> Source<T> {
                     error: StreamingError::ChannelFull,
                 },
                 _ => unreachable!("pushed a record, got something else back"),
-            })
+            })?;
+
+        self.inner.sequence.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Pushes multiple records, returning the number successfully pushed.
@@ -302,6 +322,7 @@ impl<T: Record> Source<T> {
             {
                 break;
             }
+            self.inner.sequence.fetch_add(1, Ordering::Relaxed);
             count += 1;
         }
         count
@@ -339,7 +360,10 @@ impl<T: Record> Source<T> {
         self.inner
             .producer
             .push(SourceMessage::Batch(batch))
-            .map_err(|_| StreamingError::ChannelFull)
+            .map_err(|_| StreamingError::ChannelFull)?;
+
+        self.inner.sequence.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Emits a watermark timestamp.
@@ -405,6 +429,24 @@ impl<T: Record> Source<T> {
     pub fn capacity(&self) -> usize {
         self.inner.producer.capacity()
     }
+
+    /// Returns the current sequence number (total successful pushes).
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        self.inner.sequence.load(Ordering::Acquire)
+    }
+
+    /// Returns the shared sequence counter for checkpoint registration.
+    #[must_use]
+    pub fn sequence_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.inner.sequence)
+    }
+
+    /// Returns the shared watermark atomic for checkpoint registration.
+    #[must_use]
+    pub fn watermark_atomic(&self) -> Arc<AtomicI64> {
+        self.inner.watermark.arc()
+    }
 }
 
 impl<T: Record> Clone for Source<T> {
@@ -422,16 +464,16 @@ impl<T: Record> Clone for Source<T> {
         // Clone the producer (triggers MPSC upgrade)
         let producer = self.inner.producer.clone();
 
-        // Create new inner with cloned producer
-        // Note: We need to rebuild the inner because Producer doesn't implement Clone
-        // in a way that shares the same Arc. We work around this by cloning at the
-        // SourceInner level.
+        // Create new inner with cloned producer.
+        // Sequence and watermark are shared across clones so the checkpoint
+        // manager sees a single, consistent counter per logical source.
         Self {
             inner: Arc::new(SourceInner {
                 producer,
-                watermark: SourceWatermark::new(), // Each source has its own watermark view
+                watermark: SourceWatermark::from_arc(self.inner.watermark.arc()),
                 schema: Arc::clone(&self.inner.schema),
                 name: self.inner.name.clone(),
+                sequence: Arc::clone(&self.inner.sequence),
             }),
         }
     }

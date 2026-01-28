@@ -54,4 +54,8 @@ pub enum DbError {
     /// Database is shut down
     #[error("Database is shut down")]
     Shutdown,
+
+    /// Checkpoint error
+    #[error("Checkpoint error: {0}")]
+    Checkpoint(String),
 }
