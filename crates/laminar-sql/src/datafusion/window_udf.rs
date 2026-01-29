@@ -324,11 +324,10 @@ fn scalar_interval_to_ms(scalar: &ScalarValue) -> Result<i64> {
 /// Converts a scalar value to a timestamp in milliseconds.
 fn scalar_to_timestamp_ms(scalar: &ScalarValue) -> Result<Option<i64>> {
     match scalar {
-        ScalarValue::TimestampMillisecond(v, _) => Ok(*v),
+        ScalarValue::TimestampMillisecond(v, _) | ScalarValue::Int64(v) => Ok(*v),
         ScalarValue::TimestampMicrosecond(v, _) => Ok(v.map(|v| v / 1_000)),
         ScalarValue::TimestampNanosecond(v, _) => Ok(v.map(|v| v / 1_000_000)),
         ScalarValue::TimestampSecond(v, _) => Ok(v.map(|v| v * 1_000)),
-        ScalarValue::Int64(v) => Ok(*v),
         _ => Err(DataFusionError::Plan(format!(
             "Expected timestamp argument for window function, got: {scalar:?}"
         ))),

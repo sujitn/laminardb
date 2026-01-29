@@ -328,7 +328,6 @@ impl<T> Producer<T> {
         self.inner.stats.snapshot()
     }
 
-    // ==================== Internal Push Methods ====================
 
     fn push_blocking(&self, mut item: T) -> Result<(), StreamingError> {
         loop {
@@ -634,7 +633,6 @@ impl<T> Consumer<T> {
         self.inner.stats.snapshot()
     }
 
-    // ==================== Internal ====================
 
     #[inline]
     fn poll_spsc(&self) -> Option<T> {

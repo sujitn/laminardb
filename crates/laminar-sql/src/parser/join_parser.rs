@@ -171,23 +171,24 @@ fn extract_table_alias(factor: &TableFactor) -> Option<String> {
 /// Map sqlparser JoinOperator to our JoinType.
 fn map_join_operator(op: &JoinOperator) -> JoinType {
     match op {
-        JoinOperator::Inner(_) | JoinOperator::Join(_) => JoinType::Inner,
+        JoinOperator::Inner(_)
+        | JoinOperator::Join(_)
+        | JoinOperator::CrossJoin(_)
+        | JoinOperator::CrossApply
+        | JoinOperator::OuterApply
+        | JoinOperator::StraightJoin(_) => JoinType::Inner,
         JoinOperator::Left(_)
         | JoinOperator::LeftOuter(_)
         | JoinOperator::LeftSemi(_)
         | JoinOperator::LeftAnti(_)
-        | JoinOperator::Semi(_) => JoinType::Left,
+        | JoinOperator::Semi(_)
+        | JoinOperator::AsOf { .. } => JoinType::Left,
         JoinOperator::Right(_)
         | JoinOperator::RightOuter(_)
         | JoinOperator::RightSemi(_)
         | JoinOperator::RightAnti(_)
         | JoinOperator::Anti(_) => JoinType::Right,
         JoinOperator::FullOuter(_) => JoinType::Full,
-        JoinOperator::CrossJoin(_)
-        | JoinOperator::CrossApply
-        | JoinOperator::OuterApply => JoinType::Inner,
-        JoinOperator::AsOf { .. } => JoinType::Left,
-        JoinOperator::StraightJoin(_) => JoinType::Inner,
     }
 }
 
@@ -235,13 +236,13 @@ fn get_join_constraint(op: &JoinOperator) -> Result<&JoinConstraint, ParseError>
         | JoinOperator::RightAnti(constraint)
         | JoinOperator::Semi(constraint)
         | JoinOperator::Anti(constraint)
-        | JoinOperator::StraightJoin(constraint) => Ok(constraint),
+        | JoinOperator::StraightJoin(constraint)
+        | JoinOperator::AsOf { constraint, .. } => Ok(constraint),
         JoinOperator::CrossJoin(_)
         | JoinOperator::CrossApply
         | JoinOperator::OuterApply => Err(ParseError::StreamingError(
             "CROSS JOIN not supported for streaming".to_string(),
         )),
-        JoinOperator::AsOf { constraint, .. } => Ok(constraint),
     }
 }
 
@@ -268,8 +269,7 @@ fn analyze_on_expression(
                 (Ok((_, _, time)), Ok((lk, rk, None))) if !lk.is_empty() => {
                     Ok((lk, rk, time))
                 }
-                (Ok(result), Err(_)) => Ok(result),
-                (Err(_), Ok(result)) => Ok(result),
+                (Ok(result), Err(_)) | (Err(_), Ok(result)) => Ok(result),
                 (Ok((lk, rk, t1)), Ok((_, _, t2))) => {
                     // If both have keys, prefer the first
                     Ok((lk, rk, t1.or(t2)))
@@ -334,16 +334,10 @@ fn extract_time_bound_from_expr(expr: &Expr) -> Result<Duration, ParseError> {
     match expr {
         // Direct interval
         Expr::Interval(_) => WindowRewriter::parse_interval_to_duration(expr),
-        // Addition: col + INTERVAL
+        // Addition or subtraction: col +/- INTERVAL
         Expr::BinaryOp {
             left: _,
-            op: BinaryOperator::Plus,
-            right,
-        } => extract_time_bound_from_expr(right),
-        // Subtraction: col - INTERVAL (for lower bound)
-        Expr::BinaryOp {
-            left: _,
-            op: BinaryOperator::Minus,
+            op: BinaryOperator::Plus | BinaryOperator::Minus,
             right,
         } => extract_time_bound_from_expr(right),
         // Nested expression

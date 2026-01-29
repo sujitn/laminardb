@@ -525,7 +525,6 @@ mod tests {
         assert!(options.is_empty());
     }
 
-    // ==================== New DDL Detection Tests ====================
 
     #[test]
     fn test_detect_drop_source() {

@@ -49,9 +49,7 @@ impl AllocationStats {
     }
 }
 
-// ============================================================================
 // Feature-gated hot path detection
-// ============================================================================
 
 #[cfg(feature = "allocation-tracking")]
 thread_local! {
@@ -156,9 +154,7 @@ fn check_hot_path_allocation(op: &str, size: usize) {
     }
 }
 
-// ============================================================================
 // Global allocator (only with feature enabled)
-// ============================================================================
 
 /// Global allocator that detects hot path allocations.
 ///

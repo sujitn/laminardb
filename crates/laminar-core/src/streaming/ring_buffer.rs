@@ -147,7 +147,6 @@ impl<T> RingBuffer<T> {
         self.capacity() - 1 - self.len()
     }
 
-    // ==================== SPSC Operations ====================
 
     /// Pushes an item to the buffer (SPSC mode).
     ///
@@ -233,7 +232,6 @@ impl<T> RingBuffer<T> {
         unsafe { Some((*self.buffer[head].get()).assume_init_ref()) }
     }
 
-    // ==================== MPSC Operations ====================
 
     /// Claims a slot for writing (MPSC mode).
     ///
@@ -311,7 +309,6 @@ impl<T> RingBuffer<T> {
         }
     }
 
-    // ==================== Batch Operations ====================
 
     /// Pushes multiple items to the buffer.
     ///
@@ -459,7 +456,6 @@ impl<T> RingBuffer<T> {
         count
     }
 
-    // ==================== Internal ====================
 
     /// Calculate the next index with wrap-around.
     #[inline]

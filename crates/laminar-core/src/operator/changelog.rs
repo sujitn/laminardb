@@ -47,9 +47,7 @@ use super::window::{CdcOperation, WindowId};
 use fxhash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-// ============================================================================
 // Ring 0: Zero-Allocation Types
-// ============================================================================
 
 /// Zero-allocation changelog reference for Ring 0 hot path.
 ///
@@ -284,9 +282,7 @@ impl Default for ChangelogBuffer {
     }
 }
 
-// ============================================================================
 // Retractable Aggregators
-// ============================================================================
 
 /// Extension trait for accumulators that support retractions.
 ///
@@ -664,9 +660,7 @@ impl RetractableAccumulator for RetractableMaxAccumulator {
     }
 }
 
-// ============================================================================
 // Late Data Retraction Generator
-// ============================================================================
 
 /// Tracks previously emitted results for generating late data retractions.
 #[derive(Debug, Clone)]
@@ -872,9 +866,7 @@ impl Default for LateDataRetractionGenerator {
     }
 }
 
-// ============================================================================
 // CDC Envelope (Debezium-Compatible)
-// ============================================================================
 
 /// Source metadata for CDC envelope.
 ///
@@ -1092,9 +1084,7 @@ impl<T: Serialize> CdcEnvelope<T> {
     }
 }
 
-// ============================================================================
 // F076: Retractable FIRST/LAST Accumulators
-// ============================================================================
 
 /// Retractable `FIRST_VALUE` accumulator for changelog/retraction mode.
 ///
@@ -1518,17 +1508,13 @@ impl RetractableAccumulator for RetractableLastValueF64Accumulator {
     }
 }
 
-// ============================================================================
 // Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ========================================================================
     // ChangelogRef Tests
-    // ========================================================================
 
     #[test]
     fn test_changelog_ref_insert() {
@@ -1569,9 +1555,7 @@ mod tests {
         assert!(std::mem::size_of::<ChangelogRef>() <= 16);
     }
 
-    // ========================================================================
     // ChangelogBuffer Tests
-    // ========================================================================
 
     #[test]
     fn test_changelog_buffer_basic() {
@@ -1649,9 +1633,7 @@ mod tests {
         assert_eq!(buffer.len(), 50);
     }
 
-    // ========================================================================
     // Retractable Accumulator Tests
-    // ========================================================================
 
     #[test]
     fn test_retractable_count() {
@@ -1795,9 +1777,7 @@ mod tests {
         assert!(!max.supports_efficient_retraction());
     }
 
-    // ========================================================================
     // LateDataRetractionGenerator Tests
-    // ========================================================================
 
     #[test]
     fn test_late_data_retraction_first_emission() {
@@ -1872,9 +1852,7 @@ mod tests {
         assert_eq!(gen.windows_tracked(), 0);
     }
 
-    // ========================================================================
     // CdcEnvelope Tests
-    // ========================================================================
 
     #[test]
     fn test_cdc_envelope_insert() {
@@ -1968,9 +1946,7 @@ mod tests {
         assert_eq!(source.sequence, 2);
     }
 
-    // ========================================================================
     // CdcOperation Tests
-    // ========================================================================
 
     #[test]
     fn test_cdc_operation_roundtrip() {

@@ -26,9 +26,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::operator::Event;
 
-// ============================================================================
 // RouterError - Static error variants for zero-allocation error paths
-// ============================================================================
 
 /// Routing errors with no heap allocation.
 ///

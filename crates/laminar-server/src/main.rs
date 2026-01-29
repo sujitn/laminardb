@@ -39,10 +39,10 @@ async fn main() -> Result<()> {
     info!("Version: {}", env!("CARGO_PKG_VERSION"));
     info!("Config file: {}", args.config);
 
-    // TODO: Load configuration
-    // TODO: Initialize reactor
-    // TODO: Start admin API
-    // TODO: Run event loop
+    // TODO(phase-5): Load configuration from args.config
+    // TODO(phase-5): Initialize reactor with thread-per-core
+    // TODO(phase-5): Start admin API on args.admin_bind
+    // TODO(phase-5): Run event loop
 
     Ok(())
 }

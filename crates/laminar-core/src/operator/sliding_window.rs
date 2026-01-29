@@ -872,7 +872,6 @@ mod tests {
         }
     }
 
-    // ==================== SlidingWindowAssigner Tests ====================
 
     #[test]
     fn test_sliding_assigner_creation() {
@@ -991,7 +990,6 @@ mod tests {
         assert_eq!(windows.len(), 10);
     }
 
-    // ==================== SlidingWindowOperator Tests ====================
 
     #[test]
     fn test_sliding_operator_creation() {

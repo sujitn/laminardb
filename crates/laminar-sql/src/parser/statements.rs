@@ -466,7 +466,6 @@ mod tests {
         }
     }
 
-    // ==================== Late Data Clause Tests ====================
 
     #[test]
     fn test_late_data_clause_default() {
@@ -498,7 +497,6 @@ mod tests {
         assert_eq!(clause.side_output, Some("late_events".to_string()));
     }
 
-    // ==================== ShowCommand Tests ====================
 
     #[test]
     fn test_show_command_variants() {
@@ -520,7 +518,6 @@ mod tests {
         assert_eq!(cmd, cloned);
     }
 
-    // ==================== New StreamingStatement Variant Tests ====================
 
     #[test]
     fn test_drop_source_statement() {

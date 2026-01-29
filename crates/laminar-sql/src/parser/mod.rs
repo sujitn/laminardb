@@ -552,7 +552,6 @@ mod tests {
         stmts.into_iter().next().unwrap()
     }
 
-    // ==================== DROP SOURCE Tests ====================
 
     #[test]
     fn test_parse_drop_source() {
@@ -578,7 +577,6 @@ mod tests {
         }
     }
 
-    // ==================== DROP SINK Tests ====================
 
     #[test]
     fn test_parse_drop_sink() {
@@ -604,7 +602,6 @@ mod tests {
         }
     }
 
-    // ==================== DROP MATERIALIZED VIEW Tests ====================
 
     #[test]
     fn test_parse_drop_materialized_view() {
@@ -640,7 +637,6 @@ mod tests {
         }
     }
 
-    // ==================== SHOW Tests ====================
 
     #[test]
     fn test_parse_show_sources() {
@@ -672,7 +668,6 @@ mod tests {
         ));
     }
 
-    // ==================== DESCRIBE Tests ====================
 
     #[test]
     fn test_parse_describe() {
@@ -698,7 +693,6 @@ mod tests {
         }
     }
 
-    // ==================== EXPLAIN Tests ====================
 
     #[test]
     fn test_parse_explain_select() {
@@ -722,7 +716,6 @@ mod tests {
         }
     }
 
-    // ==================== CREATE MATERIALIZED VIEW Tests ====================
 
     #[test]
     fn test_parse_create_materialized_view() {
@@ -803,7 +796,6 @@ mod tests {
         }
     }
 
-    // ==================== INSERT INTO Tests ====================
 
     #[test]
     fn test_parse_insert_into() {

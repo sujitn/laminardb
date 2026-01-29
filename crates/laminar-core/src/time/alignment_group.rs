@@ -793,7 +793,6 @@ impl AlignmentGroupCoordinator {
 mod tests {
     use super::*;
 
-    // ==================== AlignmentGroupId Tests ====================
 
     #[test]
     fn test_alignment_group_id() {
@@ -802,7 +801,6 @@ mod tests {
         assert_eq!(format!("{}", id), "test-group");
     }
 
-    // ==================== AlignmentGroupConfig Tests ====================
 
     #[test]
     fn test_alignment_group_config_builder() {
@@ -817,7 +815,6 @@ mod tests {
         assert_eq!(config.enforcement_mode, EnforcementMode::WarnOnly);
     }
 
-    // ==================== WatermarkAlignmentGroup Tests ====================
 
     #[test]
     fn test_alignment_group_single_source_no_pause() {
@@ -1013,7 +1010,6 @@ mod tests {
         assert!(!state.is_paused);
     }
 
-    // ==================== AlignmentGroupCoordinator Tests ====================
 
     #[test]
     fn test_coordinator_multiple_groups() {
@@ -1182,7 +1178,6 @@ mod tests {
         assert!(metrics.contains_key(&AlignmentGroupId::new("group2")));
     }
 
-    // ==================== Edge Case Tests ====================
 
     #[test]
     fn test_alignment_group_empty() {

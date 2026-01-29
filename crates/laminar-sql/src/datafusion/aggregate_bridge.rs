@@ -34,9 +34,7 @@ use datafusion_expr::AggregateUDF;
 use laminar_core::operator::window::{DynAccumulator, DynAggregatorFactory, ScalarResult};
 use laminar_core::operator::Event;
 
-// ============================================================================
 // Type Conversion: ScalarValue <-> ScalarResult
-// ============================================================================
 
 /// Converts a DataFusion [`ScalarValue`] to a LaminarDB [`ScalarResult`].
 ///
@@ -47,9 +45,10 @@ pub fn scalar_value_to_result(sv: &ScalarValue) -> ScalarResult {
         ScalarValue::Int64(Some(v)) => ScalarResult::Int64(*v),
         ScalarValue::Int64(None) => ScalarResult::OptionalInt64(None),
         ScalarValue::Float64(Some(v)) => ScalarResult::Float64(*v),
-        ScalarValue::Float64(None) => ScalarResult::OptionalFloat64(None),
+        ScalarValue::Float64(None) | ScalarValue::Float32(None) => {
+            ScalarResult::OptionalFloat64(None)
+        }
         ScalarValue::UInt64(Some(v)) => ScalarResult::UInt64(*v),
-        ScalarValue::UInt64(None) => ScalarResult::Null,
         // Widen smaller int types
         ScalarValue::Int8(Some(v)) => ScalarResult::Int64(i64::from(*v)),
         ScalarValue::Int16(Some(v)) => ScalarResult::Int64(i64::from(*v)),
@@ -59,7 +58,6 @@ pub fn scalar_value_to_result(sv: &ScalarValue) -> ScalarResult {
         ScalarValue::UInt32(Some(v)) => ScalarResult::UInt64(u64::from(*v)),
         // Widen smaller float types
         ScalarValue::Float32(Some(v)) => ScalarResult::Float64(f64::from(*v)),
-        ScalarValue::Float32(None) => ScalarResult::OptionalFloat64(None),
         _ => ScalarResult::Null,
     }
 }
@@ -77,9 +75,7 @@ pub fn result_to_scalar_value(sr: &ScalarResult) -> ScalarValue {
     }
 }
 
-// ============================================================================
 // DataFusion Accumulator Adapter
-// ============================================================================
 
 /// Adapts a DataFusion [`datafusion_expr::Accumulator`] into LaminarDB's
 /// [`DynAccumulator`] trait.
@@ -114,6 +110,7 @@ impl std::fmt::Debug for DataFusionAccumulatorAdapter {
 
 impl DataFusionAccumulatorAdapter {
     /// Creates a new adapter wrapping a DataFusion accumulator.
+    #[must_use]
     pub fn new(
         inner: Box<dyn datafusion_expr::Accumulator>,
         column_indices: Vec<usize>,
@@ -236,9 +233,7 @@ impl DynAccumulator for DataFusionAccumulatorAdapter {
     }
 }
 
-// ============================================================================
 // DataFusion Aggregate Factory
-// ============================================================================
 
 /// Factory for creating [`DataFusionAccumulatorAdapter`] instances.
 ///
@@ -265,6 +260,7 @@ impl std::fmt::Debug for DataFusionAggregateFactory {
 
 impl DataFusionAggregateFactory {
     /// Creates a new factory for the given DataFusion aggregate UDF.
+    #[must_use]
     pub fn new(
         udf: Arc<AggregateUDF>,
         column_indices: Vec<usize>,
@@ -353,9 +349,7 @@ impl DynAggregatorFactory for DataFusionAggregateFactory {
     }
 }
 
-// ============================================================================
 // Built-in Aggregate Lookup
-// ============================================================================
 
 /// Looks up a DataFusion built-in aggregate function by name.
 ///
@@ -383,9 +377,7 @@ pub fn create_aggregate_factory(
         .map(|udf| DataFusionAggregateFactory::new(udf, column_indices, input_types))
 }
 
-// ============================================================================
 // Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

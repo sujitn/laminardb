@@ -797,7 +797,6 @@ mod tests {
         }
     }
 
-    // ==================== Basic Tests ====================
 
     #[test]
     fn test_session_operator_creation() {
@@ -879,7 +878,6 @@ mod tests {
         assert_eq!(state1.end, 13000); // max(6000, 13000)
     }
 
-    // ==================== Processing Tests ====================
 
     #[test]
     fn test_session_single_event() {

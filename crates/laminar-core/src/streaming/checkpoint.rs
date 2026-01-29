@@ -17,9 +17,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Configuration
-// ---------------------------------------------------------------------------
 
 /// WAL mode for checkpoint durability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,9 +84,7 @@ impl StreamCheckpointConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Errors
-// ---------------------------------------------------------------------------
 
 /// Errors from checkpoint operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,9 +125,7 @@ impl fmt::Display for CheckpointError {
 
 impl std::error::Error for CheckpointError {}
 
-// ---------------------------------------------------------------------------
 // Overflow policy
-// ---------------------------------------------------------------------------
 
 /// Policy when the changelog buffer is full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,9 +136,7 @@ pub enum OverflowPolicy {
     OverwriteOldest,
 }
 
-// ---------------------------------------------------------------------------
 // Changelog entry (24 bytes, repr(C))
-// ---------------------------------------------------------------------------
 
 /// Type of changelog operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,9 +205,7 @@ impl StreamChangelogEntry {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Changelog buffer (pre-allocated ring buffer, zero-alloc after init)
-// ---------------------------------------------------------------------------
 
 /// A pre-allocated ring buffer for changelog entries.
 ///
@@ -344,9 +334,7 @@ impl fmt::Debug for StreamChangelogBuffer {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Checkpoint snapshot
-// ---------------------------------------------------------------------------
 
 /// A point-in-time snapshot of streaming pipeline state.
 #[derive(Debug, Clone)]
@@ -560,9 +548,7 @@ impl StreamCheckpoint {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Registered source info (held by the manager)
-// ---------------------------------------------------------------------------
 
 /// Registered source state visible to the checkpoint manager.
 struct RegisteredSource {
@@ -572,9 +558,7 @@ struct RegisteredSource {
     watermark: Arc<AtomicI64>,
 }
 
-// ---------------------------------------------------------------------------
 // Checkpoint manager
-// ---------------------------------------------------------------------------
 
 /// Coordinates checkpoint lifecycle for streaming sources and sinks.
 ///
@@ -780,9 +764,7 @@ impl fmt::Debug for StreamCheckpointManager {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

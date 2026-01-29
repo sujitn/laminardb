@@ -189,6 +189,7 @@ impl StreamingPlanner {
     }
 
     /// Plans a CREATE CONTINUOUS QUERY statement.
+    #[allow(clippy::unused_self)] // Will use planner state for query registration
     fn plan_continuous_query(
         &mut self,
         name: &ObjectName,
@@ -219,6 +220,7 @@ impl StreamingPlanner {
     }
 
     /// Plans a standard SQL statement.
+    #[allow(clippy::unused_self)] // Will use planner state for plan optimization
     fn plan_standard_statement(&self, stmt: &Statement) -> Result<StreamingPlan, PlanningError> {
         // Check if it's a query that might have streaming features
         if let Statement::Query(query) = stmt {
@@ -365,6 +367,7 @@ impl StreamingPlanner {
     /// # Errors
     ///
     /// Returns `PlanningError` if `DataFusion` cannot create the logical plan.
+    #[allow(clippy::unused_self)] // Method will use planner state for plan optimization
     pub async fn to_logical_plan(
         &self,
         plan: &QueryPlan,

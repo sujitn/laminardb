@@ -761,7 +761,6 @@ impl<K: Hash + Eq + Clone> KeyedWatermarkTrackerWithLateHandling<K> {
 mod tests {
     use super::*;
 
-    // ==================== KeyWatermarkState Tests ====================
 
     #[test]
     fn test_key_watermark_state_creation() {
@@ -803,7 +802,6 @@ mod tests {
         assert!(!state.is_late(1000)); // After watermark
     }
 
-    // ==================== KeyedWatermarkConfig Tests ====================
 
     #[test]
     fn test_config_defaults() {
@@ -827,7 +825,6 @@ mod tests {
         assert_eq!(config.eviction_policy, KeyEvictionPolicy::LowestWatermark);
     }
 
-    // ==================== KeyedWatermarkTracker Tests ====================
 
     #[test]
     fn test_keyed_tracker_single_key_updates_watermark() {
@@ -1135,7 +1132,6 @@ mod tests {
         assert_eq!(pairs.len(), 2);
     }
 
-    // ==================== Late Event Handling Tests ====================
 
     #[test]
     fn test_late_handling_tracker() {

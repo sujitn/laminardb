@@ -74,17 +74,15 @@ impl OrderAnalysis {
 /// # Returns
 ///
 /// An `OrderAnalysis` with the classified pattern.
+#[must_use]
 pub fn analyze_order_by(stmt: &Statement) -> OrderAnalysis {
-    let query = match stmt {
-        Statement::Query(q) => q,
-        _ => {
-            return OrderAnalysis {
-                order_columns: vec![],
-                limit: None,
-                is_windowed: false,
-                pattern: OrderPattern::None,
-            }
-        }
+    let Statement::Query(query) = stmt else {
+        return OrderAnalysis {
+            order_columns: vec![],
+            limit: None,
+            is_windowed: false,
+            pattern: OrderPattern::None,
+        };
     };
 
     let order_columns = extract_order_columns(query);
@@ -153,14 +151,12 @@ pub fn is_order_satisfied(
 
 /// Extracts ORDER BY columns from a query.
 fn extract_order_columns(query: &Query) -> Vec<OrderColumn> {
-    let order_by = match &query.order_by {
-        Some(ob) => ob,
-        None => return vec![],
+    let Some(order_by) = &query.order_by else {
+        return vec![];
     };
 
-    let exprs = match &order_by.kind {
-        OrderByKind::Expressions(exprs) => exprs,
-        OrderByKind::All(_) => return vec![], // ORDER BY ALL not supported for streaming
+    let OrderByKind::Expressions(exprs) = &order_by.kind else {
+        return vec![]; // ORDER BY ALL not supported for streaming
     };
 
     exprs

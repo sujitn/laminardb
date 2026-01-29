@@ -264,7 +264,6 @@ impl<T: Record> Subscription<T> {
         Arc::clone(&self.schema)
     }
 
-    // ==================== Internal ====================
 
     fn message_to_batch(msg: SourceMessage<T>) -> Option<RecordBatch> {
         match msg {

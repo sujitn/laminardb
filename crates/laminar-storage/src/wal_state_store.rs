@@ -150,7 +150,7 @@ impl WalStateStore {
             let last = self.last_checkpoint.load(Ordering::Relaxed);
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .expect("system clock before Unix epoch")
                 .as_secs();
 
             now - last >= manager.interval().as_secs()
@@ -571,7 +571,6 @@ mod tests {
         // and still recover from the checkpoint + remaining WAL
     }
 
-    // ==================== INTEGRATION TESTS ====================
     // These tests verify the complete recovery flow including:
     // - Checkpoint + WAL replay
     // - Watermark restoration

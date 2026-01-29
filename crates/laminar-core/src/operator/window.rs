@@ -1106,9 +1106,7 @@ impl Aggregator for AvgAggregator {
     }
 }
 
-// ============================================================================
 // FIRST_VALUE / LAST_VALUE Aggregators (F059)
-// ============================================================================
 
 /// `FIRST_VALUE` aggregator - returns the first value seen in a window.
 ///
@@ -1375,9 +1373,7 @@ impl Aggregator for LastValueAggregator {
     }
 }
 
-// ============================================================================
 // FIRST_VALUE / LAST_VALUE for Float64 (F059)
-// ============================================================================
 
 /// Accumulator for `FIRST_VALUE` aggregation on f64 values.
 #[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
@@ -1617,9 +1613,7 @@ impl Aggregator for LastValueF64Aggregator {
     }
 }
 
-// ============================================================================
 // F074: Composite Aggregator & f64 Type Support
-// ============================================================================
 
 /// Scalar result type supporting multiple numeric types.
 ///
@@ -3003,9 +2997,7 @@ impl Clone for CompositeAccumulator {
     }
 }
 
-// ============================================================================
 // End F074
-// ============================================================================
 
 /// State key prefix for window accumulators (4 bytes)
 const WINDOW_STATE_PREFIX: &[u8; 4] = b"win:";
@@ -3675,70 +3667,6 @@ where
     }
 }
 
-/// Configuration for tumbling windows (legacy - use `TumblingWindowAssigner` instead).
-#[derive(Debug, Clone)]
-pub struct TumblingWindowConfig {
-    /// Window duration
-    pub duration: Duration,
-    /// Grace period for late data
-    pub allowed_lateness: Duration,
-}
-
-/// Legacy tumbling window operator (deprecated).
-///
-/// Use [`TumblingWindowOperator`] with [`TumblingWindowAssigner`] instead.
-#[deprecated(
-    since = "0.1.0",
-    note = "Use TumblingWindowOperator with TumblingWindowAssigner instead"
-)]
-pub struct TumblingWindow {
-    config: TumblingWindowConfig,
-}
-
-#[allow(deprecated)]
-impl TumblingWindow {
-    /// Get the window duration.
-    #[must_use]
-    pub fn duration(&self) -> Duration {
-        self.config.duration
-    }
-
-    /// Get the allowed lateness.
-    #[must_use]
-    pub fn allowed_lateness(&self) -> Duration {
-        self.config.allowed_lateness
-    }
-
-    /// Creates a new tumbling window operator.
-    #[must_use]
-    pub fn new(config: TumblingWindowConfig) -> Self {
-        Self { config }
-    }
-}
-
-#[allow(deprecated)]
-impl Operator for TumblingWindow {
-    fn process(&mut self, _event: &Event, _ctx: &mut OperatorContext) -> OutputVec {
-        // Legacy stub - use TumblingWindowOperator instead
-        OutputVec::new()
-    }
-
-    fn on_timer(&mut self, _timer: Timer, _ctx: &mut OperatorContext) -> OutputVec {
-        OutputVec::new()
-    }
-
-    fn checkpoint(&self) -> OperatorState {
-        OperatorState {
-            operator_id: "legacy_tumbling_window".to_string(),
-            data: vec![],
-        }
-    }
-
-    fn restore(&mut self, _state: OperatorState) -> Result<(), OperatorError> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4097,21 +4025,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_legacy_tumbling_window_config() {
-        let config = TumblingWindowConfig {
-            duration: Duration::from_secs(60),
-            allowed_lateness: Duration::from_secs(5),
-        };
-
-        let window = TumblingWindow::new(config);
-        assert_eq!(window.duration(), Duration::from_secs(60));
-        assert_eq!(window.allowed_lateness(), Duration::from_secs(5));
-    }
-
-    // ==================== EmitStrategy Tests ====================
-
-    #[test]
     fn test_emit_strategy_default() {
         let strategy = EmitStrategy::default();
         assert_eq!(strategy, EmitStrategy::OnWatermark);
@@ -4314,7 +4227,6 @@ mod tests {
         assert!(!TumblingWindowOperator::<CountAggregator>::is_periodic_timer_key(&regular_key));
     }
 
-    // ==================== Late Data Handling Tests (F012) ====================
 
     #[test]
     fn test_late_data_config_default() {
@@ -4559,7 +4471,6 @@ mod tests {
         assert_eq!(operator.late_data_metrics().late_events_total(), 0);
     }
 
-    // ==================== F011B Tests ====================
 
     #[test]
     fn test_emit_strategy_helper_methods() {
@@ -4859,9 +4770,7 @@ mod tests {
         }
     }
 
-    // ========================================================================
     // FIRST_VALUE / LAST_VALUE Tests (F059)
-    // ========================================================================
 
     #[test]
     fn test_first_value_single_event() {

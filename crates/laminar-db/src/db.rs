@@ -11,7 +11,7 @@ use laminar_core::streaming::StreamCheckpointManager;
 use laminar_sql::parser::{parse_streaming_sql, ShowCommand, StreamingStatement};
 use laminar_sql::planner::StreamingPlanner;
 use laminar_sql::translator::streaming_ddl;
-use laminar_sql::{execute_streaming_sql, register_streaming_functions, StreamingSqlResult};
+use laminar_sql::register_streaming_functions;
 
 use crate::catalog::SourceCatalog;
 use crate::config::LaminarConfig;
@@ -287,8 +287,7 @@ impl LaminarDB {
             .get_source(&name)
             .ok_or_else(|| DbError::SourceNotFound(name))?;
 
-        // TODO: Convert SQL values to RecordBatch and push to source
-        // For now, return placeholder
+        // TODO(phase-3): Convert SQL values to RecordBatch and push to source
         Ok(ExecuteResult::RowsAffected(0))
     }
 
@@ -399,67 +398,93 @@ impl LaminarDB {
     }
 
     /// Handle a streaming or standard SQL query.
-    #[allow(clippy::await_holding_lock)]
     async fn handle_query(&self, sql: &str) -> Result<ExecuteResult, DbError> {
-        let mut planner = self.planner.lock();
+        // Synchronous planning under the lock — released before any await
+        let plan = {
+            let statements = parse_streaming_sql(sql)?;
+            if statements.is_empty() {
+                return Err(DbError::InvalidOperation("Empty SQL statement".into()));
+            }
+            let mut planner = self.planner.lock();
+            planner
+                .plan(&statements[0])
+                .map_err(laminar_sql::Error::from)?
+        };
 
-        let result = execute_streaming_sql(sql, &self.ctx, &mut planner).await?;
-
-        match result {
-            StreamingSqlResult::Ddl(ddl) => {
-                let name = match &ddl.plan {
-                    laminar_sql::planner::StreamingPlan::RegisterSource(info) => {
-                        info.name.clone()
-                    }
-                    laminar_sql::planner::StreamingPlan::RegisterSink(info) => info.name.clone(),
-                    _ => "unknown".to_string(),
-                };
+        match plan {
+            laminar_sql::planner::StreamingPlan::RegisterSource(info) => {
                 Ok(ExecuteResult::Ddl(DdlInfo {
                     statement_type: "DDL".to_string(),
-                    object_name: name,
+                    object_name: info.name,
                 }))
             }
-            StreamingSqlResult::Query(qr) => {
-                let query_id = self.catalog.register_query(sql);
-                let schema = qr.stream.schema();
-
-                // Create a subscription by bridging the DataFusion stream
-                // to our streaming infrastructure
-                let source_cfg = streaming::SourceConfig::with_buffer_size(
-                    self.config.default_buffer_size,
-                );
-                let (source, sink) =
-                    streaming::create_with_config::<crate::catalog::ArrowRecord>(source_cfg);
-
-                let subscription = sink.subscribe();
-
-                // Spawn a task to pump DataFusion results into the streaming channel
-                let source_clone = source.clone();
-                tokio::spawn(async move {
-                    use tokio_stream::StreamExt;
-                    let mut stream = qr.stream;
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(batch) => {
-                                if source_clone.push_arrow(batch).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    drop(source_clone);
-                });
-
-                Ok(ExecuteResult::Query(QueryHandle {
-                    id: query_id,
-                    schema,
-                    sql: sql.to_string(),
-                    subscription: Some(subscription),
-                    active: true,
+            laminar_sql::planner::StreamingPlan::RegisterSink(info) => {
+                Ok(ExecuteResult::Ddl(DdlInfo {
+                    statement_type: "DDL".to_string(),
+                    object_name: info.name,
                 }))
+            }
+            laminar_sql::planner::StreamingPlan::Query(query_plan) => {
+                // Async execution without the lock
+                let plan_sql = query_plan.statement.to_string();
+                let logical_plan = self.ctx.state().create_logical_plan(&plan_sql).await?;
+                let df = self.ctx.execute_logical_plan(logical_plan).await?;
+                let stream = df.execute_stream().await?;
+
+                Ok(self.bridge_query_stream(sql, stream))
+            }
+            laminar_sql::planner::StreamingPlan::Standard(stmt) => {
+                // Async execution without the lock
+                let sql_str = stmt.to_string();
+                let df = self.ctx.sql(&sql_str).await?;
+                let stream = df.execute_stream().await?;
+
+                Ok(self.bridge_query_stream(sql, stream))
             }
         }
+    }
+
+    /// Bridge a `DataFusion` `SendableRecordBatchStream` into the streaming
+    /// subscription infrastructure and return a `QueryHandle`.
+    fn bridge_query_stream(
+        &self,
+        sql: &str,
+        stream: datafusion::physical_plan::SendableRecordBatchStream,
+    ) -> ExecuteResult {
+        let query_id = self.catalog.register_query(sql);
+        let schema = stream.schema();
+
+        let source_cfg =
+            streaming::SourceConfig::with_buffer_size(self.config.default_buffer_size);
+        let (source, sink) =
+            streaming::create_with_config::<crate::catalog::ArrowRecord>(source_cfg);
+
+        let subscription = sink.subscribe();
+
+        let source_clone = source.clone();
+        tokio::spawn(async move {
+            use tokio_stream::StreamExt;
+            let mut stream = stream;
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(batch) => {
+                        if source_clone.push_arrow(batch).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            drop(source_clone);
+        });
+
+        ExecuteResult::Query(QueryHandle {
+            id: query_id,
+            schema,
+            sql: sql.to_string(),
+            subscription: Some(subscription),
+            active: true,
+        })
     }
 
     /// Get a typed source handle for pushing data.

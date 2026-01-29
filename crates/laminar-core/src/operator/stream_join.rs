@@ -126,9 +126,7 @@ pub enum JoinSide {
     Right,
 }
 
-// ============================================================================
 // F057: Stream Join Optimizations
-// ============================================================================
 
 /// Row encoding strategy for join state (F057).
 ///
@@ -2503,9 +2501,7 @@ mod tests {
         assert_eq!(operator.metrics().matches, 1);
     }
 
-    // ========================================================================
     // F057: Stream Join Optimization Tests
-    // ========================================================================
 
     #[test]
     fn test_f057_join_row_encoding_enum() {

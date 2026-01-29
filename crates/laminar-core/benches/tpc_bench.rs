@@ -35,9 +35,7 @@ fn make_event_string(user_id: &str, timestamp: i64) -> Event {
     Event { timestamp, data: batch }
 }
 
-// =============================================================================
 // SPSC Queue Benchmarks
-// =============================================================================
 
 /// Benchmark SPSC queue push operation
 fn bench_spsc_push(c: &mut Criterion) {
@@ -159,9 +157,7 @@ fn bench_spsc_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Cache Padding Benchmarks
-// =============================================================================
 
 /// Benchmark CachePadded overhead
 fn bench_cache_padded(c: &mut Criterion) {
@@ -190,9 +186,7 @@ fn bench_cache_padded(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Key Router Benchmarks
-// =============================================================================
 
 /// Benchmark key routing by column name
 fn bench_router_column_name(c: &mut Criterion) {
@@ -288,9 +282,7 @@ fn bench_router_string_key(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // CoreHandle Benchmarks
-// =============================================================================
 
 /// Benchmark event submission to a single core
 fn bench_core_submit(c: &mut Criterion) {
@@ -348,9 +340,7 @@ fn bench_core_poll(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // ThreadPerCoreRuntime Benchmarks
-// =============================================================================
 
 /// Benchmark runtime submit throughput
 fn bench_runtime_submit(c: &mut Criterion) {
@@ -456,9 +446,7 @@ fn bench_runtime_poll(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Scaling Benchmarks
-// =============================================================================
 
 /// Benchmark scaling efficiency across cores
 ///
@@ -500,9 +488,7 @@ fn bench_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Main
-// =============================================================================
 
 criterion_group!(
     spsc_benches,

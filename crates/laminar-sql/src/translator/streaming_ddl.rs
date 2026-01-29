@@ -308,13 +308,10 @@ fn parse_source_options(options: &HashMap<String, String>) -> Result<SourceConfi
             "track_stats" | "trackstats" | "stats" => {
                 config.track_stats = parse_bool(value)?;
             }
-            // Ignore connector-specific options for external sources
-            // These are handled by connector implementations
-            "connector" | "topic" | "bootstrap.servers" | "format" | "group.id" => {}
-            _ => {
-                // Unknown option - log warning but don't fail
-                // This allows forward compatibility with new options
-            }
+            // Ignore connector-specific and unknown options.
+            // Connector-specific: handled by connector implementations.
+            // Unknown: allow forward compatibility with new options.
+            _ => {}
         }
     }
 
@@ -407,16 +404,22 @@ fn sql_type_to_arrow(sql_type: &SqlDataType) -> Result<DataType, ParseError> {
             Ok(DataType::Decimal128(precision, scale))
         }
 
-        // String types
-        SqlDataType::Char(_) | SqlDataType::Character(_) => Ok(DataType::Utf8),
-        SqlDataType::Varchar(_) | SqlDataType::CharacterVarying(_) => Ok(DataType::Utf8),
-        SqlDataType::Text | SqlDataType::String(_) => Ok(DataType::Utf8),
+        // String types (including JSON/UUID stored as strings)
+        SqlDataType::Char(_)
+        | SqlDataType::Character(_)
+        | SqlDataType::Varchar(_)
+        | SqlDataType::CharacterVarying(_)
+        | SqlDataType::Text
+        | SqlDataType::String(_)
+        | SqlDataType::JSON
+        | SqlDataType::JSONB
+        | SqlDataType::Uuid => Ok(DataType::Utf8),
 
         // Binary types
-        SqlDataType::Binary(_) | SqlDataType::Varbinary(_) | SqlDataType::Blob(_) => {
-            Ok(DataType::Binary)
-        }
-        SqlDataType::Bytea => Ok(DataType::Binary),
+        SqlDataType::Binary(_)
+        | SqlDataType::Varbinary(_)
+        | SqlDataType::Blob(_)
+        | SqlDataType::Bytea => Ok(DataType::Binary),
 
         // Boolean type
         SqlDataType::Boolean | SqlDataType::Bool => Ok(DataType::Boolean),
@@ -428,12 +431,6 @@ fn sql_type_to_arrow(sql_type: &SqlDataType) -> Result<DataType, ParseError> {
 
         // Interval type
         SqlDataType::Interval { .. } => Ok(DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano)),
-
-        // JSON type
-        SqlDataType::JSON | SqlDataType::JSONB => Ok(DataType::Utf8), // Store as string for now
-
-        // UUID type
-        SqlDataType::Uuid => Ok(DataType::Utf8), // Store as string
 
         // Unsupported types
         _ => Err(ParseError::ValidationError(format!(
@@ -471,7 +468,7 @@ fn parse_watermark(wm: &WatermarkDef, columns: &[ColumnDefinition]) -> Result<Wa
 
     // Parse the watermark expression to extract out-of-orderness
     // Expression should be: column - INTERVAL 'N' UNIT
-    let max_out_of_orderness = parse_watermark_expression(&wm.expression)?;
+    let max_out_of_orderness = parse_watermark_expression(&wm.expression);
 
     Ok(WatermarkSpec {
         column: column_name,
@@ -480,77 +477,64 @@ fn parse_watermark(wm: &WatermarkDef, columns: &[ColumnDefinition]) -> Result<Wa
 }
 
 /// Parses watermark expression to extract the bounded out-of-orderness.
-fn parse_watermark_expression(expr: &sqlparser::ast::Expr) -> Result<Duration, ParseError> {
+fn parse_watermark_expression(expr: &sqlparser::ast::Expr) -> Duration {
     use sqlparser::ast::Expr;
 
     match expr {
-        Expr::BinaryOp { op, right, .. } => {
-            match op {
-                sqlparser::ast::BinaryOperator::Minus => {
-                    // Extract interval from right side
-                    parse_interval_expr(right)
-                }
-                _ => {
-                    // For other operators, default to zero lateness
-                    Ok(Duration::ZERO)
-                }
-            }
-        }
+        Expr::BinaryOp { op, right, .. } => match op {
+            sqlparser::ast::BinaryOperator::Minus => parse_interval_expr(right),
+            _ => Duration::ZERO,
+        },
         // If just the column name, assume zero lateness
-        Expr::Identifier(_) => Ok(Duration::ZERO),
-        _ => {
-            // Default to 1 second for complex expressions
-            Ok(Duration::from_secs(1))
-        }
+        Expr::Identifier(_) => Duration::ZERO,
+        // Default to 1 second for complex expressions
+        _ => Duration::from_secs(1),
     }
 }
 
 /// Parses an interval expression to a Duration.
-fn parse_interval_expr(expr: &sqlparser::ast::Expr) -> Result<Duration, ParseError> {
+fn parse_interval_expr(expr: &sqlparser::ast::Expr) -> Duration {
     use sqlparser::ast::Expr;
 
-    match expr {
-        Expr::Interval(interval) => {
-            // Extract value and unit from interval
-            let value_str = match interval.value.as_ref() {
-                Expr::Value(v) => {
-                    // v is ValueWithSpan, access the inner value
-                    match &v.value {
-                        sqlparser::ast::Value::SingleQuotedString(s) => s.clone(),
-                        sqlparser::ast::Value::Number(n, _) => n.clone(),
-                        _ => return Ok(Duration::from_secs(1)),
-                    }
-                }
-                _ => return Ok(Duration::from_secs(1)),
-            };
+    let Expr::Interval(interval) = expr else {
+        return Duration::from_secs(1);
+    };
 
-            let value: u64 = value_str.parse().unwrap_or(1);
-
-            // Determine unit
-            let unit = interval
-                .leading_field
-                .as_ref()
-                .map_or("second", |u| match u {
-                    sqlparser::ast::DateTimeField::Microsecond => "microsecond",
-                    sqlparser::ast::DateTimeField::Millisecond => "millisecond",
-                    sqlparser::ast::DateTimeField::Second => "second",
-                    sqlparser::ast::DateTimeField::Minute => "minute",
-                    sqlparser::ast::DateTimeField::Hour => "hour",
-                    sqlparser::ast::DateTimeField::Day => "day",
-                    _ => "second",
-                });
-
-            match unit {
-                "microsecond" | "microseconds" => Ok(Duration::from_micros(value)),
-                "millisecond" | "milliseconds" => Ok(Duration::from_millis(value)),
-                "second" | "seconds" => Ok(Duration::from_secs(value)),
-                "minute" | "minutes" => Ok(Duration::from_secs(value * 60)),
-                "hour" | "hours" => Ok(Duration::from_secs(value * 3600)),
-                "day" | "days" => Ok(Duration::from_secs(value * 86400)),
-                _ => Ok(Duration::from_secs(value)),
+    // Extract value and unit from interval
+    let value_str = match interval.value.as_ref() {
+        Expr::Value(v) => {
+            // v is ValueWithSpan, access the inner value
+            match &v.value {
+                sqlparser::ast::Value::SingleQuotedString(s) => s.clone(),
+                sqlparser::ast::Value::Number(n, _) => n.clone(),
+                _ => return Duration::from_secs(1),
             }
         }
-        _ => Ok(Duration::from_secs(1)),
+        _ => return Duration::from_secs(1),
+    };
+
+    let value: u64 = value_str.parse().unwrap_or(1);
+
+    // Determine unit
+    let unit = interval
+        .leading_field
+        .as_ref()
+        .map_or("second", |u| match u {
+            sqlparser::ast::DateTimeField::Microsecond => "microsecond",
+            sqlparser::ast::DateTimeField::Millisecond => "millisecond",
+            sqlparser::ast::DateTimeField::Minute => "minute",
+            sqlparser::ast::DateTimeField::Hour => "hour",
+            sqlparser::ast::DateTimeField::Day => "day",
+            _ => "second",
+        });
+
+    match unit {
+        "microsecond" | "microseconds" => Duration::from_micros(value),
+        "millisecond" | "milliseconds" => Duration::from_millis(value),
+        "minute" | "minutes" => Duration::from_secs(value * 60),
+        "hour" | "hours" => Duration::from_secs(value * 3600),
+        "day" | "days" => Duration::from_secs(value * 86400),
+        _ => Duration::from_secs(value),
     }
 }
 

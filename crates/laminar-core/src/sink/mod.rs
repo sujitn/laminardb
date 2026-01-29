@@ -2,8 +2,6 @@
 //!
 //! This module provides exactly-once delivery semantics for sinks through two mechanisms:
 //!
-// Allow dead code for public APIs that will be used in connector implementations
-#![allow(dead_code)]
 //!
 //! 1. **Transactional Sinks**: For sinks that support transactions (Kafka, Delta Lake)
 //! 2. **Idempotent Sinks**: For sinks without transactions, using deduplication
@@ -193,9 +191,7 @@ mod tests {
         assert!(!caps.supports_upsert());
     }
 
-    // ========================================================================
     // F023 Recovery Integration Tests
-    // ========================================================================
 
     use crate::reactor::BufferingSink;
 

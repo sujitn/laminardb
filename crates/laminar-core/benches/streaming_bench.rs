@@ -22,9 +22,7 @@ use laminar_core::streaming::{
     self, BackpressureStrategy, ChannelConfig, Record, RingBuffer, SourceConfig, WaitStrategy,
 };
 
-// =============================================================================
 // Test Record Type
-// =============================================================================
 
 #[derive(Clone, Debug)]
 struct BenchEvent {
@@ -83,9 +81,7 @@ fn make_batch(size: usize) -> RecordBatch {
     .unwrap()
 }
 
-// =============================================================================
 // Ring Buffer Benchmarks
-// =============================================================================
 
 fn bench_ring_buffer_push(c: &mut Criterion) {
     let mut group = c.benchmark_group("ring_buffer_push");
@@ -186,9 +182,7 @@ fn bench_ring_buffer_batch(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Channel Benchmarks
-// =============================================================================
 
 fn bench_spsc_channel_push(c: &mut Criterion) {
     let mut group = c.benchmark_group("streaming_spsc_push");
@@ -282,9 +276,7 @@ fn bench_mpsc_channel_push(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Source Benchmarks
-// =============================================================================
 
 fn bench_source_push(c: &mut Criterion) {
     let mut group = c.benchmark_group("source_push");
@@ -389,9 +381,7 @@ fn bench_source_push_batch_drain(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // End-to-End Benchmarks
-// =============================================================================
 
 fn bench_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("streaming_end_to_end");
@@ -513,9 +503,7 @@ fn bench_watermark(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Criterion Groups
-// =============================================================================
 
 criterion_group!(
     ring_buffer_benches,

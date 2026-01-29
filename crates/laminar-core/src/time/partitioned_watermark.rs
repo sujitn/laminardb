@@ -871,7 +871,6 @@ impl GlobalWatermarkCollector {
 mod tests {
     use super::*;
 
-    // ==================== PartitionId Tests ====================
 
     #[test]
     fn test_partition_id_creation() {
@@ -896,7 +895,6 @@ mod tests {
         assert_eq!(format!("{pid}"), "2:5");
     }
 
-    // ==================== PartitionedWatermarkTracker Tests ====================
 
     #[test]
     fn test_partitioned_tracker_single_partition_updates_watermark() {
@@ -1121,7 +1119,6 @@ mod tests {
         assert!(matches!(result, Err(WatermarkError::PartitionExists(_))));
     }
 
-    // ==================== CoreWatermarkState Tests ====================
 
     #[test]
     fn test_core_watermark_state_creation() {
@@ -1208,7 +1205,6 @@ mod tests {
         assert_eq!(state.local_watermark(), 5000);
     }
 
-    // ==================== GlobalWatermarkCollector Tests ====================
 
     #[test]
     fn test_global_collector_creation() {

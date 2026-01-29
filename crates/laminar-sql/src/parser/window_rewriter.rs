@@ -86,25 +86,8 @@ impl WindowRewriter {
 
     /// Ensure window_start and window_end columns are in projection.
     fn ensure_window_columns_in_projection(select: &mut Select) {
-        let has_window_start = select.projection.iter().any(|item| {
-            if let SelectItem::UnnamedExpr(Expr::Identifier(ident)) = item {
-                ident.value.to_lowercase() == "window_start"
-            } else if let SelectItem::ExprWithAlias { alias, .. } = item {
-                alias.value.to_lowercase() == "window_start"
-            } else {
-                false
-            }
-        });
-
-        let has_window_end = select.projection.iter().any(|item| {
-            if let SelectItem::UnnamedExpr(Expr::Identifier(ident)) = item {
-                ident.value.to_lowercase() == "window_end"
-            } else if let SelectItem::ExprWithAlias { alias, .. } = item {
-                alias.value.to_lowercase() == "window_end"
-            } else {
-                false
-            }
-        });
+        let has_window_start = Self::has_projection_column(select, "window_start");
+        let has_window_end = Self::has_projection_column(select, "window_end");
 
         // Add window_start at the beginning if not present
         if !has_window_start {
@@ -116,15 +99,28 @@ impl WindowRewriter {
 
         // Add window_end after window_start if not present
         if !has_window_end {
-            let insert_pos = if has_window_start { 1 } else { 1 };
             select.projection.insert(
-                insert_pos,
+                1,
                 SelectItem::UnnamedExpr(Expr::Identifier(Ident::new("window_end"))),
             );
         }
     }
 
+    /// Check if a named column exists in the SELECT projection.
+    fn has_projection_column(select: &Select, name: &str) -> bool {
+        select.projection.iter().any(|item| {
+            if let SelectItem::UnnamedExpr(Expr::Identifier(ident)) = item {
+                ident.value.eq_ignore_ascii_case(name)
+            } else if let SelectItem::ExprWithAlias { alias, .. } = item {
+                alias.value.eq_ignore_ascii_case(name)
+            } else {
+                false
+            }
+        })
+    }
+
     /// Check if expression contains a window function.
+    #[must_use]
     pub fn contains_window_function(expr: &Expr) -> bool {
         match expr {
             Expr::Function(func) => {
@@ -187,7 +183,7 @@ impl WindowRewriter {
             FunctionArguments::List(arg_list) => {
                 let mut result = Vec::new();
                 for arg in &arg_list.args {
-                    if let Some(expr) = Self::extract_arg_expr(arg)? {
+                    if let Some(expr) = Self::extract_arg_expr(arg) {
                         result.push(expr);
                     }
                 }
@@ -201,17 +197,15 @@ impl WindowRewriter {
     }
 
     /// Extract expression from a function argument.
-    fn extract_arg_expr(arg: &FunctionArg) -> Result<Option<Expr>, ParseError> {
+    fn extract_arg_expr(arg: &FunctionArg) -> Option<Expr> {
         match arg {
             FunctionArg::Unnamed(arg_expr) => match arg_expr {
-                FunctionArgExpr::Expr(expr) => Ok(Some(expr.clone())),
-                FunctionArgExpr::Wildcard => Ok(None),
-                FunctionArgExpr::QualifiedWildcard(_) => Ok(None),
+                FunctionArgExpr::Expr(expr) => Some(expr.clone()),
+                FunctionArgExpr::Wildcard | FunctionArgExpr::QualifiedWildcard(_) => None,
             },
             FunctionArg::Named { arg, .. } | FunctionArg::ExprNamed { arg, .. } => match arg {
-                FunctionArgExpr::Expr(expr) => Ok(Some(expr.clone())),
-                FunctionArgExpr::Wildcard => Ok(None),
-                FunctionArgExpr::QualifiedWildcard(_) => Ok(None),
+                FunctionArgExpr::Expr(expr) => Some(expr.clone()),
+                FunctionArgExpr::Wildcard | FunctionArgExpr::QualifiedWildcard(_) => None,
             },
         }
     }
@@ -265,11 +259,12 @@ impl WindowRewriter {
     /// Extract the time column name from a window function.
     ///
     /// Returns the column name as a string if extractable.
+    #[must_use]
     pub fn get_time_column_name(window: &WindowFunction) -> Option<String> {
         let expr = match window {
-            WindowFunction::Tumble { time_column, .. } => time_column.as_ref(),
-            WindowFunction::Hop { time_column, .. } => time_column.as_ref(),
-            WindowFunction::Session { time_column, .. } => time_column.as_ref(),
+            WindowFunction::Tumble { time_column, .. }
+            | WindowFunction::Hop { time_column, .. }
+            | WindowFunction::Session { time_column, .. } => time_column.as_ref(),
         };
 
         match expr {
@@ -282,6 +277,10 @@ impl WindowRewriter {
     /// Parse an INTERVAL expression to Duration.
     ///
     /// Supports: SECOND, MINUTE, HOUR, DAY
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParseError::WindowError` if the expression is not a valid interval.
     pub fn parse_interval_to_duration(
         expr: &Expr,
     ) -> Result<std::time::Duration, ParseError> {

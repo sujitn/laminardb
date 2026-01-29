@@ -35,9 +35,7 @@ use std::sync::Arc;
 use crate::operator::{Event, Operator, Output};
 use crate::reactor::ReactorConfig;
 
-// ============================================================================
 // OutputBuffer - Pre-allocated buffer for zero-allocation polling
-// ============================================================================
 
 /// A pre-allocated buffer for collecting outputs without allocation.
 ///
