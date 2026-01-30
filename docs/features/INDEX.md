@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 21 | 14 | 0 | 0 | 7 |
+| Phase 3 | 21 | 13 | 0 | 0 | 8 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **89** | **35** | **0** | **0** | **54** |
+| **Total** | **89** | **34** | **0** | **0** | **55** |
 
 ## Status Legend
 
@@ -270,7 +270,7 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 | F-STREAM-006 | Subscription | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-006-subscription.md) |
 | F-STREAM-007 | SQL DDL | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-007-sql-ddl.md) |
 | F-STREAM-010 | Broadcast Channel | P1 | 📝 | [Link](phase-3/streaming/F-STREAM-010-broadcast-channel.md) |
-| F-STREAM-013 | Checkpointing | P1 | 📝 | [Link](phase-3/streaming/F-STREAM-013-checkpointing.md) |
+| F-STREAM-013 | Checkpointing | P1 | ✅ | [Link](phase-3/streaming/F-STREAM-013-checkpointing.md) |
 
 **Key Design Principles**:
 - Channel type is NEVER user-specified (auto-derived)

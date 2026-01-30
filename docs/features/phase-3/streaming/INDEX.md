@@ -19,8 +19,8 @@ LaminarDB's in-memory streaming API provides **embedded Kafka Streams-like seman
 
 | Tier | Total | Draft | In Progress | Done |
 |------|-------|-------|-------------|------|
-| Tier 1 (Core) | 7 | 7 | 0 | 0 |
-| Tier 2 (Production) | 6 | 6 | 0 | 0 |
+| Tier 1 (Core) | 7 | 0 | 0 | 7 |
+| Tier 2 (Production) | 6 | 5 | 0 | 1 |
 | Tier 3 (Cross-Language) | 3 | 0 | 0 | 0 |
 
 ---
@@ -29,13 +29,13 @@ LaminarDB's in-memory streaming API provides **embedded Kafka Streams-like seman
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
-| F-STREAM-001 | Ring Buffer | P0 | 📝 | [Link](F-STREAM-001-ring-buffer.md) |
-| F-STREAM-002 | SPSC Channel | P0 | 📝 | [Link](F-STREAM-002-spsc-channel.md) |
-| F-STREAM-003 | MPSC Auto-Upgrade | P0 | 📝 | [Link](F-STREAM-003-mpsc-upgrade.md) |
-| F-STREAM-004 | Source | P0 | 📝 | [Link](F-STREAM-004-source.md) |
-| F-STREAM-005 | Sink | P0 | 📝 | [Link](F-STREAM-005-sink.md) |
-| F-STREAM-006 | Subscription | P0 | 📝 | [Link](F-STREAM-006-subscription.md) |
-| F-STREAM-007 | SQL DDL | P0 | 📝 | [Link](F-STREAM-007-sql-ddl.md) |
+| F-STREAM-001 | Ring Buffer | P0 | ✅ | [Link](F-STREAM-001-ring-buffer.md) |
+| F-STREAM-002 | SPSC Channel | P0 | ✅ | [Link](F-STREAM-002-spsc-channel.md) |
+| F-STREAM-003 | MPSC Auto-Upgrade | P0 | ✅ | [Link](F-STREAM-003-mpsc-upgrade.md) |
+| F-STREAM-004 | Source | P0 | ✅ | [Link](F-STREAM-004-source.md) |
+| F-STREAM-005 | Sink | P0 | ✅ | [Link](F-STREAM-005-sink.md) |
+| F-STREAM-006 | Subscription | P0 | ✅ | [Link](F-STREAM-006-subscription.md) |
+| F-STREAM-007 | SQL DDL | P0 | ✅ | [Link](F-STREAM-007-sql-ddl.md) |
 
 ### Tier 1 Constraints
 - Block backpressure only
@@ -51,7 +51,7 @@ LaminarDB's in-memory streaming API provides **embedded Kafka Streams-like seman
 | F-STREAM-010 | Broadcast Channel | P1 | 📝 | [Link](F-STREAM-010-broadcast-channel.md) |
 | F-STREAM-011 | All Backpressure | P1 | 📝 | TBD |
 | F-STREAM-012 | All Wait Strategies | P1 | 📝 | TBD |
-| F-STREAM-013 | Checkpointing | P1 | 📝 | [Link](F-STREAM-013-checkpointing.md) |
+| F-STREAM-013 | Checkpointing | P1 | ✅ | [Link](F-STREAM-013-checkpointing.md) |
 | F-STREAM-014 | WAL | P1 | 📝 | TBD |
 | F-STREAM-015 | Recovery | P1 | 📝 | TBD |
 

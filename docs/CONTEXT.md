@@ -76,7 +76,7 @@ Previous session:
 **Total tests**: 1502 (983 core + 365 sql + 120 storage + 28 laminar-db + 6 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 7/21 features COMPLETE (33%)**
+**Phase 3 Connectors & Integration: 8/21 features COMPLETE (38%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - Next: External connectors (F025-F034)
@@ -85,7 +85,7 @@ Previous session:
 1. F025: Kafka Source Connector
 2. F026: Kafka Sink Connector
 3. F-STREAM-010: Broadcast Channel (optional enhancement)
-4. F-STREAM-013: Checkpointing (optional)
+4. F-STREAM-013: Checkpointing - COMPLETE (16 tests)
 
 ### Open Issues
 None - Developer API foundation complete.
