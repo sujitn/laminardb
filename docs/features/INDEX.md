@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 28 | 20 | 0 | 0 | 8 |
+| Phase 3 | 28 | 19 | 0 | 0 | 9 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **96** | **41** | **0** | **0** | **55** |
+| **Total** | **96** | **40** | **0** | **0** | **56** |
 
 ## Status Legend
 
@@ -284,7 +284,7 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
-| F-DAG-001 | Core DAG Topology | P0 | 📝 | [Link](phase-3/dag/F-DAG-001-core-topology.md) |
+| F-DAG-001 | Core DAG Topology | P0 | ✅ | [Link](phase-3/dag/F-DAG-001-core-topology.md) |
 | F-DAG-002 | Multicast & Routing | P0 | 📝 | [Link](phase-3/dag/F-DAG-002-multicast-routing.md) |
 | F-DAG-003 | DAG Executor | P0 | 📝 | [Link](phase-3/dag/F-DAG-003-dag-executor.md) |
 | F-DAG-004 | DAG Checkpointing | P1 | 📝 | [Link](phase-3/dag/F-DAG-004-dag-checkpointing.md) |

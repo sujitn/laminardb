@@ -5,7 +5,7 @@
 | Field | Value |
 |-------|-------|
 | **ID** | F-DAG-001 |
-| **Status** | 📝 Draft |
+| **Status** | ✅ Done |
 | **Priority** | P0 |
 | **Phase** | 3 |
 | **Effort** | M (3-5 days) |
@@ -82,10 +82,10 @@ crates/laminar-core/src/dag/
 
 ## Completion Checklist
 
-- [ ] Data structures implemented in `dag/topology.rs`
-- [ ] Builder implemented in `dag/builder.rs`
-- [ ] Error types in `dag/error.rs`
-- [ ] Module re-exports in `dag/mod.rs`
-- [ ] 15+ unit tests passing
-- [ ] `cargo clippy` clean
-- [ ] Feature INDEX.md updated
+- [x] Data structures implemented in `dag/topology.rs`
+- [x] Builder implemented in `dag/builder.rs`
+- [x] Error types in `dag/error.rs`
+- [x] Module re-exports in `dag/mod.rs`
+- [x] 29 unit tests passing (exceeds 15+ target)
+- [x] `cargo clippy` clean
+- [x] Feature INDEX.md updated

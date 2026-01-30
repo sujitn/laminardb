@@ -5,90 +5,44 @@
 
 ## Last Session
 
-**Date**: 2026-01-28
+**Date**: 2026-01-30
 
 ### What Was Accomplished
-- **Developer API Overhaul** - 3 new crates, SQL parser extensions, 5 examples
-  - **laminar-derive** crate: `#[derive(Record)]` and `#[derive(FromRecordBatch)]` proc macros
-    - Supports bool, i8-i64, u8-u64, f32, f64, String, Vec<u8>, Option<T>
-    - Attributes: `#[event_time]`, `#[column("name")]`, `#[nullable]`
-  - **laminar-db** crate: `LaminarDB` database facade (28 tests)
-    - `LaminarDB::open()`, `execute(sql)`, `source::<T>(name)`, `source_untyped(name)`
-    - `SourceCatalog` with register/drop/describe/list for sources, sinks, queries
-    - `QueryHandle`, `TypedSubscription<T>`, `SourceHandle<T>`, `UntypedSourceHandle`
-    - Full SQL dispatch: CREATE/DROP SOURCE/SINK, SHOW, DESCRIBE, EXPLAIN, INSERT INTO, CREATE MV
-    - Pipeline lifecycle: `cancel_query(id)`, `source_count()`, `sink_count()`, `active_query_count()`
-    - EXPLAIN handler returns streaming plan info as metadata RecordBatch
-  - **laminardb** convenience crate: re-exports all public types + `prelude` module
-    - Re-exports ASOF join types: `AsofDirection`, `AsofJoinConfig`, `AsofJoinType`
-  - **SQL Parser Extensions** (365 tests total, up from 298):
-    - New `StreamingStatement` variants: DropSource, DropSink, DropMaterializedView, Show, Describe, Explain, CreateMaterializedView, InsertInto
-    - Parser functions: parse_drop_source, parse_drop_sink, parse_describe, etc.
-    - Planner updated with wildcard arm for DB-layer statements
-    - Fixed sqlparser 0.60 breaking changes: `insert.table` (TableObject), `insert.source`
-  - **5 runnable examples**: basic_source, derive_macros, show_describe, multiple_sources, streaming_pipeline
-  - **Core fix**: `push_arrow` skips schema validation for type-erased (empty schema) sources
+- **F-DAG-001: Core DAG Topology** - COMPLETE (29 tests)
+  - `dag/topology.rs`: `NodeId`, `EdgeId`, `StatePartitionId`, `DagNode`, `DagEdge`, `DagNodeType`, `DagChannelType`, `PartitioningStrategy`, `SharedStageMetadata`, `StreamingDag`
+  - `dag/builder.rs`: `DagBuilder` fluent API (`source()`, `operator()`, `connect()`, `fan_out()`, `sink_for()`, `build()`), `FanOutBuilder` (`branch()`, `stateless_branch()`)
+  - `dag/error.rs`: `DagError` enum (8 variants: `CycleDetected`, `DisconnectedNode`, `NodeNotFound`, `DuplicateNode`, `SchemaMismatch`, `FanOutLimitExceeded`, `EmptyDag`, `BackpressureFull`)
+  - Kahn's algorithm topological sort with deterministic ordering
+  - Cycle detection (rejects at construction time)
+  - Automatic `DagChannelType` derivation (SPSC/SPMC/MPSC from fan-in/fan-out)
+  - Shared stage detection (nodes with fan-out > 1)
+  - Schema compatibility validation (field count + types, empty = type-erased)
+  - `MAX_FAN_OUT = 8` enforcement
+  - Wired into `lib.rs` with `DagError` in the crate `Error` enum
 
-Previous session:
-- F-STREAM-001 to F-STREAM-007: Streaming API Implementation - ALL COMPLETE (99 tests)
-  - F-STREAM-001: Ring Buffer (15 tests)
-    - Lock-free heap-allocated ring buffer with CachePadded indices
-    - Power-of-2 capacity with bitmask indexing, Acquire/Release ordering
-    - push/pop/peek, batch operations (push_batch, pop_batch, pop_each, pop_batch_into)
-  - F-STREAM-002: SPSC Channel (22 tests)
-    - Producer/Consumer handles with Arc<Inner>
-    - Backpressure strategies: Block, DropOldest, Reject
-    - Wait strategies: Spin, SpinYield, Park
-  - F-STREAM-003: MPSC Auto-Upgrade (integrated with F-STREAM-002)
-    - `producer_count: AtomicUsize` tracks clones
-    - Clone increments count and sets mode to MPSC
-    - Spin-lock serialization for MPSC producers
-  - F-STREAM-004: Source API (15 tests)
-    - `Record` trait with to_record_batch(), schema(), event_time()
-    - Source<T> with push(), try_push(), push_batch(), push_arrow(), watermark()
-    - clone() triggers automatic SPSC → MPSC upgrade
-  - F-STREAM-005: Sink API (7 tests)
-    - Sink<T> receives records from Source
-    - subscribe() returns Subscription, supports broadcast mode
-  - F-STREAM-006: Subscription API (16 tests)
-    - poll(), recv(), recv_timeout(), poll_batch(), poll_each()
-    - SubscriptionMessage for raw messages including watermarks
-    - Iterator implementation for Subscription
-  - F-STREAM-007: SQL DDL Translator (18 tests)
-    - SourceDefinition, SinkDefinition types
-    - translate_create_source(), translate_create_sink()
-    - SQL type → Arrow DataType conversion
-    - Validation: rejects 'channel' option (channel type is auto-derived)
-
+Previous session (2026-01-28):
+- Developer API Overhaul - 3 new crates, SQL parser extensions, 5 examples
+- F-STREAM-001 to F-STREAM-007: Streaming API - ALL COMPLETE (99 tests)
 - Performance Audit: ALL 10 issues fixed
-  - P0: Replaced Mutex with RwLock in sink.rs for fast read access on hot path
-  - P1: Relaxed memory ordering for snapshot methods (is_empty, is_full, len)
-  - P1: Added exponential backoff in MPSC spin-lock (spin → yield → sleep)
-  - P1: Increased park timeout from 10μs to 100μs to reduce spurious wakes
-  - P2: Cache-padded stats counters to prevent false sharing
-  - P2: Added `#[cold]` + warnings to allocating methods (pop_batch, poll_batch)
-  - P2: Documented Source::clone allocation overhead
-  - P2: Added zero-allocation variants (push_batch_drain, pop_batch_into, poll_batch_into)
-
-Previous session:
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1502 (983 core + 365 sql + 120 storage + 28 laminar-db + 6 connectors)
+**Total tests**: 1611 (1027 core + 365 sql + 120 storage + 28 laminar-db + 71 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 8/21 features COMPLETE (38%)**
-- Streaming API core complete (F-STREAM-001 to F-STREAM-007)
+**Phase 3 Connectors & Integration: 9/28 features COMPLETE (32%)**
+- Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
-- Next: External connectors (F025-F034)
+- DAG topology foundation complete (F-DAG-001)
+- Next: F-DAG-002 (Multicast & Routing), then F-DAG-003 (Executor)
 
 ### Immediate Next Steps
-1. F025: Kafka Source Connector
-2. F026: Kafka Sink Connector
-3. F-STREAM-010: Broadcast Channel (optional enhancement)
-4. F-STREAM-013: Checkpointing - COMPLETE (16 tests)
+1. F-DAG-002: Multicast & Routing (routing table, multicast buffer)
+2. F-DAG-003: DAG Executor (Ring 0 event processing)
+3. F025: Kafka Source Connector
+4. F026: Kafka Sink Connector
 
 ### Open Issues
-None - Developer API foundation complete.
+None.
 
 ---
 
@@ -146,6 +100,10 @@ None - Developer API foundation complete.
 ### Key Modules
 ```
 laminar-core/src/
+  dag/          # F-DAG-001: DAG pipeline topology
+    topology      # StreamingDag, DagNode, DagEdge, DagChannelType
+    builder       # DagBuilder, FanOutBuilder
+    error         # DagError
   streaming/    # F-STREAM-001 to F-STREAM-006: In-memory streaming API
     ring_buffer   # Lock-free SPSC ring buffer
     channel       # SPSC/MPSC channel with auto-upgrade
