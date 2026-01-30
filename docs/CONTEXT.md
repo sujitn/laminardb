@@ -8,23 +8,23 @@
 **Date**: 2026-01-30
 
 ### What Was Accomplished
-- **F-DAG-002: Multicast & Routing** - COMPLETE (16 new tests, 45 total DAG tests)
-  - `dag/multicast.rs`: `MulticastBuffer<T>` - zero-copy SPMC multicast buffer
-    - Pre-allocated `Option<T>` slots with power-of-2 bitmask indexing
-    - Atomic per-slot refcounts for consumer tracking
-    - Single-writer `publish()` with backpressure (`DagError::BackpressureFull`)
-    - Multi-consumer `consume(idx)` with independent read positions
-    - Slot reuse when all consumers complete (refcount → 0)
-    - `Send + Sync` with documented safety invariants
-  - `dag/routing.rs`: `RoutingTable` + `RoutingEntry` - O(1) hot path dispatch
-    - `#[repr(C, align(64))]` cache-line aligned `RoutingEntry` (exactly 64 bytes)
-    - `targets: [u32; 8]`, `target_count`, `is_multicast` per entry
-    - `RoutingTable::from_dag()` builds from finalized `StreamingDag`
-    - `route(source, port)` and `node_targets(source)` O(1) lookups
-    - `MAX_PORTS = 8` (matches `MAX_FAN_OUT`)
-  - Updated `dag/mod.rs` with module declarations and re-exports
+- **F-DAG-003: DAG Executor** - COMPLETE (21 new tests, 66 total DAG tests)
+  - `dag/executor.rs`: `DagExecutor` - Ring 0 event processing engine
+    - `NodeRuntime` per-node state (TimerService, StateStore, WatermarkGenerator)
+    - `DagExecutorMetrics` (events_processed, events_routed, multicast_publishes, backpressure_stalls, nodes_skipped)
+    - `DagExecutor::from_dag()` pre-allocates all per-node state in Ring 2
+    - `register_operator()` for custom operator dispatch (passthrough by default)
+    - `process_event()` enqueues at source, processes entire DAG in topological order
+    - `process_node()` with "take and put back" pattern for borrow checker
+    - `route_output()` with terminal/single/multicast dispatch
+    - `take_sink_outputs()` / `take_all_sink_outputs()` for collecting results
+    - `checkpoint()` snapshots all registered operators
+    - `HotPathGuard` integration (F071) for zero-allocation enforcement
+    - Test operators: PassthroughOperator, DoublingOperator, FilterOperator, AddOperator
+  - Updated `dag/mod.rs` with module and re-exports
 
 Previous session (2026-01-30):
+- F-DAG-002: Multicast & Routing - COMPLETE (16 tests)
 - F-DAG-001: Core DAG Topology - COMPLETE (29 tests)
 
 Previous session (2026-01-28):
@@ -33,21 +33,20 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1627 (1043 core + 365 sql + 120 storage + 28 laminar-db + 71 connectors)
+**Total tests**: 1648 (1064 core + 365 sql + 120 storage + 28 laminar-db + 71 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 10/28 features COMPLETE (36%)**
+**Phase 3 Connectors & Integration: 11/28 features COMPLETE (39%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
-- DAG topology foundation complete (F-DAG-001)
-- DAG multicast & routing complete (F-DAG-002)
-- Next: F-DAG-003 (DAG Executor)
+- DAG pipeline core complete (F-DAG-001, F-DAG-002, F-DAG-003)
+- Next: F025 (Kafka Source Connector)
 
 ### Immediate Next Steps
-1. F-DAG-003: DAG Executor (Ring 0 event processing)
-2. F025: Kafka Source Connector
-3. F026: Kafka Sink Connector
-4. F027: PostgreSQL CDC Source
+1. F025: Kafka Source Connector
+2. F026: Kafka Sink Connector
+3. F027: PostgreSQL CDC Source
+4. F-DAG-004: DAG Checkpointing
 
 ### Open Issues
 None.
@@ -108,12 +107,13 @@ None.
 ### Key Modules
 ```
 laminar-core/src/
-  dag/          # F-DAG-001/002: DAG pipeline topology + multicast/routing
+  dag/          # F-DAG-001/002/003: DAG pipeline topology + multicast/routing + executor
     topology      # StreamingDag, DagNode, DagEdge, DagChannelType
     builder       # DagBuilder, FanOutBuilder
     error         # DagError
     multicast     # F-DAG-002: MulticastBuffer<T> (SPMC, refcounted slots)
     routing       # F-DAG-002: RoutingTable, RoutingEntry (64-byte aligned)
+    executor      # F-DAG-003: DagExecutor, DagExecutorMetrics (Ring 0 processing)
   streaming/    # F-STREAM-001 to F-STREAM-006: In-memory streaming API
     ring_buffer   # Lock-free SPSC ring buffer
     channel       # SPSC/MPSC channel with auto-upgrade

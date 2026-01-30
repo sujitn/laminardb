@@ -19,7 +19,7 @@ LaminarDB's DAG pipeline enables complex streaming topologies with fan-out, fan-
 
 | Tier | Total | Draft | In Progress | Done |
 |------|-------|-------|-------------|------|
-| Core (P0) | 3 | 1 | 0 | 2 |
+| Core (P0) | 3 | 0 | 0 | 3 |
 | Integration (P1) | 3 | 3 | 0 | 0 |
 | Validation (P2) | 1 | 1 | 0 | 0 |
 
@@ -31,7 +31,7 @@ LaminarDB's DAG pipeline enables complex streaming topologies with fan-out, fan-
 |----|---------|----------|--------|------|
 | F-DAG-001 | Core DAG Topology | P0 | ✅ | [Link](F-DAG-001-core-topology.md) |
 | F-DAG-002 | Multicast & Routing | P0 | ✅ | [Link](F-DAG-002-multicast-routing.md) |
-| F-DAG-003 | DAG Executor | P0 | 📝 | [Link](F-DAG-003-dag-executor.md) |
+| F-DAG-003 | DAG Executor | P0 | ✅ | [Link](F-DAG-003-dag-executor.md) |
 
 ---
 

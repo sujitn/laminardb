@@ -13,6 +13,7 @@
 //! - **`DagChannelType`**: Auto-derived channel types (SPSC/SPMC/MPSC)
 //! - **`MulticastBuffer`**: Zero-copy SPMC multicast for shared stages
 //! - **`RoutingTable`**: Pre-computed O(1) dispatch table
+//! - **`DagExecutor`**: Ring 0 event processing engine
 //!
 //! ## Key Design Principles
 //!
@@ -62,6 +63,7 @@
 
 pub mod builder;
 pub mod error;
+pub mod executor;
 pub mod multicast;
 pub mod routing;
 pub mod topology;
@@ -72,6 +74,7 @@ mod tests;
 // Re-export key types
 pub use builder::{DagBuilder, FanOutBuilder};
 pub use error::DagError;
+pub use executor::{DagExecutor, DagExecutorMetrics};
 pub use multicast::MulticastBuffer;
 pub use routing::{RoutingEntry, RoutingTable, MAX_PORTS};
 pub use topology::{
