@@ -48,4 +48,32 @@ pub enum DagError {
     /// A shared stage multicast buffer is full (backpressure).
     #[error("backpressure: buffer full")]
     BackpressureFull,
+
+    /// A checkpoint barrier was triggered while another checkpoint is in progress.
+    #[error("checkpoint already in progress: epoch {0}")]
+    CheckpointInProgress(u64),
+
+    /// Attempted to finalize a checkpoint when none is in progress.
+    #[error("no checkpoint in progress")]
+    NoCheckpointInProgress,
+
+    /// Attempted to finalize a checkpoint before all nodes have reported.
+    #[error("checkpoint incomplete: {pending} nodes still pending")]
+    CheckpointIncomplete {
+        /// Number of nodes that have not yet reported.
+        pending: usize,
+    },
+
+    /// No checkpoint snapshots are available for recovery.
+    #[error("no checkpoint snapshots available")]
+    CheckpointNotFound,
+
+    /// An operator failed to restore from a checkpoint snapshot.
+    #[error("restore failed for node '{node_id}': {reason}")]
+    RestoreFailed {
+        /// The node that failed to restore.
+        node_id: String,
+        /// Description of the failure.
+        reason: String,
+    },
 }

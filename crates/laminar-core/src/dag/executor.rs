@@ -47,6 +47,7 @@ use crate::operator::{Event, Operator, OperatorContext, OperatorState, Output, O
 use crate::state::InMemoryStore;
 use crate::time::{BoundedOutOfOrdernessGenerator, TimerService};
 
+use super::checkpoint::CheckpointBarrier;
 use super::error::DagError;
 use super::routing::RoutingTable;
 use super::topology::{DagNodeType, NodeId, StreamingDag};
@@ -134,6 +135,8 @@ pub struct DagExecutor {
     node_types: Vec<DagNodeType>,
     /// Total number of node slots allocated.
     slot_count: usize,
+    /// Number of incoming edges per node, indexed by `NodeId.0`.
+    input_counts: Vec<usize>,
     /// Temporary buffer for draining input queues (avoids allocation).
     temp_events: Vec<Event>,
     /// Executor metrics.
@@ -165,6 +168,7 @@ impl DagExecutor {
         let mut input_queues = Vec::with_capacity(slot_count);
         let mut sink_outputs = Vec::with_capacity(slot_count);
         let mut node_types = Vec::with_capacity(slot_count);
+        let mut input_counts = vec![0usize; slot_count];
 
         for _ in 0..slot_count {
             operators.push(None);
@@ -174,11 +178,12 @@ impl DagExecutor {
             node_types.push(DagNodeType::StatelessOperator);
         }
 
-        // Populate node types from the DAG.
+        // Populate node types and input counts from the DAG.
         for node in dag.nodes().values() {
             let idx = node.id.0 as usize;
             if idx < slot_count {
                 node_types[idx] = node.node_type;
+                input_counts[idx] = dag.incoming_edge_count(node.id);
             }
         }
 
@@ -193,6 +198,7 @@ impl DagExecutor {
             sink_nodes: dag.sinks().to_vec(),
             node_types,
             slot_count,
+            input_counts,
             temp_events: Vec::with_capacity(64),
             metrics: DagExecutorMetrics::default(),
         }
@@ -319,6 +325,77 @@ impl DagExecutor {
                 #[allow(clippy::cast_possible_truncation)]
                 let node_id = NodeId(idx as u32);
                 states.insert(node_id, operator.checkpoint());
+            }
+        }
+        states
+    }
+
+    /// Restores operator state from a checkpoint snapshot.
+    ///
+    /// Iterates the provided states and calls `operator.restore()` on each
+    /// registered operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagError::RestoreFailed`] if any operator fails to restore.
+    pub fn restore(
+        &mut self,
+        states: &FxHashMap<NodeId, OperatorState>,
+    ) -> Result<(), DagError> {
+        for (node_id, state) in states {
+            let idx = node_id.0 as usize;
+            if idx < self.slot_count {
+                if let Some(ref mut operator) = self.operators[idx] {
+                    operator.restore(state.clone()).map_err(|e| {
+                        DagError::RestoreFailed {
+                            node_id: format!("{node_id}"),
+                            reason: e.to_string(),
+                        }
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Injects events into a node's input queue.
+    ///
+    /// Used during recovery to repopulate queues with buffered events.
+    pub fn inject_events(&mut self, node_id: NodeId, events: Vec<Event>) {
+        let idx = node_id.0 as usize;
+        if idx < self.slot_count {
+            self.input_queues[idx].extend(events);
+        }
+    }
+
+    /// Returns the number of incoming edges for a node.
+    #[must_use]
+    pub fn input_count(&self, node_id: NodeId) -> usize {
+        let idx = node_id.0 as usize;
+        if idx < self.slot_count {
+            self.input_counts[idx]
+        } else {
+            0
+        }
+    }
+
+    /// Snapshots all registered operators in topological order.
+    ///
+    /// Takes the barrier for consistency (future use with epoch tracking).
+    /// In the synchronous single-threaded executor, topological ordering
+    /// guarantees upstream-first snapshots.
+    #[must_use]
+    pub fn process_checkpoint_barrier(
+        &mut self,
+        _barrier: &CheckpointBarrier,
+    ) -> FxHashMap<NodeId, OperatorState> {
+        let mut states = FxHashMap::default();
+        for &node_id in &self.execution_order {
+            let idx = node_id.0 as usize;
+            if idx < self.slot_count {
+                if let Some(ref operator) = self.operators[idx] {
+                    states.insert(node_id, operator.checkpoint());
+                }
             }
         }
         states

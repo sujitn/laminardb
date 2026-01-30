@@ -1,4 +1,4 @@
-//! Unit tests for DAG topology, builder, multicast, routing, and executor.
+//! Unit tests for DAG topology, builder, multicast, routing, executor, and checkpointing.
 
 use std::sync::Arc;
 
@@ -6,9 +6,14 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
 use super::builder::DagBuilder;
+use super::checkpoint::{
+    AlignmentResult, BarrierAligner, BarrierType, CheckpointBarrier, DagCheckpointConfig,
+    DagCheckpointCoordinator,
+};
 use super::error::DagError;
 use super::executor::DagExecutor;
 use super::multicast::MulticastBuffer;
+use super::recovery::{DagCheckpointSnapshot, DagRecoveryManager, SerializableOperatorState};
 use super::routing::{RoutingEntry, RoutingTable};
 use super::topology::*;
 use crate::operator::{
@@ -1636,4 +1641,569 @@ fn test_executor_complex_dag_filter_and_transform() {
     assert_eq!(outputs.len(), 2);
     assert_eq!(event_value(&outputs[0]), 120); // 60 * 2
     assert_eq!(event_value(&outputs[1]), 160); // 80 * 2
+}
+
+// ---- BarrierAligner tests ----
+
+#[test]
+fn test_barrier_aligner_single_input() {
+    let mut aligner = BarrierAligner::new(1);
+    assert_eq!(aligner.expected_inputs(), 1);
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 1000,
+        barrier_type: BarrierType::Aligned,
+    };
+
+    let result = aligner.on_barrier(NodeId(0), barrier);
+    assert!(matches!(result, AlignmentResult::Aligned { .. }));
+}
+
+#[test]
+fn test_barrier_aligner_two_inputs() {
+    let mut aligner = BarrierAligner::new(2);
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 1000,
+        barrier_type: BarrierType::Aligned,
+    };
+
+    // First input: still pending.
+    let result = aligner.on_barrier(NodeId(0), barrier.clone());
+    assert!(matches!(result, AlignmentResult::Pending));
+    assert_eq!(aligner.barriers_received_count(), 1);
+
+    // Second input: aligned.
+    let result = aligner.on_barrier(NodeId(1), barrier);
+    assert!(matches!(result, AlignmentResult::Aligned { .. }));
+    assert_eq!(aligner.barriers_received_count(), 2);
+}
+
+#[test]
+fn test_barrier_aligner_three_inputs() {
+    let mut aligner = BarrierAligner::new(3);
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 1000,
+        barrier_type: BarrierType::Aligned,
+    };
+
+    // First two: pending.
+    let result = aligner.on_barrier(NodeId(0), barrier.clone());
+    assert!(matches!(result, AlignmentResult::Pending));
+    let result = aligner.on_barrier(NodeId(1), barrier.clone());
+    assert!(matches!(result, AlignmentResult::Pending));
+
+    // Third: aligned.
+    let result = aligner.on_barrier(NodeId(2), barrier);
+    assert!(matches!(result, AlignmentResult::Aligned { .. }));
+}
+
+#[test]
+fn test_barrier_aligner_buffered_events() {
+    let mut aligner = BarrierAligner::new(2);
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 1000,
+        barrier_type: BarrierType::Aligned,
+    };
+
+    // Source 0 delivers its barrier first.
+    let result = aligner.on_barrier(NodeId(0), barrier.clone());
+    assert!(matches!(result, AlignmentResult::Pending));
+
+    // Events from source 0 arrive after its barrier — they should be buffered.
+    let ev1 = test_event(2000, 42);
+    let ev2 = test_event(3000, 99);
+    assert!(aligner.buffer_if_aligned(NodeId(0), ev1));
+    assert!(aligner.buffer_if_aligned(NodeId(0), ev2));
+
+    // Events from source 1 should NOT be buffered (it hasn't sent its barrier).
+    assert!(!aligner.buffer_if_aligned(NodeId(1), test_event(4000, 77)));
+
+    // Source 1 delivers its barrier — alignment complete.
+    let result = aligner.on_barrier(NodeId(1), barrier);
+    match result {
+        AlignmentResult::Aligned {
+            buffered_events, ..
+        } => {
+            assert_eq!(buffered_events.len(), 2);
+            assert_eq!(event_value(&buffered_events[0]), 42);
+            assert_eq!(event_value(&buffered_events[1]), 99);
+        }
+        AlignmentResult::Pending => panic!("expected Aligned"),
+    }
+}
+
+#[test]
+fn test_barrier_aligner_cleanup() {
+    let mut aligner = BarrierAligner::new(2);
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 1000,
+        barrier_type: BarrierType::Aligned,
+    };
+
+    aligner.on_barrier(NodeId(0), barrier.clone());
+    aligner.on_barrier(NodeId(1), barrier);
+    assert_eq!(aligner.barriers_received_count(), 2);
+
+    // Complete resets state.
+    aligner.complete_checkpoint();
+    assert_eq!(aligner.barriers_received_count(), 0);
+    assert!(!aligner.is_source_aligned(NodeId(0)));
+    assert!(!aligner.is_source_aligned(NodeId(1)));
+}
+
+// ---- DagCheckpointCoordinator tests ----
+
+#[test]
+fn test_coordinator_trigger() {
+    let source_nodes = vec![NodeId(0)];
+    let all_nodes = vec![NodeId(0), NodeId(1), NodeId(2)];
+    let config = DagCheckpointConfig::default();
+
+    let mut coordinator = DagCheckpointCoordinator::new(source_nodes, all_nodes, config);
+
+    let barrier = coordinator.trigger_checkpoint().unwrap();
+    assert_eq!(barrier.checkpoint_id, 1);
+    assert_eq!(barrier.epoch, 1);
+    assert_eq!(barrier.barrier_type, BarrierType::Aligned);
+    assert!(coordinator.is_checkpoint_in_progress());
+}
+
+#[test]
+fn test_coordinator_trigger_while_in_progress() {
+    let source_nodes = vec![NodeId(0)];
+    let all_nodes = vec![NodeId(0), NodeId(1)];
+    let config = DagCheckpointConfig::default();
+
+    let mut coordinator = DagCheckpointCoordinator::new(source_nodes, all_nodes, config);
+
+    coordinator.trigger_checkpoint().unwrap();
+    let result = coordinator.trigger_checkpoint();
+    assert!(matches!(result, Err(DagError::CheckpointInProgress(_))));
+}
+
+#[test]
+fn test_coordinator_progress() {
+    let source_nodes = vec![NodeId(0)];
+    let all_nodes = vec![NodeId(0), NodeId(1), NodeId(2)];
+    let config = DagCheckpointConfig::default();
+
+    let mut coordinator = DagCheckpointCoordinator::new(source_nodes, all_nodes, config);
+    coordinator.trigger_checkpoint().unwrap();
+
+    // Only one node reports — finalize should fail.
+    let state = OperatorState {
+        operator_id: "op0".to_string(),
+        data: vec![],
+    };
+    let all_done = coordinator.on_node_snapshot_complete(NodeId(0), state);
+    assert!(!all_done);
+
+    let result = coordinator.finalize_checkpoint();
+    assert!(matches!(
+        result,
+        Err(DagError::CheckpointIncomplete { pending: 2 })
+    ));
+}
+
+#[test]
+fn test_coordinator_finalize() {
+    let source_nodes = vec![NodeId(0)];
+    let all_nodes = vec![NodeId(0), NodeId(1)];
+    let config = DagCheckpointConfig::default();
+
+    let mut coordinator = DagCheckpointCoordinator::new(source_nodes, all_nodes, config);
+    coordinator.trigger_checkpoint().unwrap();
+
+    // Both nodes report.
+    coordinator.on_node_snapshot_complete(
+        NodeId(0),
+        OperatorState {
+            operator_id: "src".to_string(),
+            data: vec![1, 2, 3],
+        },
+    );
+    let all_done = coordinator.on_node_snapshot_complete(
+        NodeId(1),
+        OperatorState {
+            operator_id: "op".to_string(),
+            data: vec![4, 5, 6],
+        },
+    );
+    assert!(all_done);
+
+    let snapshot = coordinator.finalize_checkpoint().unwrap();
+    assert_eq!(snapshot.checkpoint_id, 1);
+    assert_eq!(snapshot.epoch, 1);
+    assert_eq!(snapshot.node_states.len(), 2);
+    assert!(!coordinator.is_checkpoint_in_progress());
+    assert_eq!(coordinator.completed_snapshots().len(), 1);
+}
+
+#[test]
+fn test_coordinator_multiple_checkpoints() {
+    let source_nodes = vec![NodeId(0)];
+    let all_nodes = vec![NodeId(0)];
+    let config = DagCheckpointConfig::default();
+
+    let mut coordinator = DagCheckpointCoordinator::new(source_nodes, all_nodes, config);
+
+    // First checkpoint.
+    let barrier1 = coordinator.trigger_checkpoint().unwrap();
+    assert_eq!(barrier1.epoch, 1);
+    coordinator.on_node_snapshot_complete(
+        NodeId(0),
+        OperatorState {
+            operator_id: "op".to_string(),
+            data: vec![10],
+        },
+    );
+    let snap1 = coordinator.finalize_checkpoint().unwrap();
+    assert_eq!(snap1.checkpoint_id, 1);
+
+    // Second checkpoint.
+    let barrier2 = coordinator.trigger_checkpoint().unwrap();
+    assert_eq!(barrier2.epoch, 2);
+    assert_eq!(barrier2.checkpoint_id, 2);
+    coordinator.on_node_snapshot_complete(
+        NodeId(0),
+        OperatorState {
+            operator_id: "op".to_string(),
+            data: vec![20],
+        },
+    );
+    let snap2 = coordinator.finalize_checkpoint().unwrap();
+    assert_eq!(snap2.checkpoint_id, 2);
+
+    assert_eq!(coordinator.completed_snapshots().len(), 2);
+}
+
+// ---- Config tests ----
+
+#[test]
+fn test_checkpoint_config_defaults() {
+    let config = DagCheckpointConfig::default();
+    assert_eq!(config.interval, std::time::Duration::from_secs(60));
+    assert_eq!(config.barrier_type, BarrierType::Aligned);
+    assert_eq!(config.alignment_timeout, std::time::Duration::from_secs(10));
+    assert!(!config.incremental);
+    assert_eq!(config.max_concurrent, 1);
+    assert_eq!(config.max_retained, 3);
+}
+
+// ---- Recovery tests ----
+
+#[test]
+fn test_recovery_no_checkpoint() {
+    let manager = DagRecoveryManager::new();
+    assert!(!manager.has_snapshots());
+    assert_eq!(manager.snapshot_count(), 0);
+
+    let result = manager.recover_latest();
+    assert!(matches!(result, Err(DagError::CheckpointNotFound)));
+}
+
+#[test]
+fn test_recovery_restore_state() {
+    let mut manager = DagRecoveryManager::new();
+
+    let mut node_states = std::collections::HashMap::new();
+    node_states.insert(
+        1,
+        SerializableOperatorState {
+            operator_id: "double".to_string(),
+            data: vec![42],
+        },
+    );
+
+    let snapshot = DagCheckpointSnapshot {
+        checkpoint_id: 5,
+        epoch: 5,
+        timestamp: 99999,
+        node_states,
+        source_offsets: std::collections::HashMap::new(),
+        watermark: Some(50000),
+    };
+
+    manager.add_snapshot(snapshot);
+    assert!(manager.has_snapshots());
+    assert_eq!(manager.snapshot_count(), 1);
+
+    let recovered = manager.recover_latest().unwrap();
+    assert_eq!(recovered.snapshot.checkpoint_id, 5);
+    assert_eq!(recovered.watermark, Some(50000));
+    assert_eq!(recovered.operator_states.len(), 1);
+
+    let state = &recovered.operator_states[&NodeId(1)];
+    assert_eq!(state.operator_id, "double");
+    assert_eq!(state.data, vec![42]);
+}
+
+#[test]
+fn test_recovery_by_id() {
+    let mut manager = DagRecoveryManager::new();
+
+    // Add two snapshots.
+    for id in 1..=2u64 {
+        let mut node_states = std::collections::HashMap::new();
+        node_states.insert(
+            0,
+            SerializableOperatorState {
+                operator_id: format!("op_epoch{id}"),
+                data: vec![id as u8],
+            },
+        );
+        manager.add_snapshot(DagCheckpointSnapshot {
+            checkpoint_id: id,
+            epoch: id,
+            timestamp: id as i64 * 1000,
+            node_states,
+            source_offsets: std::collections::HashMap::new(),
+            watermark: None,
+        });
+    }
+
+    // Recover checkpoint 1.
+    let recovered = manager.recover_by_id(1).unwrap();
+    assert_eq!(recovered.snapshot.checkpoint_id, 1);
+    assert_eq!(
+        recovered.operator_states[&NodeId(0)].operator_id,
+        "op_epoch1"
+    );
+
+    // Recover checkpoint 2.
+    let recovered = manager.recover_by_id(2).unwrap();
+    assert_eq!(recovered.snapshot.checkpoint_id, 2);
+
+    // Non-existent checkpoint.
+    let result = manager.recover_by_id(99);
+    assert!(matches!(result, Err(DagError::CheckpointNotFound)));
+}
+
+// ---- Integration tests ----
+
+#[test]
+fn test_checkpoint_linear_dag() {
+    // src -> double -> snk
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("double", schema.clone())
+        .sink_for("double", "snk", schema.clone())
+        .connect("src", "double")
+        .build()
+        .unwrap();
+
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let double_id = dag.node_id_by_name("double").unwrap();
+    let snk_id = dag.node_id_by_name("snk").unwrap();
+
+    let mut executor = DagExecutor::from_dag(&dag);
+    executor.register_operator(double_id, Box::new(DoublingOperator));
+
+    // Process some events.
+    executor
+        .process_event(src_id, test_event(1000, 5))
+        .unwrap();
+    let outputs = executor.take_sink_outputs(snk_id);
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(event_value(&outputs[0]), 10);
+
+    // Trigger checkpoint via barrier.
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 2000,
+        barrier_type: BarrierType::Aligned,
+    };
+    let states = executor.process_checkpoint_barrier(&barrier);
+
+    // Only the registered operator produces state.
+    assert_eq!(states.len(), 1);
+    assert!(states.contains_key(&double_id));
+    assert_eq!(states[&double_id].operator_id, "doubling");
+}
+
+#[test]
+fn test_checkpoint_fan_out_dag() {
+    // src -> shared -> {a, b} -> {sink_a, sink_b}
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("shared", schema.clone())
+        .connect("src", "shared")
+        .fan_out("shared", |b| {
+            b.branch("a", schema.clone())
+                .branch("b", schema.clone())
+        })
+        .sink_for("a", "sink_a", schema.clone())
+        .sink_for("b", "sink_b", schema.clone())
+        .build()
+        .unwrap();
+
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let a_id = dag.node_id_by_name("a").unwrap();
+    let b_id = dag.node_id_by_name("b").unwrap();
+
+    let mut executor = DagExecutor::from_dag(&dag);
+    executor.register_operator(a_id, Box::new(DoublingOperator));
+    executor.register_operator(b_id, Box::new(AddOperator { addend: 100 }));
+
+    executor
+        .process_event(src_id, test_event(1000, 5))
+        .unwrap();
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 2000,
+        barrier_type: BarrierType::Aligned,
+    };
+    let states = executor.process_checkpoint_barrier(&barrier);
+
+    // Both branches should have state.
+    assert_eq!(states.len(), 2);
+    assert!(states.contains_key(&a_id));
+    assert!(states.contains_key(&b_id));
+    assert_eq!(states[&a_id].operator_id, "doubling");
+    assert_eq!(states[&b_id].operator_id, "add");
+}
+
+#[test]
+fn test_checkpoint_diamond_dag() {
+    // src -> {a, b} -> merge -> snk
+    // Tests barrier alignment at fan-in node.
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("a", schema.clone())
+        .operator("b", schema.clone())
+        .operator("merge", schema.clone())
+        .sink_for("merge", "snk", schema.clone())
+        .connect("src", "a")
+        .connect("src", "b")
+        .connect("a", "merge")
+        .connect("b", "merge")
+        .build()
+        .unwrap();
+
+    let merge_id = dag.node_id_by_name("merge").unwrap();
+    let a_id = dag.node_id_by_name("a").unwrap();
+    let b_id = dag.node_id_by_name("b").unwrap();
+
+    let executor = DagExecutor::from_dag(&dag);
+
+    // merge has 2 inputs — barrier aligner should require 2 barriers.
+    assert_eq!(executor.input_count(merge_id), 2);
+
+    let mut aligner = BarrierAligner::new(executor.input_count(merge_id));
+
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 1000,
+        barrier_type: BarrierType::Aligned,
+    };
+
+    // Barrier from branch a: pending.
+    let result = aligner.on_barrier(a_id, barrier.clone());
+    assert!(matches!(result, AlignmentResult::Pending));
+
+    // Barrier from branch b: aligned.
+    let result = aligner.on_barrier(b_id, barrier);
+    assert!(matches!(result, AlignmentResult::Aligned { .. }));
+}
+
+#[test]
+fn test_full_checkpoint_recovery_cycle() {
+    // End-to-end: checkpoint, create fresh executor, restore, verify processing.
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("double", schema.clone())
+        .sink_for("double", "snk", schema.clone())
+        .connect("src", "double")
+        .build()
+        .unwrap();
+
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let double_id = dag.node_id_by_name("double").unwrap();
+    let snk_id = dag.node_id_by_name("snk").unwrap();
+
+    // --- Phase 1: Run, then checkpoint ---
+    let mut executor = DagExecutor::from_dag(&dag);
+    executor.register_operator(double_id, Box::new(DoublingOperator));
+
+    executor
+        .process_event(src_id, test_event(1000, 7))
+        .unwrap();
+    let outputs = executor.take_sink_outputs(snk_id);
+    assert_eq!(event_value(&outputs[0]), 14);
+
+    // Checkpoint the executor.
+    let barrier = CheckpointBarrier {
+        checkpoint_id: 1,
+        epoch: 1,
+        timestamp: 2000,
+        barrier_type: BarrierType::Aligned,
+    };
+    let states = executor.process_checkpoint_barrier(&barrier);
+
+    // Build snapshot through coordinator.
+    let all_nodes: Vec<NodeId> = dag.execution_order().to_vec();
+    let mut coordinator = DagCheckpointCoordinator::new(
+        dag.sources().to_vec(),
+        all_nodes,
+        DagCheckpointConfig::default(),
+    );
+    let coord_barrier = coordinator.trigger_checkpoint().unwrap();
+    for (node_id, state) in &states {
+        coordinator.on_node_snapshot_complete(*node_id, state.clone());
+    }
+    // Also report nodes without operators as empty state.
+    for &node_id in dag.execution_order() {
+        if !states.contains_key(&node_id) {
+            coordinator.on_node_snapshot_complete(
+                node_id,
+                OperatorState {
+                    operator_id: String::new(),
+                    data: Vec::new(),
+                },
+            );
+        }
+    }
+    let snapshot = coordinator.finalize_checkpoint().unwrap();
+
+    // --- Phase 2: Recovery ---
+    let mut recovery_manager = DagRecoveryManager::new();
+    recovery_manager.add_snapshot(snapshot);
+
+    let recovered = recovery_manager.recover_latest().unwrap();
+    assert_eq!(recovered.snapshot.epoch, coord_barrier.epoch);
+
+    // Create a fresh executor and restore.
+    let mut executor2 = DagExecutor::from_dag(&dag);
+    executor2.register_operator(double_id, Box::new(DoublingOperator));
+    executor2.restore(&recovered.operator_states).unwrap();
+
+    // Verify processing continues correctly after recovery.
+    executor2
+        .process_event(src_id, test_event(3000, 10))
+        .unwrap();
+    let outputs = executor2.take_sink_outputs(snk_id);
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(event_value(&outputs[0]), 20); // 10 * 2
 }

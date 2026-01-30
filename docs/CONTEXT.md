@@ -8,30 +8,26 @@
 **Date**: 2026-01-30
 
 ### What Was Accomplished
-- **F026: Kafka Sink Connector** - COMPLETE (51 new sink tests, 189 total connector tests with kafka feature)
-  - `kafka/sink_config.rs`: `KafkaSinkConfig`, `DeliveryGuarantee`, `PartitionStrategy`, `CompressionType`, `Acks`
-    - Parsing from `ConnectorConfig` (SQL WITH clause), validation, `to_rdkafka_config()`
-    - Exactly-once transactional.id generation, kafka.* pass-through, SR auth (12 tests)
-  - `kafka/partitioner.rs`: `KafkaPartitioner` trait, pluggable partitioning strategies
-    - `KeyHashPartitioner` (Murmur2 Kafka-compatible), `RoundRobinPartitioner`, `StickyPartitioner` (8 tests)
-  - `kafka/sink_metrics.rs`: `KafkaSinkMetrics` - AtomicU64 counters
-    - records/bytes written, epochs committed/rolled back, DLQ records, serialization errors (4 tests)
-  - `kafka/avro_serializer.rs`: `AvroSerializer` - arrow-avro Writer with Confluent wire format
-    - `RecordSerializer` impl, `WriterBuilder` + `FingerprintStrategy::Id(schema_id)` + `AvroSoeFormat`
-    - Per-record payloads with `0x00` + 4-byte BE schema ID + Avro body
-    - `split_confluent_records()` for per-record payload extraction (6 tests)
-  - `kafka/sink.rs`: `KafkaSink` - full SinkConnector implementation
-    - FutureProducer lifecycle, epoch-transaction alignment for exactly-once
-    - Key extraction from configurable column, partitioning, DLQ routing
-    - At-least-once (idempotent) and exactly-once (transactional) delivery (12 tests)
-  - `kafka/schema_registry.rs`: Added `register_schema()` method and `arrow_to_avro_schema()` function
-    - Schema registration via POST `/subjects/{subject}/versions`, caching
-    - Arrow-to-Avro schema conversion (inverse of existing avro_to_arrow) (4 new tests)
-  - `kafka/mod.rs`: Added sink modules, re-exports, `register_kafka_sink()` (2 tests)
-  - `Cargo.toml`: Added `arrow-cast` workspace dependency
+- **F-DAG-004: DAG Checkpointing** - COMPLETE (18 new tests, 84 total DAG tests, 1082 core tests)
+  - `dag/checkpoint.rs`: Chandy-Lamport barrier checkpointing (~340 lines)
+    - `CheckpointBarrier`, `BarrierType::Aligned`, `CheckpointId`
+    - `BarrierAligner`: buffers events at fan-in (MPSC) nodes until all inputs deliver barrier
+    - `DagCheckpointCoordinator`: Ring 1 orchestrator — trigger, track progress, finalize snapshots
+    - `DagCheckpointConfig`: interval (60s), alignment_timeout (10s), max_retained (3)
+  - `dag/recovery.rs`: Snapshot and recovery management (~220 lines)
+    - `DagCheckpointSnapshot` (Serialize/Deserialize): node_states, source_offsets, watermark
+    - `SerializableOperatorState`: serde-compatible form of `OperatorState`
+    - `RecoveredDagState`: operator states + source offsets + watermark
+    - `DagRecoveryManager`: add/recover_latest/recover_by_id
+  - `dag/error.rs`: 5 new error variants
+    - `CheckpointInProgress`, `NoCheckpointInProgress`, `CheckpointIncomplete`, `CheckpointNotFound`, `RestoreFailed`
+  - `dag/executor.rs`: 4 new methods + `input_counts` field
+    - `restore()`, `inject_events()`, `input_count()`, `process_checkpoint_barrier()`
+  - `dag/mod.rs`: module declarations + re-exports for checkpoint and recovery
   - All clippy clean with `-D warnings`
 
 Previous session (2026-01-30):
+- F026: Kafka Sink Connector - COMPLETE (51 new sink tests, 189 total connector tests with kafka feature)
 - F025: Kafka Source Connector - COMPLETE (67 tests)
 
 Previous session (2026-01-30):
@@ -45,22 +41,22 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1648 base + 118 kafka = 1766 (1064 core + 365 sql + 120 storage + 28 laminar-db + 189 connectors)
+**Total tests**: 1666 base + 118 kafka = 1784 (1082 core + 365 sql + 120 storage + 28 laminar-db + 189 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 13/28 features COMPLETE (46%)**
+**Phase 3 Connectors & Integration: 14/28 features COMPLETE (50%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
-- DAG pipeline core complete (F-DAG-001, F-DAG-002, F-DAG-003)
+- DAG pipeline complete (F-DAG-001, F-DAG-002, F-DAG-003, F-DAG-004)
 - Kafka Source Connector complete (F025)
 - Kafka Sink Connector complete (F026)
 - Next: F027 (PostgreSQL CDC Source)
 
 ### Immediate Next Steps
 1. F027: PostgreSQL CDC Source
-2. F-DAG-004: DAG Checkpointing
-3. F031: Delta Lake Sink
-4. F028: MySQL CDC Source
+2. F031: Delta Lake Sink
+3. F028: MySQL CDC Source
+4. F-DAG-005: SQL & MV Integration
 
 ### Open Issues
 None.
@@ -121,13 +117,15 @@ None.
 ### Key Modules
 ```
 laminar-core/src/
-  dag/          # F-DAG-001/002/003: DAG pipeline topology + multicast/routing + executor
+  dag/          # F-DAG-001/002/003/004: DAG pipeline topology + multicast/routing + executor + checkpointing
     topology      # StreamingDag, DagNode, DagEdge, DagChannelType
     builder       # DagBuilder, FanOutBuilder
-    error         # DagError
+    error         # DagError (+ checkpoint error variants)
     multicast     # F-DAG-002: MulticastBuffer<T> (SPMC, refcounted slots)
     routing       # F-DAG-002: RoutingTable, RoutingEntry (64-byte aligned)
     executor      # F-DAG-003: DagExecutor, DagExecutorMetrics (Ring 0 processing)
+    checkpoint    # F-DAG-004: CheckpointBarrier, BarrierAligner, DagCheckpointCoordinator
+    recovery      # F-DAG-004: DagCheckpointSnapshot, DagRecoveryManager, RecoveredDagState
   streaming/    # F-STREAM-001 to F-STREAM-006: In-memory streaming API
     ring_buffer   # Lock-free SPSC ring buffer
     channel       # SPSC/MPSC channel with auto-upgrade

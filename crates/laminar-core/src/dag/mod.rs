@@ -62,9 +62,11 @@
 //! ```
 
 pub mod builder;
+pub mod checkpoint;
 pub mod error;
 pub mod executor;
 pub mod multicast;
+pub mod recovery;
 pub mod routing;
 pub mod topology;
 
@@ -73,9 +75,16 @@ mod tests;
 
 // Re-export key types
 pub use builder::{DagBuilder, FanOutBuilder};
+pub use checkpoint::{
+    AlignmentResult, BarrierAligner, BarrierType, CheckpointBarrier, CheckpointId,
+    DagCheckpointConfig, DagCheckpointCoordinator,
+};
 pub use error::DagError;
 pub use executor::{DagExecutor, DagExecutorMetrics};
 pub use multicast::MulticastBuffer;
+pub use recovery::{
+    DagCheckpointSnapshot, DagRecoveryManager, RecoveredDagState, SerializableOperatorState,
+};
 pub use routing::{RoutingEntry, RoutingTable, MAX_PORTS};
 pub use topology::{
     DagChannelType, DagEdge, DagNode, DagNodeType, EdgeId, NodeId, PartitioningStrategy,
