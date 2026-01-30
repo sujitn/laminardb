@@ -8,22 +8,34 @@
 **Date**: 2026-01-30
 
 ### What Was Accomplished
-- **F-DAG-003: DAG Executor** - COMPLETE (21 new tests, 66 total DAG tests)
-  - `dag/executor.rs`: `DagExecutor` - Ring 0 event processing engine
-    - `NodeRuntime` per-node state (TimerService, StateStore, WatermarkGenerator)
-    - `DagExecutorMetrics` (events_processed, events_routed, multicast_publishes, backpressure_stalls, nodes_skipped)
-    - `DagExecutor::from_dag()` pre-allocates all per-node state in Ring 2
-    - `register_operator()` for custom operator dispatch (passthrough by default)
-    - `process_event()` enqueues at source, processes entire DAG in topological order
-    - `process_node()` with "take and put back" pattern for borrow checker
-    - `route_output()` with terminal/single/multicast dispatch
-    - `take_sink_outputs()` / `take_all_sink_outputs()` for collecting results
-    - `checkpoint()` snapshots all registered operators
-    - `HotPathGuard` integration (F071) for zero-allocation enforcement
-    - Test operators: PassthroughOperator, DoublingOperator, FilterOperator, AddOperator
-  - Updated `dag/mod.rs` with module and re-exports
+- **F026: Kafka Sink Connector** - COMPLETE (51 new sink tests, 189 total connector tests with kafka feature)
+  - `kafka/sink_config.rs`: `KafkaSinkConfig`, `DeliveryGuarantee`, `PartitionStrategy`, `CompressionType`, `Acks`
+    - Parsing from `ConnectorConfig` (SQL WITH clause), validation, `to_rdkafka_config()`
+    - Exactly-once transactional.id generation, kafka.* pass-through, SR auth (12 tests)
+  - `kafka/partitioner.rs`: `KafkaPartitioner` trait, pluggable partitioning strategies
+    - `KeyHashPartitioner` (Murmur2 Kafka-compatible), `RoundRobinPartitioner`, `StickyPartitioner` (8 tests)
+  - `kafka/sink_metrics.rs`: `KafkaSinkMetrics` - AtomicU64 counters
+    - records/bytes written, epochs committed/rolled back, DLQ records, serialization errors (4 tests)
+  - `kafka/avro_serializer.rs`: `AvroSerializer` - arrow-avro Writer with Confluent wire format
+    - `RecordSerializer` impl, `WriterBuilder` + `FingerprintStrategy::Id(schema_id)` + `AvroSoeFormat`
+    - Per-record payloads with `0x00` + 4-byte BE schema ID + Avro body
+    - `split_confluent_records()` for per-record payload extraction (6 tests)
+  - `kafka/sink.rs`: `KafkaSink` - full SinkConnector implementation
+    - FutureProducer lifecycle, epoch-transaction alignment for exactly-once
+    - Key extraction from configurable column, partitioning, DLQ routing
+    - At-least-once (idempotent) and exactly-once (transactional) delivery (12 tests)
+  - `kafka/schema_registry.rs`: Added `register_schema()` method and `arrow_to_avro_schema()` function
+    - Schema registration via POST `/subjects/{subject}/versions`, caching
+    - Arrow-to-Avro schema conversion (inverse of existing avro_to_arrow) (4 new tests)
+  - `kafka/mod.rs`: Added sink modules, re-exports, `register_kafka_sink()` (2 tests)
+  - `Cargo.toml`: Added `arrow-cast` workspace dependency
+  - All clippy clean with `-D warnings`
 
 Previous session (2026-01-30):
+- F025: Kafka Source Connector - COMPLETE (67 tests)
+
+Previous session (2026-01-30):
+- F-DAG-003: DAG Executor - COMPLETE (21 tests, 66 total DAG tests)
 - F-DAG-002: Multicast & Routing - COMPLETE (16 tests)
 - F-DAG-001: Core DAG Topology - COMPLETE (29 tests)
 
@@ -33,20 +45,22 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1648 (1064 core + 365 sql + 120 storage + 28 laminar-db + 71 connectors)
+**Total tests**: 1648 base + 118 kafka = 1766 (1064 core + 365 sql + 120 storage + 28 laminar-db + 189 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 11/28 features COMPLETE (39%)**
+**Phase 3 Connectors & Integration: 13/28 features COMPLETE (46%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - DAG pipeline core complete (F-DAG-001, F-DAG-002, F-DAG-003)
-- Next: F025 (Kafka Source Connector)
+- Kafka Source Connector complete (F025)
+- Kafka Sink Connector complete (F026)
+- Next: F027 (PostgreSQL CDC Source)
 
 ### Immediate Next Steps
-1. F025: Kafka Source Connector
-2. F026: Kafka Sink Connector
-3. F027: PostgreSQL CDC Source
-4. F-DAG-004: DAG Checkpointing
+1. F027: PostgreSQL CDC Source
+2. F-DAG-004: DAG Checkpointing
+3. F031: Delta Lake Sink
+4. F028: MySQL CDC Source
 
 ### Open Issues
 None.
@@ -156,6 +170,26 @@ laminar-sql/src/       # F006B: Production SQL Parser
     watermark_udf      # F005B: watermark() UDF via Arc<AtomicI64>
     execute            # F005B: execute_streaming_sql end-to-end
     aggregate_bridge   # F075: DataFusion Accumulator ↔ DynAccumulator bridge
+
+laminar-connectors/src/
+  kafka/              # F025/F026: Kafka Source & Sink Connectors
+    config            # KafkaSourceConfig, OffsetReset, AssignmentStrategy, CompatibilityLevel
+    source            # KafkaSource (SourceConnector impl)
+    offsets           # OffsetTracker (per-partition offset tracking)
+    backpressure      # BackpressureController (high/low watermark)
+    metrics           # KafkaSourceMetrics (AtomicU64 counters)
+    rebalance         # RebalanceState (partition assignment)
+    schema_registry   # SchemaRegistryClient (Confluent SR REST API, caching, registration)
+    avro              # AvroDeserializer (arrow-avro Decoder, Confluent wire format)
+    sink_config       # KafkaSinkConfig, DeliveryGuarantee, PartitionStrategy, CompressionType
+    sink              # KafkaSink (SinkConnector impl, transactional/idempotent)
+    avro_serializer   # AvroSerializer (arrow-avro Writer, Confluent wire format)
+    partitioner       # KafkaPartitioner trait, KeyHash/RoundRobin/Sticky
+    sink_metrics      # KafkaSinkMetrics (AtomicU64 counters)
+  serde/              # RecordDeserializer/RecordSerializer traits
+    json, csv, raw, debezium  # Format implementations
+  connector           # SourceConnector/SinkConnector traits
+  registry            # ConnectorRegistry factory pattern
 
 laminar-storage/src/
   incremental/  # F022: Checkpointing

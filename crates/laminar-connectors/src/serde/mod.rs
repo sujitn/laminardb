@@ -38,6 +38,9 @@ pub enum Format {
 
     /// Debezium CDC envelope format.
     Debezium,
+
+    /// Apache Avro format (with optional Confluent Schema Registry).
+    Avro,
 }
 
 impl Format {
@@ -49,6 +52,7 @@ impl Format {
             Format::Csv => "csv",
             Format::Raw => "raw",
             Format::Debezium => "debezium",
+            Format::Avro => "avro",
         }
     }
 
@@ -71,6 +75,7 @@ impl std::str::FromStr for Format {
             "csv" => Ok(Format::Csv),
             "raw" | "bytes" => Ok(Format::Raw),
             "debezium" | "debezium-json" => Ok(Format::Debezium),
+            "avro" | "confluent-avro" => Ok(Format::Avro),
             other => Err(SerdeError::UnsupportedFormat(other.to_string())),
         }
     }
@@ -175,6 +180,9 @@ pub fn create_deserializer(format: Format) -> Result<Box<dyn RecordDeserializer>
         Format::Csv => Ok(Box::new(csv::CsvDeserializer::new())),
         Format::Raw => Ok(Box::new(raw::RawBytesDeserializer::new())),
         Format::Debezium => Ok(Box::new(debezium::DebeziumDeserializer::new())),
+        Format::Avro => Err(SerdeError::UnsupportedFormat(
+            "Avro deserialization requires the 'kafka' feature".into(),
+        )),
     }
 }
 
@@ -190,6 +198,9 @@ pub fn create_serializer(format: Format) -> Result<Box<dyn RecordSerializer>, Se
         Format::Raw => Ok(Box::new(raw::RawBytesSerializer::new())),
         Format::Debezium => Err(SerdeError::UnsupportedFormat(
             "Debezium is a deserialization-only format".into(),
+        )),
+        Format::Avro => Err(SerdeError::UnsupportedFormat(
+            "Avro serialization requires the 'kafka' feature".into(),
         )),
     }
 }
@@ -207,7 +218,8 @@ mod tests {
         assert_eq!(Format::parse("bytes").unwrap(), Format::Raw);
         assert_eq!(Format::parse("debezium").unwrap(), Format::Debezium);
         assert_eq!(Format::parse("debezium-json").unwrap(), Format::Debezium);
-        assert!(Format::parse("avro").is_err());
+        assert_eq!(Format::parse("avro").unwrap(), Format::Avro);
+        assert_eq!(Format::parse("confluent-avro").unwrap(), Format::Avro);
     }
 
     #[test]
@@ -216,6 +228,7 @@ mod tests {
         assert_eq!(Format::Csv.to_string(), "csv");
         assert_eq!(Format::Raw.to_string(), "raw");
         assert_eq!(Format::Debezium.to_string(), "debezium");
+        assert_eq!(Format::Avro.to_string(), "avro");
     }
 
     #[test]

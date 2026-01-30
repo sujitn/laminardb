@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 28 | 17 | 0 | 0 | 11 |
+| Phase 3 | 28 | 15 | 0 | 0 | 13 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **96** | **38** | **0** | **0** | **58** |
+| **Total** | **96** | **36** | **0** | **0** | **60** |
 
 ## Status Legend
 
@@ -302,8 +302,8 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
-| F025 | Kafka Source Connector | P0 | 📝 | [Link](phase-3/F025-kafka-source.md) |
-| F026 | Kafka Sink Connector | P0 | 📝 | [Link](phase-3/F026-kafka-sink.md) |
+| F025 | Kafka Source Connector | P0 | ✅ | [Link](phase-3/F025-kafka-source.md) |
+| F026 | Kafka Sink Connector | P0 | ✅ | [Link](phase-3/F026-kafka-sink.md) |
 | F027 | PostgreSQL CDC Source | P0 | 📝 | [Link](phase-3/F027-postgres-cdc.md) |
 | F028 | MySQL CDC Source | P1 | 📝 | [Link](phase-3/F028-mysql-cdc.md) |
 | F029 | MongoDB CDC Source | P2 | 📝 | [Link](phase-3/F029-mongodb-cdc.md) |
