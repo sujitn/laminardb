@@ -1,4 +1,4 @@
-//! Unit tests for DAG topology and builder.
+//! Unit tests for DAG topology, builder, multicast, and routing.
 
 use std::sync::Arc;
 
@@ -6,6 +6,8 @@ use arrow_schema::{DataType, Field, Schema};
 
 use super::builder::DagBuilder;
 use super::error::DagError;
+use super::multicast::MulticastBuffer;
+use super::routing::{RoutingEntry, RoutingTable};
 use super::topology::*;
 
 /// Helper to create a simple int64 schema.
@@ -651,4 +653,288 @@ fn test_dag_debug_format() {
     let debug = format!("{dag:?}");
     assert!(debug.contains("StreamingDag"));
     assert!(debug.contains("node_count: 2"));
+}
+
+// ---- MulticastBuffer tests ----
+
+#[test]
+fn test_multicast_single_consumer() {
+    let buf = MulticastBuffer::new(4, 1);
+    buf.publish(42u64).unwrap();
+    let val = buf.consume(0);
+    assert_eq!(val, Some(42));
+}
+
+#[test]
+fn test_multicast_multiple_consumers() {
+    let buf = MulticastBuffer::new(4, 3);
+    buf.publish(100u64).unwrap();
+
+    // All 3 consumers should read the same value.
+    assert_eq!(buf.consume(0), Some(100));
+    assert_eq!(buf.consume(1), Some(100));
+    assert_eq!(buf.consume(2), Some(100));
+}
+
+#[test]
+fn test_multicast_backpressure() {
+    let buf = MulticastBuffer::new(2, 1);
+    buf.publish(1u64).unwrap();
+    buf.publish(2u64).unwrap();
+
+    // Buffer full (2 slots, neither consumed).
+    let result = buf.publish(3u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_multicast_slot_reuse() {
+    let buf = MulticastBuffer::new(2, 1);
+    buf.publish(1u64).unwrap();
+    buf.publish(2u64).unwrap();
+
+    // Consume first slot to free it.
+    assert_eq!(buf.consume(0), Some(1));
+
+    // Slot 0 should be free now, publish should succeed.
+    buf.publish(3u64).unwrap();
+
+    // Consume remaining values in order.
+    assert_eq!(buf.consume(0), Some(2));
+    assert_eq!(buf.consume(0), Some(3));
+}
+
+#[test]
+fn test_multicast_partial_consume() {
+    let buf = MulticastBuffer::new(2, 2);
+    buf.publish(10u64).unwrap();
+
+    // Only consumer 0 reads.
+    assert_eq!(buf.consume(0), Some(10));
+
+    // Slot still in use by consumer 1.
+    buf.publish(20u64).unwrap();
+
+    // Buffer full: consumer 1 hasn't freed slot 0.
+    let result = buf.publish(30u64);
+    assert!(result.is_err());
+
+    // Consumer 1 reads, freeing slot 0.
+    assert_eq!(buf.consume(1), Some(10));
+
+    // Now publish should succeed.
+    buf.publish(30u64).unwrap();
+}
+
+#[test]
+fn test_multicast_wrap_around() {
+    let buf = MulticastBuffer::new(2, 1);
+
+    for i in 0u64..10 {
+        buf.publish(i).unwrap();
+        assert_eq!(buf.consume(0), Some(i));
+    }
+
+    assert_eq!(buf.write_position(), 10);
+    assert_eq!(buf.read_position(0), 10);
+}
+
+#[test]
+fn test_multicast_empty_consume() {
+    let buf: MulticastBuffer<u64> = MulticastBuffer::new(4, 2);
+
+    // No data published, consume should return None.
+    assert_eq!(buf.consume(0), None);
+    assert_eq!(buf.consume(1), None);
+}
+
+#[test]
+fn test_multicast_accessors() {
+    let buf: MulticastBuffer<u64> = MulticastBuffer::new(8, 3);
+    assert_eq!(buf.capacity(), 8);
+    assert_eq!(buf.consumer_count(), 3);
+    assert_eq!(buf.write_position(), 0);
+    assert_eq!(buf.read_position(0), 0);
+    assert_eq!(buf.read_position(1), 0);
+    assert_eq!(buf.read_position(2), 0);
+
+    // Debug format should work.
+    let debug = format!("{buf:?}");
+    assert!(debug.contains("MulticastBuffer"));
+}
+
+#[test]
+fn test_multicast_sequential_values() {
+    let buf = MulticastBuffer::new(4, 2);
+
+    buf.publish(10u64).unwrap();
+    buf.publish(20u64).unwrap();
+    buf.publish(30u64).unwrap();
+
+    // Consumer 0 reads all three.
+    assert_eq!(buf.consume(0), Some(10));
+    assert_eq!(buf.consume(0), Some(20));
+    assert_eq!(buf.consume(0), Some(30));
+    assert_eq!(buf.consume(0), None);
+
+    // Consumer 1 also reads all three.
+    assert_eq!(buf.consume(1), Some(10));
+    assert_eq!(buf.consume(1), Some(20));
+    assert_eq!(buf.consume(1), Some(30));
+    assert_eq!(buf.consume(1), None);
+}
+
+// ---- RoutingTable tests ----
+
+#[test]
+fn test_routing_table_build() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("op", schema.clone())
+        .sink_for("op", "snk", schema.clone())
+        .connect("src", "op")
+        .build()
+        .unwrap();
+
+    let table = RoutingTable::from_dag(&dag);
+    assert!(table.entry_count() > 0);
+}
+
+#[test]
+fn test_routing_table_linear() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("op", schema.clone())
+        .sink_for("op", "snk", schema.clone())
+        .connect("src", "op")
+        .build()
+        .unwrap();
+
+    let table = RoutingTable::from_dag(&dag);
+
+    // src -> op: single target, not multicast.
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let entry = table.node_targets(src_id);
+    assert_eq!(entry.target_count, 1);
+    assert!(!entry.is_multicast);
+    assert_eq!(entry.targets[0], dag.node_id_by_name("op").unwrap().0);
+
+    // op -> snk: single target, not multicast.
+    let op_id = dag.node_id_by_name("op").unwrap();
+    let entry = table.node_targets(op_id);
+    assert_eq!(entry.target_count, 1);
+    assert!(!entry.is_multicast);
+    assert_eq!(entry.targets[0], dag.node_id_by_name("snk").unwrap().0);
+}
+
+#[test]
+fn test_routing_table_fan_out() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("shared", schema.clone())
+        .connect("src", "shared")
+        .fan_out("shared", |b| {
+            b.branch("a", schema.clone())
+                .branch("b", schema.clone())
+                .branch("c", schema.clone())
+        })
+        .sink_for("a", "sa", schema.clone())
+        .sink_for("b", "sb", schema.clone())
+        .sink_for("c", "sc", schema.clone())
+        .build()
+        .unwrap();
+
+    let table = RoutingTable::from_dag(&dag);
+
+    // shared -> {a, b, c}: multicast with 3 targets.
+    let shared_id = dag.node_id_by_name("shared").unwrap();
+    let entry = table.node_targets(shared_id);
+    assert_eq!(entry.target_count, 3);
+    assert!(entry.is_multicast);
+
+    // Check targets include a, b, c.
+    let target_ids: Vec<u32> = entry.target_ids().to_vec();
+    assert!(target_ids.contains(&dag.node_id_by_name("a").unwrap().0));
+    assert!(target_ids.contains(&dag.node_id_by_name("b").unwrap().0));
+    assert!(target_ids.contains(&dag.node_id_by_name("c").unwrap().0));
+}
+
+#[test]
+fn test_routing_table_terminal() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .sink_for("src", "snk", schema.clone())
+        .build()
+        .unwrap();
+
+    let table = RoutingTable::from_dag(&dag);
+
+    // Sink node has no targets (terminal).
+    let snk_id = dag.node_id_by_name("snk").unwrap();
+    let entry = table.node_targets(snk_id);
+    assert_eq!(entry.target_count, 0);
+    assert!(!entry.is_multicast);
+    assert!(entry.is_terminal());
+}
+
+#[test]
+fn test_routing_entry_cache_alignment() {
+    assert_eq!(std::mem::size_of::<RoutingEntry>(), 64);
+    assert_eq!(std::mem::align_of::<RoutingEntry>(), 64);
+}
+
+#[test]
+fn test_routing_table_diamond() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("a", schema.clone())
+        .operator("b", schema.clone())
+        .operator("merge", schema.clone())
+        .sink_for("merge", "snk", schema.clone())
+        .connect("src", "a")
+        .connect("src", "b")
+        .connect("a", "merge")
+        .connect("b", "merge")
+        .build()
+        .unwrap();
+
+    let table = RoutingTable::from_dag(&dag);
+
+    // src -> {a, b}: multicast.
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let entry = table.node_targets(src_id);
+    assert_eq!(entry.target_count, 2);
+    assert!(entry.is_multicast);
+
+    // a -> merge: single target.
+    let a_id = dag.node_id_by_name("a").unwrap();
+    let entry = table.node_targets(a_id);
+    assert_eq!(entry.target_count, 1);
+    assert!(!entry.is_multicast);
+    assert_eq!(entry.targets[0], dag.node_id_by_name("merge").unwrap().0);
+
+    // merge -> snk: single target.
+    let merge_id = dag.node_id_by_name("merge").unwrap();
+    let entry = table.node_targets(merge_id);
+    assert_eq!(entry.target_count, 1);
+    assert!(!entry.is_multicast);
+}
+
+#[test]
+fn test_routing_table_max_node_id() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("s", schema.clone())
+        .sink_for("s", "k", schema.clone())
+        .build()
+        .unwrap();
+
+    let table = RoutingTable::from_dag(&dag);
+    // Node IDs are 0 and 1, so max_node_id should be 1.
+    assert_eq!(table.max_node_id(), 1);
 }

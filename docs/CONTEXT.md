@@ -8,17 +8,24 @@
 **Date**: 2026-01-30
 
 ### What Was Accomplished
-- **F-DAG-001: Core DAG Topology** - COMPLETE (29 tests)
-  - `dag/topology.rs`: `NodeId`, `EdgeId`, `StatePartitionId`, `DagNode`, `DagEdge`, `DagNodeType`, `DagChannelType`, `PartitioningStrategy`, `SharedStageMetadata`, `StreamingDag`
-  - `dag/builder.rs`: `DagBuilder` fluent API (`source()`, `operator()`, `connect()`, `fan_out()`, `sink_for()`, `build()`), `FanOutBuilder` (`branch()`, `stateless_branch()`)
-  - `dag/error.rs`: `DagError` enum (8 variants: `CycleDetected`, `DisconnectedNode`, `NodeNotFound`, `DuplicateNode`, `SchemaMismatch`, `FanOutLimitExceeded`, `EmptyDag`, `BackpressureFull`)
-  - Kahn's algorithm topological sort with deterministic ordering
-  - Cycle detection (rejects at construction time)
-  - Automatic `DagChannelType` derivation (SPSC/SPMC/MPSC from fan-in/fan-out)
-  - Shared stage detection (nodes with fan-out > 1)
-  - Schema compatibility validation (field count + types, empty = type-erased)
-  - `MAX_FAN_OUT = 8` enforcement
-  - Wired into `lib.rs` with `DagError` in the crate `Error` enum
+- **F-DAG-002: Multicast & Routing** - COMPLETE (16 new tests, 45 total DAG tests)
+  - `dag/multicast.rs`: `MulticastBuffer<T>` - zero-copy SPMC multicast buffer
+    - Pre-allocated `Option<T>` slots with power-of-2 bitmask indexing
+    - Atomic per-slot refcounts for consumer tracking
+    - Single-writer `publish()` with backpressure (`DagError::BackpressureFull`)
+    - Multi-consumer `consume(idx)` with independent read positions
+    - Slot reuse when all consumers complete (refcount → 0)
+    - `Send + Sync` with documented safety invariants
+  - `dag/routing.rs`: `RoutingTable` + `RoutingEntry` - O(1) hot path dispatch
+    - `#[repr(C, align(64))]` cache-line aligned `RoutingEntry` (exactly 64 bytes)
+    - `targets: [u32; 8]`, `target_count`, `is_multicast` per entry
+    - `RoutingTable::from_dag()` builds from finalized `StreamingDag`
+    - `route(source, port)` and `node_targets(source)` O(1) lookups
+    - `MAX_PORTS = 8` (matches `MAX_FAN_OUT`)
+  - Updated `dag/mod.rs` with module declarations and re-exports
+
+Previous session (2026-01-30):
+- F-DAG-001: Core DAG Topology - COMPLETE (29 tests)
 
 Previous session (2026-01-28):
 - Developer API Overhaul - 3 new crates, SQL parser extensions, 5 examples
@@ -26,20 +33,21 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1611 (1027 core + 365 sql + 120 storage + 28 laminar-db + 71 connectors)
+**Total tests**: 1627 (1043 core + 365 sql + 120 storage + 28 laminar-db + 71 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 9/28 features COMPLETE (32%)**
+**Phase 3 Connectors & Integration: 10/28 features COMPLETE (36%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - DAG topology foundation complete (F-DAG-001)
-- Next: F-DAG-002 (Multicast & Routing), then F-DAG-003 (Executor)
+- DAG multicast & routing complete (F-DAG-002)
+- Next: F-DAG-003 (DAG Executor)
 
 ### Immediate Next Steps
-1. F-DAG-002: Multicast & Routing (routing table, multicast buffer)
-2. F-DAG-003: DAG Executor (Ring 0 event processing)
-3. F025: Kafka Source Connector
-4. F026: Kafka Sink Connector
+1. F-DAG-003: DAG Executor (Ring 0 event processing)
+2. F025: Kafka Source Connector
+3. F026: Kafka Sink Connector
+4. F027: PostgreSQL CDC Source
 
 ### Open Issues
 None.
@@ -100,10 +108,12 @@ None.
 ### Key Modules
 ```
 laminar-core/src/
-  dag/          # F-DAG-001: DAG pipeline topology
+  dag/          # F-DAG-001/002: DAG pipeline topology + multicast/routing
     topology      # StreamingDag, DagNode, DagEdge, DagChannelType
     builder       # DagBuilder, FanOutBuilder
     error         # DagError
+    multicast     # F-DAG-002: MulticastBuffer<T> (SPMC, refcounted slots)
+    routing       # F-DAG-002: RoutingTable, RoutingEntry (64-byte aligned)
   streaming/    # F-STREAM-001 to F-STREAM-006: In-memory streaming API
     ring_buffer   # Lock-free SPSC ring buffer
     channel       # SPSC/MPSC channel with auto-upgrade

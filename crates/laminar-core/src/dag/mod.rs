@@ -11,6 +11,8 @@
 //! - **`DagBuilder`**: Fluent builder API for programmatic DAG construction
 //! - **`DagNode`** / **`DagEdge`**: Adjacency list representation
 //! - **`DagChannelType`**: Auto-derived channel types (SPSC/SPMC/MPSC)
+//! - **`MulticastBuffer`**: Zero-copy SPMC multicast for shared stages
+//! - **`RoutingTable`**: Pre-computed O(1) dispatch table
 //!
 //! ## Key Design Principles
 //!
@@ -18,6 +20,7 @@
 //! 2. **Cycle detection** - Rejected at construction time
 //! 3. **Schema validation** - Connected edges must have compatible schemas
 //! 4. **Immutable once finalized** - Topology is frozen after `build()`
+//! 5. **Zero-alloc hot path** - Multicast and routing are allocation-free
 //!
 //! ## Architecture
 //!
@@ -26,16 +29,18 @@
 //! │                     RING 2: CONTROL PLANE                       │
 //! │  DagBuilder constructs StreamingDag topology                    │
 //! │  ┌──────────┐   ┌──────────────┐   ┌───────────────────┐       │
-//! │  │DagBuilder│──▶│ StreamingDag │──▶│ DagExecutor (F003)│       │
-//! │  │ (Ring 2) │   │  (immutable) │   │    (Ring 0)       │       │
+//! │  │DagBuilder│──▶│ StreamingDag │──▶│ RoutingTable      │       │
+//! │  │ (Ring 2) │   │  (immutable) │   │ (cache-aligned)   │       │
 //! │  └──────────┘   └──────────────┘   └───────────────────┘       │
+//! │                                                                 │
+//! │  MulticastBuffer<T> per shared stage (pre-allocated slots)      │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Example
 //!
 //! ```rust,ignore
-//! use laminar_core::dag::DagBuilder;
+//! use laminar_core::dag::{DagBuilder, RoutingTable};
 //!
 //! let dag = DagBuilder::new()
 //!     .source("trades", schema.clone())
@@ -49,6 +54,7 @@
 //!     .sink_for("anomaly", "alerts", schema.clone())
 //!     .build()?;
 //!
+//! let routing = RoutingTable::from_dag(&dag);
 //! assert_eq!(dag.node_count(), 5);
 //! assert_eq!(dag.sources().len(), 1);
 //! assert_eq!(dag.sinks().len(), 2);
@@ -56,6 +62,8 @@
 
 pub mod builder;
 pub mod error;
+pub mod multicast;
+pub mod routing;
 pub mod topology;
 
 #[cfg(test)]
@@ -64,6 +72,8 @@ mod tests;
 // Re-export key types
 pub use builder::{DagBuilder, FanOutBuilder};
 pub use error::DagError;
+pub use multicast::MulticastBuffer;
+pub use routing::{RoutingEntry, RoutingTable, MAX_PORTS};
 pub use topology::{
     DagChannelType, DagEdge, DagNode, DagNodeType, EdgeId, NodeId, PartitioningStrategy,
     SharedStageMetadata, StatePartitionId, StreamingDag, MAX_FAN_OUT,
