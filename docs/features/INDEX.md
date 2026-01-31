@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 29 | 12 | 0 | 0 | 17 |
+| Phase 3 | 29 | 11 | 0 | 0 | 18 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **97** | **33** | **0** | **0** | **64** |
+| **Total** | **97** | **32** | **0** | **0** | **65** |
 
 ## Status Legend
 
@@ -289,7 +289,7 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 | F-DAG-003 | DAG Executor | P0 | ✅ | [Link](phase-3/dag/F-DAG-003-dag-executor.md) |
 | F-DAG-004 | DAG Checkpointing | P1 | ✅ | [Link](phase-3/dag/F-DAG-004-dag-checkpointing.md) |
 | F-DAG-005 | SQL & MV Integration | P1 | ✅ | [Link](phase-3/dag/F-DAG-005-sql-mv-integration.md) |
-| F-DAG-006 | Connector Bridge | P1 | 📝 | [Link](phase-3/dag/F-DAG-006-connector-bridge.md) |
+| F-DAG-006 | Connector Bridge | P1 | ✅ | [Link](phase-3/dag/F-DAG-006-connector-bridge.md) |
 | F-DAG-007 | Performance Validation | P2 | 📝 | [Link](phase-3/dag/F-DAG-007-performance-validation.md) |
 
 **Key Design Principles**:

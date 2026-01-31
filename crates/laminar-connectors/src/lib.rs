@@ -76,3 +76,6 @@ pub mod postgres;
 
 /// Lookup table support for enrichment joins.
 pub mod lookup;
+
+/// Connector bridge for DAG source/sink integration.
+pub mod bridge;

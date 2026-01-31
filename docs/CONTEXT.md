@@ -8,17 +8,20 @@
 **Date**: 2026-01-31
 
 ### What Was Accomplished
-- **F-DAG-005: SQL & MV Integration** - IMPLEMENTATION COMPLETE (18 new tests, 100 total DAG tests + 2 SQL tests)
-  - `dag/watermark.rs`: DagWatermarkTracker — Vec-indexed O(1) propagation, min-semantics at fan-in, checkpoint/restore (5 tests)
-  - `dag/changelog.rs`: DagChangelogPropagator — per-node ChangelogBuffer management, global/per-node enable, drain/record (4 tests)
-  - `dag/topology.rs`: `StreamingDag::from_mv_registry()` — automatic DAG construction from MvRegistry + base table schemas (6 tests)
-  - `dag/error.rs`: `BaseTableSchemaNotFound` variant
-  - `dag/mod.rs`: New module exports
-  - `mv/registry.rs`: `base_tables()` accessor
-  - `translator/dag_planner.rs`: `format_dag_explain()` + `DagExplainOutput` struct (2 tests)
-  - `planner/mod.rs`: `DagExplain` variant in `StreamingPlan`
-  - `translator/mod.rs`: `dag_planner` module export
+- **F-DAG-006: Connector Bridge** - IMPLEMENTATION COMPLETE (25 new tests, 96 total connector base tests)
+  - `bridge/config.rs`: BridgeRuntimeConfig with defaults (max_batch_size, checkpoint_interval, exactly_once, changelog, inflight) (2 tests)
+  - `bridge/metrics.rs`: SourceBridgeMetrics, SinkBridgeMetrics, BridgeRuntimeMetrics — AtomicU64 counters with reset (7 tests)
+  - `bridge/source_bridge.rs`: DagSourceBridge — polls SourceConnector, timestamp extraction from configurable column, Event injection into DagExecutor, checkpoint/restore delegation (4 tests)
+  - `bridge/sink_bridge.rs`: DagSinkBridge — drains DagExecutor sink outputs, writes to SinkConnector, epoch begin/commit/rollback for exactly-once (4 tests)
+  - `bridge/runtime.rs`: ConnectorBridgeRuntime — attach_source/attach_sink by DAG node name, process_cycle (poll→execute→flush), trigger_checkpoint with coordinator+recovery manager, recover from latest snapshot (8 tests)
+  - `bridge/mod.rs`: Module re-exports
+  - `lib.rs`: Added `pub mod bridge;`
+  - Zero-copy data path: SourceBatch.records → Event.data → SinkConnector.write_batch (no serialization)
+  - Source/sink nodes report empty OperatorState to checkpoint coordinator (connector state saved via SourceCheckpoint)
   - All clippy clean with `-D warnings`
+
+Previous session (2026-01-31):
+- **F-DAG-005: SQL & MV Integration** - IMPLEMENTATION COMPLETE (18 new tests, 100 total DAG tests + 2 SQL tests)
 
 Previous session (2026-01-31):
 - **F027B: PostgreSQL Sink** - IMPLEMENTATION COMPLETE (84 new tests, 155 total connector tests with postgres-sink)
@@ -57,25 +60,25 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1684 base + 84 postgres-sink + 107 postgres-cdc + 118 kafka = 1993 (1098 core + 367 sql + 120 storage + 28 laminar-db + 155 connectors-base-with-pg-sink + 107 postgres-cdc-only + 118 kafka-only)
+**Total tests**: 1709 base + 84 postgres-sink + 107 postgres-cdc + 118 kafka = 2018 (1098 core + 367 sql + 120 storage + 28 laminar-db + 96 connectors-base + 84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 17/29 features COMPLETE (59%)**
+**Phase 3 Connectors & Integration: 18/29 features COMPLETE (62%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
-- DAG pipeline complete (F-DAG-001 to F-DAG-005)
+- DAG pipeline complete (F-DAG-001 to F-DAG-006)
 - Kafka Source Connector complete (F025)
 - Kafka Sink Connector complete (F026)
 - PostgreSQL CDC Source complete (F027) — 107 tests, full pgoutput decoder
 - PostgreSQL Sink complete (F027B) — 84 tests, COPY BINARY + upsert + exactly-once
 - SQL & MV Integration complete (F-DAG-005) — 18 new tests, DAG from MvRegistry, watermarks, changelog
+- Connector Bridge complete (F-DAG-006) — 25 new tests, source/sink bridge + runtime orchestration
 - Next: F031 Delta Lake Sink or F028 MySQL CDC Source
 
 ### Immediate Next Steps
 1. F031: Delta Lake Sink
 2. F028: MySQL CDC Source
 3. F034: Connector SDK
-4. F-DAG-006: Connector Bridge
 
 ### Open Issues
 None.
@@ -217,6 +220,12 @@ laminar-connectors/src/
     changelog         # Z-set ChangeEvent, tuple_to_json, events_to_record_batch
     metrics           # CdcMetrics (11 atomic counters)
     source            # PostgresCdcSource (SourceConnector impl, transaction buffering)
+  bridge/             # F-DAG-006: Connector Bridge (DAG ↔ external connectors)
+    source_bridge     # DagSourceBridge (SourceConnector → DagExecutor)
+    sink_bridge       # DagSinkBridge (DagExecutor → SinkConnector)
+    runtime           # ConnectorBridgeRuntime (orchestration + checkpoint/recovery)
+    metrics           # SourceBridgeMetrics, SinkBridgeMetrics, BridgeRuntimeMetrics
+    config            # BridgeRuntimeConfig
   serde/              # RecordDeserializer/RecordSerializer traits
     json, csv, raw, debezium  # Format implementations
   connector           # SourceConnector/SinkConnector traits
