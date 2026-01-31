@@ -9,9 +9,16 @@ homepage.workspace = true
 documentation = "https://docs.laminardb.io/laminar-db"
 description = "Unified database facade for LaminarDB"
 
+[features]
+default = []
+kafka = ["laminar-connectors/kafka"]
+postgres-cdc = ["laminar-connectors/postgres-cdc"]
+postgres-sink = ["laminar-connectors/postgres-sink"]
+
 [dependencies]
 laminar-core = { path = "../laminar-core" }
 laminar-sql = { path = "../laminar-sql" }
+laminar-connectors = { path = "../laminar-connectors" }
 
 # Arrow
 arrow = { workspace = true }
@@ -21,6 +28,9 @@ arrow-schema = { workspace = true }
 # DataFusion
 datafusion = { workspace = true }
 datafusion-common = { workspace = true }
+
+# Serialization
+serde_json = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }

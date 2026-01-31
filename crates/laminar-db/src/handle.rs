@@ -137,6 +137,14 @@ pub struct TypedSubscription<T: FromBatch> {
 }
 
 impl<T: FromBatch> TypedSubscription<T> {
+    /// Create from a raw subscription.
+    pub(crate) fn from_raw(sub: Subscription<ArrowRecord>) -> Self {
+        Self {
+            inner: sub,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Poll for the next batch of typed results (non-blocking).
     #[must_use]
     pub fn poll(&self) -> Option<Vec<T>> {

@@ -12,11 +12,13 @@
 //! ) [WITH ('key' = 'value', ...)];
 //! ```
 
+use std::collections::HashMap;
+
 use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Token;
 
-use super::statements::{CreateSourceStatement, WatermarkDef};
+use super::statements::{CreateSourceStatement, FormatSpec, WatermarkDef};
 use super::tokenizer::{expect_custom_keyword, parse_with_options, try_parse_custom_keyword};
 use super::ParseError;
 
@@ -50,10 +52,27 @@ pub fn parse_create_source(parser: &mut Parser) -> Result<CreateSourceStatement,
         .parse_object_name(false)
         .map_err(ParseError::SqlParseError)?;
 
-    // Column definitions with optional WATERMARK
-    let (columns, watermark) = parse_source_body(parser)?;
+    // Check for FROM <connector> (...) syntax
+    let (connector_type, connector_options) = parse_from_connector(parser)?;
 
-    // WITH options (optional)
+    // Check for FORMAT <type> syntax
+    let format = parse_format_clause(parser)?;
+
+    // SCHEMA (...) or (...) for column definitions with optional WATERMARK
+    // If we have a connector, columns come after FORMAT/SCHEMA; otherwise right after name
+    let has_schema_keyword = try_parse_custom_keyword(parser, "SCHEMA");
+    let (columns, watermark) = if has_schema_keyword || connector_type.is_none() {
+        parse_source_body(parser)?
+    } else {
+        // If connector_type is set but no SCHEMA keyword and no paren, allow empty columns
+        if let Token::LParen = parser.peek_token().token {
+            parse_source_body(parser)?
+        } else {
+            (vec![], None)
+        }
+    };
+
+    // WITH options (optional) — contains watermark config like event_time, watermark_delay
     let with_options = parse_with_options(parser)?;
 
     Ok(CreateSourceStatement {
@@ -63,6 +82,9 @@ pub fn parse_create_source(parser: &mut Parser) -> Result<CreateSourceStatement,
         with_options,
         or_replace,
         if_not_exists,
+        connector_type,
+        connector_options,
+        format,
     })
 }
 
@@ -138,6 +160,94 @@ fn parse_watermark_def(parser: &mut Parser) -> Result<WatermarkDef, ParseError> 
     let expression = parser.parse_expr().map_err(ParseError::SqlParseError)?;
 
     Ok(WatermarkDef { column, expression })
+}
+
+/// Parse optional `FROM <connector_type> (key = 'value', ...)` clause.
+///
+/// Returns `(Some(connector_type), options)` if present, or `(None, empty_map)`.
+fn parse_from_connector(
+    parser: &mut Parser,
+) -> Result<(Option<String>, HashMap<String, String>), ParseError> {
+    if !parser.parse_keyword(Keyword::FROM) {
+        return Ok((None, HashMap::new()));
+    }
+
+    // Connector type name (e.g., KAFKA, POSTGRES, FILE)
+    let token = parser.next_token();
+    let connector_type = match &token.token {
+        Token::Word(w) => w.value.to_uppercase(),
+        other => {
+            return Err(ParseError::StreamingError(format!(
+                "Expected connector type after FROM, found {other}"
+            )));
+        }
+    };
+
+    // Optional parenthesized options
+    let options = if parser.consume_token(&Token::LParen) {
+        let mut opts = HashMap::new();
+        loop {
+            if parser.consume_token(&Token::RParen) {
+                break;
+            }
+            let key = parse_connector_option_string(parser)?;
+            parser
+                .expect_token(&Token::Eq)
+                .map_err(ParseError::SqlParseError)?;
+            let value = parse_connector_option_string(parser)?;
+            opts.insert(key, value);
+            if !parser.consume_token(&Token::Comma) {
+                parser
+                    .expect_token(&Token::RParen)
+                    .map_err(ParseError::SqlParseError)?;
+                break;
+            }
+        }
+        opts
+    } else {
+        HashMap::new()
+    };
+
+    Ok((Some(connector_type), options))
+}
+
+/// Parse optional `FORMAT <type> [WITH (key = 'value', ...)]` clause.
+fn parse_format_clause(parser: &mut Parser) -> Result<Option<FormatSpec>, ParseError> {
+    if !try_parse_custom_keyword(parser, "FORMAT") {
+        return Ok(None);
+    }
+
+    // Format type name (e.g., JSON, AVRO, PROTOBUF)
+    let token = parser.next_token();
+    let format_type = match &token.token {
+        Token::Word(w) => w.value.to_uppercase(),
+        other => {
+            return Err(ParseError::StreamingError(format!(
+                "Expected format type after FORMAT, found {other}"
+            )));
+        }
+    };
+
+    // Optional WITH (key = 'value', ...) for format-specific options
+    let options = parse_with_options(parser)?;
+
+    Ok(Some(FormatSpec {
+        format_type,
+        options,
+    }))
+}
+
+/// Parse a single option key or value string in connector options.
+fn parse_connector_option_string(parser: &mut Parser) -> Result<String, ParseError> {
+    let token = parser.next_token();
+    match token.token {
+        Token::SingleQuotedString(s) | Token::DoubleQuotedString(s) => Ok(s),
+        Token::Word(w) => Ok(w.value),
+        Token::Number(n, _) => Ok(n),
+        other => Err(ParseError::StreamingError(format!(
+            "Expected string or identifier in connector options, found {other}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -303,5 +413,122 @@ mod tests {
         assert_eq!(source.columns.len(), 2);
         assert!(matches!(source.columns[0].data_type, DataType::TinyInt(_)));
         assert!(matches!(source.columns[1].data_type, DataType::Real));
+    }
+
+    // ── FROM connector tests (F-SQL-001) ────────────────────────────
+
+    #[test]
+    fn test_from_kafka_connector() {
+        let source = parse(
+            "CREATE SOURCE clickstream FROM KAFKA (
+                'bootstrap.servers' = 'localhost:9092',
+                'topic' = 'ecommerce.clicks',
+                'group.id' = 'laminar-demo'
+            ) SCHEMA (
+                event_id VARCHAR,
+                user_id VARCHAR,
+                ts BIGINT
+            )",
+        );
+        assert_eq!(source.name.to_string(), "clickstream");
+        assert_eq!(source.connector_type, Some("KAFKA".to_string()));
+        assert_eq!(source.connector_options.len(), 3);
+        assert_eq!(
+            source.connector_options.get("bootstrap.servers"),
+            Some(&"localhost:9092".to_string())
+        );
+        assert_eq!(
+            source.connector_options.get("topic"),
+            Some(&"ecommerce.clicks".to_string())
+        );
+        assert_eq!(source.columns.len(), 3);
+    }
+
+    #[test]
+    fn test_from_kafka_format_json() {
+        let source = parse(
+            "CREATE SOURCE events FROM KAFKA (
+                'topic' = 'events'
+            ) FORMAT JSON SCHEMA (
+                id BIGINT,
+                data TEXT
+            )",
+        );
+        assert_eq!(source.connector_type, Some("KAFKA".to_string()));
+        assert!(source.format.is_some());
+        assert_eq!(source.format.as_ref().unwrap().format_type, "JSON");
+        assert_eq!(source.columns.len(), 2);
+    }
+
+    #[test]
+    fn test_from_kafka_format_avro_with_options() {
+        let source = parse(
+            "CREATE SOURCE events FROM KAFKA (
+                'topic' = 'events'
+            ) FORMAT AVRO WITH (
+                'schema.registry.url' = 'http://localhost:8081'
+            ) SCHEMA (
+                id BIGINT
+            )",
+        );
+        assert_eq!(source.format.as_ref().unwrap().format_type, "AVRO");
+        assert_eq!(source.format.as_ref().unwrap().options.len(), 1);
+    }
+
+    #[test]
+    fn test_from_kafka_with_watermark() {
+        let source = parse(
+            "CREATE SOURCE orders FROM KAFKA (
+                'topic' = 'orders'
+            ) FORMAT JSON SCHEMA (
+                order_id BIGINT,
+                amount DOUBLE,
+                ts TIMESTAMP,
+                WATERMARK FOR ts AS ts - INTERVAL '5' SECOND
+            ) WITH (
+                'event_time' = 'ts',
+                'watermark_delay' = '5 seconds'
+            )",
+        );
+        assert_eq!(source.connector_type, Some("KAFKA".to_string()));
+        assert!(source.watermark.is_some());
+        assert_eq!(source.columns.len(), 3);
+        assert_eq!(source.with_options.len(), 2);
+    }
+
+    #[test]
+    fn test_from_postgres_connector() {
+        let source = parse(
+            "CREATE SOURCE users FROM POSTGRES (
+                'host' = 'localhost',
+                'port' = '5432',
+                'database' = 'mydb'
+            ) SCHEMA (
+                user_id VARCHAR,
+                email VARCHAR
+            )",
+        );
+        assert_eq!(source.connector_type, Some("POSTGRES".to_string()));
+        assert_eq!(source.connector_options.len(), 3);
+    }
+
+    #[test]
+    fn test_backward_compat_no_connector() {
+        let source = parse("CREATE SOURCE events (id BIGINT, name VARCHAR)");
+        assert!(source.connector_type.is_none());
+        assert!(source.connector_options.is_empty());
+        assert!(source.format.is_none());
+        assert_eq!(source.columns.len(), 2);
+    }
+
+    #[test]
+    fn test_from_kafka_no_schema() {
+        let source = parse(
+            "CREATE SOURCE raw_events FROM KAFKA (
+                'topic' = 'raw'
+            )",
+        );
+        assert_eq!(source.connector_type, Some("KAFKA".to_string()));
+        assert_eq!(source.columns.len(), 0);
     }
 }

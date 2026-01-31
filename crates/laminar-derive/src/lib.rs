@@ -89,3 +89,16 @@ pub fn derive_from_record_batch(input: TokenStream) -> TokenStream {
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }
+
+
+/// Derive `FromRow` for a struct.
+///
+/// Like `FromRecordBatch`, generates inherent `from_batch` and
+/// `from_batch_all` methods, and also implements `laminar_db::FromBatch`.
+#[proc_macro_derive(FromRow, attributes(column))]
+pub fn derive_from_row(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    from_record_batch::expand_from_row(input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}

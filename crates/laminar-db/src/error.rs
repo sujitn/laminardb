@@ -39,6 +39,26 @@ pub enum DbError {
     #[error("Sink '{0}' already exists")]
     SinkAlreadyExists(String),
 
+    /// Stream not found
+    #[error("Stream '{0}' not found")]
+    StreamNotFound(String),
+
+    /// Stream already exists
+    #[error("Stream '{0}' already exists")]
+    StreamAlreadyExists(String),
+
+    /// Table not found
+    #[error("Table '{0}' not found")]
+    TableNotFound(String),
+
+    /// Table already exists
+    #[error("Table '{0}' already exists")]
+    TableAlreadyExists(String),
+
+    /// Insert error
+    #[error("Insert error: {0}")]
+    InsertError(String),
+
     /// Schema mismatch between Rust type and SQL definition
     #[error("Schema mismatch: {0}")]
     SchemaMismatch(String),
@@ -58,4 +78,16 @@ pub enum DbError {
     /// Checkpoint error
     #[error("Checkpoint error: {0}")]
     Checkpoint(String),
+
+    /// Unresolved config variable
+    #[error("Unresolved config variable: {0}")]
+    UnresolvedConfigVar(String),
+
+    /// Connector error
+    #[error("Connector error: {0}")]
+    Connector(String),
+
+    /// Pipeline error (start/shutdown lifecycle)
+    #[error("Pipeline error: {0}")]
+    Pipeline(String),
 }

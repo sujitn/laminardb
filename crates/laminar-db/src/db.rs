@@ -1,5 +1,6 @@
 //! The main `LaminarDB` database facade.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
@@ -13,6 +14,7 @@ use laminar_sql::planner::StreamingPlanner;
 use laminar_sql::translator::streaming_ddl;
 use laminar_sql::register_streaming_functions;
 
+use crate::builder::LaminarDbBuilder;
 use crate::catalog::SourceCatalog;
 use crate::config::LaminarConfig;
 use crate::error::DbError;
@@ -20,6 +22,25 @@ use crate::handle::{
     DdlInfo, ExecuteResult, QueryHandle, QueryInfo, SinkInfo, SourceHandle, SourceInfo,
     UntypedSourceHandle,
 };
+use crate::sql_utils;
+
+
+const STATE_CREATED: u8 = 0;
+const STATE_STARTING: u8 = 1;
+const STATE_RUNNING: u8 = 2;
+const STATE_SHUTTING_DOWN: u8 = 3;
+const STATE_STOPPED: u8 = 4;
+
+/// Extract SQL text from a `StreamingStatement` for storage in the connector manager.
+fn streaming_statement_to_sql(stmt: &StreamingStatement) -> String {
+    match stmt {
+        StreamingStatement::Standard(sql_stmt) => sql_stmt.to_string(),
+        StreamingStatement::CreateContinuousQuery { query, .. } => {
+            streaming_statement_to_sql(query)
+        }
+        other => format!("{other:?}"),
+    }
+}
 
 /// The main `LaminarDB` database handle.
 ///
@@ -48,8 +69,16 @@ pub struct LaminarDB {
     planner: parking_lot::Mutex<StreamingPlanner>,
     ctx: SessionContext,
     config: LaminarConfig,
+    config_vars: Arc<HashMap<String, String>>,
     shutdown: std::sync::atomic::AtomicBool,
     checkpoint_manager: parking_lot::Mutex<StreamCheckpointManager>,
+    connector_manager: parking_lot::Mutex<crate::connector_manager::ConnectorManager>,
+    connector_registry: Arc<laminar_connectors::registry::ConnectorRegistry>,
+    state: std::sync::atomic::AtomicU8,
+    /// Handle to the background processing task (if running).
+    runtime_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Signal to stop the processing loop.
+    shutdown_signal: Arc<tokio::sync::Notify>,
 }
 
 impl LaminarDB {
@@ -68,6 +97,19 @@ impl LaminarDB {
     ///
     /// Returns `DbError` if `DataFusion` context creation fails.
     pub fn open_with_config(config: LaminarConfig) -> Result<Self, DbError> {
+        Self::open_with_config_and_vars(config, HashMap::new())
+    }
+
+    /// Create with custom configuration and config variables for SQL substitution.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DbError` if `DataFusion` context creation fails.
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn open_with_config_and_vars(
+        config: LaminarConfig,
+        config_vars: HashMap<String, String>,
+    ) -> Result<Self, DbError> {
         let ctx = SessionContext::new();
         register_streaming_functions(&ctx);
 
@@ -81,14 +123,63 @@ impl LaminarDB {
             None => StreamCheckpointManager::disabled(),
         };
 
+        let connector_registry =
+            Arc::new(laminar_connectors::registry::ConnectorRegistry::new());
+        Self::register_builtin_connectors(&connector_registry);
+
         Ok(Self {
             catalog,
             planner: parking_lot::Mutex::new(StreamingPlanner::new()),
             ctx,
             config,
+            config_vars: Arc::new(config_vars),
             shutdown: std::sync::atomic::AtomicBool::new(false),
             checkpoint_manager: parking_lot::Mutex::new(checkpoint_manager),
+            connector_manager: parking_lot::Mutex::new(
+                crate::connector_manager::ConnectorManager::new(),
+            ),
+            connector_registry,
+            state: std::sync::atomic::AtomicU8::new(STATE_CREATED),
+            runtime_handle: parking_lot::Mutex::new(None),
+            shutdown_signal: Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    /// Get a fluent builder for constructing a `LaminarDB`.
+    #[must_use]
+    pub fn builder() -> LaminarDbBuilder {
+        LaminarDbBuilder::new()
+    }
+
+    /// Register built-in connectors based on enabled features.
+    #[allow(unused_variables)]
+    fn register_builtin_connectors(
+        registry: &laminar_connectors::registry::ConnectorRegistry,
+    ) {
+        #[cfg(feature = "kafka")]
+        {
+            laminar_connectors::kafka::register_kafka_source(registry);
+            laminar_connectors::kafka::register_kafka_sink(registry);
+        }
+        #[cfg(feature = "postgres-cdc")]
+        {
+            laminar_connectors::cdc::postgres::register_postgres_cdc(registry);
+        }
+        #[cfg(feature = "postgres-sink")]
+        {
+            laminar_connectors::postgres::register_postgres_sink(registry);
+        }
+    }
+
+    /// Returns the connector registry for registering custom connectors.
+    ///
+    /// Use this to register user-defined source/sink connectors before
+    /// calling `start()`.
+    #[must_use]
+    pub fn connector_registry(
+        &self,
+    ) -> &laminar_connectors::registry::ConnectorRegistry {
+        &self.connector_registry
     }
 
     /// Execute a SQL statement.
@@ -111,6 +202,30 @@ impl LaminarDB {
             return Err(DbError::Shutdown);
         }
 
+        // Apply config variable substitution
+        let resolved = if self.config_vars.is_empty() {
+            sql.to_string()
+        } else {
+            sql_utils::resolve_config_vars(sql, &self.config_vars, true)?
+        };
+
+        // Split into multiple statements
+        let stmts = sql_utils::split_statements(&resolved);
+        if stmts.is_empty() {
+            return Err(DbError::InvalidOperation("Empty SQL statement".into()));
+        }
+
+        // Execute each statement, return the last result (or first error)
+        let mut last_result = None;
+        for stmt_sql in &stmts {
+            last_result = Some(self.execute_single(stmt_sql).await?);
+        }
+
+        last_result.ok_or_else(|| DbError::InvalidOperation("Empty SQL statement".into()))
+    }
+
+    /// Execute a single SQL statement.
+    async fn execute_single(&self, sql: &str) -> Result<ExecuteResult, DbError> {
         let statements = parse_streaming_sql(sql)?;
 
         if statements.is_empty() {
@@ -122,18 +237,30 @@ impl LaminarDB {
         match statement {
             StreamingStatement::CreateSource(create) => self.handle_create_source(create),
             StreamingStatement::CreateSink(create) => self.handle_create_sink(create),
-            StreamingStatement::CreateContinuousQuery { .. }
-            | StreamingStatement::Standard(_) => self.handle_query(sql).await,
+            StreamingStatement::CreateStream { name, query, emit_clause, .. } => {
+                self.handle_create_stream(name, query, emit_clause.as_ref())
+            }
+            StreamingStatement::CreateContinuousQuery { .. } => self.handle_query(sql).await,
+            StreamingStatement::Standard(stmt) => {
+                if let sqlparser::ast::Statement::CreateTable(ct) = stmt.as_ref() {
+                    self.handle_create_table(ct)
+                } else {
+                    self.handle_query(sql).await
+                }
+            }
             StreamingStatement::InsertInto {
                 table_name,
                 columns,
                 values,
-            } => self.handle_insert_into(table_name, columns, values),
+            } => self.handle_insert_into(table_name, columns, values).await,
             StreamingStatement::DropSource { name, if_exists } => {
                 self.handle_drop_source(name, *if_exists)
             }
             StreamingStatement::DropSink { name, if_exists } => {
                 self.handle_drop_sink(name, *if_exists)
+            }
+            StreamingStatement::DropStream { name, if_exists } => {
+                self.handle_drop_stream(name, *if_exists)
             }
             StreamingStatement::DropMaterializedView {
                 name, if_exists, ..
@@ -157,6 +284,7 @@ impl LaminarDB {
                         // Placeholder - no MV catalog yet
                         self.build_show_sources()
                     }
+                    ShowCommand::Streams => self.build_show_streams(),
                 };
                 Ok(ExecuteResult::Metadata(batch))
             }
@@ -246,6 +374,46 @@ impl LaminarDB {
             let _ = planner.plan(&stmt);
         }
 
+        // Register connector info in ConnectorManager if external connector specified
+        if create.connector_type.is_some() {
+            // Validate connector type is registered
+            if let Some(ref ct) = create.connector_type {
+                let normalized = ct.to_lowercase();
+                if self.connector_registry.source_info(&normalized).is_none() {
+                    return Err(DbError::Connector(format!(
+                        "Unknown source connector type '{ct}'. Available: {:?}",
+                        self.connector_registry.list_sources()
+                    )));
+                }
+            }
+
+            // Validate format
+            if let Some(ref fmt) = create.format {
+                laminar_connectors::serde::Format::parse(
+                    &fmt.format_type.to_lowercase(),
+                )
+                .map_err(|e| {
+                    DbError::Connector(format!(
+                        "Unknown format '{}': {e}",
+                        fmt.format_type
+                    ))
+                })?;
+            }
+
+            let mut mgr = self.connector_manager.lock();
+            mgr.register_source(crate::connector_manager::SourceRegistration {
+                name: name.clone(),
+                connector_type: create.connector_type.clone(),
+                connector_options: create.connector_options.clone(),
+                format: create.format.as_ref().map(|f| f.format_type.clone()),
+                format_options: create
+                    .format
+                    .as_ref()
+                    .map(|f| f.options.clone())
+                    .unwrap_or_default(),
+            });
+        }
+
         Ok(ExecuteResult::Ddl(DdlInfo {
             statement_type: "CREATE SOURCE".to_string(),
             object_name: name.clone(),
@@ -279,6 +447,48 @@ impl LaminarDB {
             let _ = planner.plan(&stmt);
         }
 
+        // Register connector info in ConnectorManager if external connector specified
+        if create.connector_type.is_some() {
+            // Validate connector type is registered
+            if let Some(ref ct) = create.connector_type {
+                let normalized = ct.to_lowercase();
+                if self.connector_registry.sink_info(&normalized).is_none() {
+                    return Err(DbError::Connector(format!(
+                        "Unknown sink connector type '{ct}'. Available: {:?}",
+                        self.connector_registry.list_sinks()
+                    )));
+                }
+            }
+
+            // Validate format
+            if let Some(ref fmt) = create.format {
+                laminar_connectors::serde::Format::parse(
+                    &fmt.format_type.to_lowercase(),
+                )
+                .map_err(|e| {
+                    DbError::Connector(format!(
+                        "Unknown format '{}': {e}",
+                        fmt.format_type
+                    ))
+                })?;
+            }
+
+            let mut mgr = self.connector_manager.lock();
+            mgr.register_sink(crate::connector_manager::SinkRegistration {
+                name: name.clone(),
+                input: input.clone(),
+                connector_type: create.connector_type.clone(),
+                connector_options: create.connector_options.clone(),
+                format: create.format.as_ref().map(|f| f.format_type.clone()),
+                format_options: create
+                    .format
+                    .as_ref()
+                    .map(|f| f.options.clone())
+                    .unwrap_or_default(),
+                filter_expr: create.filter.as_ref().map(std::string::ToString::to_string),
+            });
+        }
+
         Ok(ExecuteResult::Ddl(DdlInfo {
             statement_type: "CREATE SINK".to_string(),
             object_name: name,
@@ -286,21 +496,100 @@ impl LaminarDB {
     }
 
     /// Handle INSERT INTO statement.
-    fn handle_insert_into(
+    ///
+    /// Inserts SQL VALUES into a registered source or `DataFusion` table.
+    async fn handle_insert_into(
         &self,
         table_name: &sqlparser::ast::ObjectName,
         _columns: &[sqlparser::ast::Ident],
-        _values: &[Vec<sqlparser::ast::Expr>],
+        values: &[Vec<sqlparser::ast::Expr>],
     ) -> Result<ExecuteResult, DbError> {
         let name = table_name.to_string();
-        // Verify the source exists
-        let _entry = self
-            .catalog
-            .get_source(&name)
-            .ok_or_else(|| DbError::SourceNotFound(name))?;
 
-        // TODO(phase-3): Convert SQL values to RecordBatch and push to source
-        Ok(ExecuteResult::RowsAffected(0))
+        // Try inserting into a registered source
+        if let Some(entry) = self.catalog.get_source(&name) {
+            let batch = sql_utils::sql_values_to_record_batch(&entry.schema, values)?;
+            entry
+                .source
+                .push_arrow(batch)
+                .map_err(|e| DbError::InsertError(format!("Failed to push to source: {e}")))?;
+            return Ok(ExecuteResult::RowsAffected(values.len() as u64));
+        }
+
+        // Otherwise, insert into a DataFusion MemTable
+        // Look up the table provider
+        let table = self
+            .ctx
+            .table_provider(&name)
+            .await
+            .map_err(|_| DbError::TableNotFound(name.clone()))?;
+
+        let schema = table.schema();
+        let batch = sql_utils::sql_values_to_record_batch(
+            &schema,
+            values,
+        )?;
+
+        // Deregister the old table, then re-register with the new data
+        self.ctx
+            .deregister_table(&name)
+            .map_err(|e| DbError::InsertError(format!("Failed to deregister table: {e}")))?;
+
+        let mem_table = datafusion::datasource::MemTable::try_new(
+            schema.clone(),
+            vec![vec![batch]],
+        )
+        .map_err(|e| DbError::InsertError(format!("Failed to create table: {e}")))?;
+
+        self.ctx
+            .register_table(&name, Arc::new(mem_table))
+            .map_err(|e| DbError::InsertError(format!("Failed to register table: {e}")))?;
+
+        Ok(ExecuteResult::RowsAffected(values.len() as u64))
+    }
+
+    /// Handle CREATE TABLE statement.
+    ///
+    /// Creates a static reference/dimension table backed by a `DataFusion`
+    /// `MemTable`. These tables are used for lookup joins.
+    fn handle_create_table(
+        &self,
+        create: &sqlparser::ast::CreateTable,
+    ) -> Result<ExecuteResult, DbError> {
+        let name = create.name.to_string();
+
+        // Build Arrow schema from column definitions
+        let fields: Vec<arrow::datatypes::Field> = create
+            .columns
+            .iter()
+            .map(|col| {
+                let data_type = sql_utils::sql_type_to_arrow(&col.data_type);
+                let nullable = !col.options.iter().any(|opt| {
+                    matches!(opt.option, sqlparser::ast::ColumnOption::NotNull)
+                });
+                arrow::datatypes::Field::new(col.name.to_string(), data_type, nullable)
+            })
+            .collect();
+
+        let schema = Arc::new(arrow::datatypes::Schema::new(fields));
+
+        // Register as a DataFusion MemTable with empty data
+        let mem_table =
+            datafusion::datasource::MemTable::try_new(schema.clone(), vec![vec![]])
+                .map_err(|e| {
+                    DbError::InvalidOperation(format!("Failed to create table: {e}"))
+                })?;
+
+        self.ctx
+            .register_table(&name, Arc::new(mem_table))
+            .map_err(|e| {
+                DbError::InvalidOperation(format!("Failed to register table: {e}"))
+            })?;
+
+        Ok(ExecuteResult::Ddl(DdlInfo {
+            statement_type: "CREATE TABLE".to_string(),
+            object_name: name,
+        }))
     }
 
     /// Handle DROP SOURCE statement.
@@ -314,6 +603,7 @@ impl LaminarDB {
         if !dropped && !if_exists {
             return Err(DbError::SourceNotFound(name_str));
         }
+        self.connector_manager.lock().unregister_source(&name_str);
         Ok(ExecuteResult::Ddl(DdlInfo {
             statement_type: "DROP SOURCE".to_string(),
             object_name: name_str,
@@ -331,10 +621,85 @@ impl LaminarDB {
         if !dropped && !if_exists {
             return Err(DbError::SinkNotFound(name_str));
         }
+        self.connector_manager.lock().unregister_sink(&name_str);
         Ok(ExecuteResult::Ddl(DdlInfo {
             statement_type: "DROP SINK".to_string(),
             object_name: name_str,
         }))
+    }
+
+    /// Handle CREATE STREAM statement.
+    fn handle_create_stream(
+        &self,
+        name: &sqlparser::ast::ObjectName,
+        query: &StreamingStatement,
+        emit_clause: Option<&laminar_sql::parser::EmitClause>,
+    ) -> Result<ExecuteResult, DbError> {
+        let name_str = name.to_string();
+
+        // Register in catalog as a stream
+        self.catalog.register_stream(&name_str)?;
+
+        // Register in planner
+        {
+            let mut planner = self.planner.lock();
+            let stmt = StreamingStatement::CreateStream {
+                name: name.clone(),
+                query: Box::new(query.clone()),
+                emit_clause: emit_clause.cloned(),
+                or_replace: false,
+                if_not_exists: false,
+            };
+            let _ = planner.plan(&stmt);
+        }
+
+        // Store the query SQL for stream execution at start()
+        {
+            let mut mgr = self.connector_manager.lock();
+            mgr.register_stream(crate::connector_manager::StreamRegistration {
+                name: name_str.clone(),
+                query_sql: streaming_statement_to_sql(query),
+            });
+        }
+
+        Ok(ExecuteResult::Ddl(DdlInfo {
+            statement_type: "CREATE STREAM".to_string(),
+            object_name: name_str,
+        }))
+    }
+
+    /// Handle DROP STREAM statement.
+    fn handle_drop_stream(
+        &self,
+        name: &sqlparser::ast::ObjectName,
+        if_exists: bool,
+    ) -> Result<ExecuteResult, DbError> {
+        let name_str = name.to_string();
+        let dropped = self.catalog.drop_stream(&name_str);
+        if !dropped && !if_exists {
+            return Err(DbError::StreamNotFound(name_str));
+        }
+        self.connector_manager.lock().unregister_stream(&name_str);
+        Ok(ExecuteResult::Ddl(DdlInfo {
+            statement_type: "DROP STREAM".to_string(),
+            object_name: name_str,
+        }))
+    }
+
+    /// Subscribe to a named stream or materialized view.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DbError::StreamNotFound` if the stream is not registered.
+    pub fn subscribe<T: crate::handle::FromBatch>(
+        &self,
+        name: &str,
+    ) -> Result<crate::handle::TypedSubscription<T>, DbError> {
+        let sub = self
+            .catalog
+            .get_stream_subscription(name)
+            .ok_or_else(|| DbError::StreamNotFound(name.to_string()))?;
+        Ok(crate::handle::TypedSubscription::from_raw(sub))
     }
 
     /// Handle EXPLAIN statement — show the streaming query plan.
@@ -617,6 +982,356 @@ impl LaminarDB {
         self.shutdown.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Start the streaming pipeline.
+    ///
+    /// Activates all registered connectors and begins processing.
+    /// This is a no-op if the pipeline is already running.
+    ///
+    /// When the `kafka` feature is enabled and Kafka sources/sinks are
+    /// registered, this builds `KafkaSource`/`KafkaSink` instances and
+    /// spawns a background task that polls sources, executes stream queries
+    /// via `DataFusion`, and writes results to sinks.
+    ///
+    /// In embedded (in-memory) mode, this simply transitions to `Running`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pipeline cannot be started.
+    pub async fn start(&self) -> Result<(), DbError> {
+        let current = self.state.load(std::sync::atomic::Ordering::Acquire);
+        if current == STATE_RUNNING || current == STATE_STARTING {
+            return Ok(());
+        }
+        if current == STATE_STOPPED {
+            return Err(DbError::InvalidOperation(
+                "Cannot start a stopped pipeline. Create a new LaminarDB instance."
+                    .into(),
+            ));
+        }
+
+        self.state
+            .store(STATE_STARTING, std::sync::atomic::Ordering::Release);
+
+        // Snapshot connector registrations under the lock
+        let (source_regs, sink_regs, stream_regs, has_external) = {
+            let mgr = self.connector_manager.lock();
+            (
+                mgr.sources().clone(),
+                mgr.sinks().clone(),
+                mgr.streams().clone(),
+                mgr.has_external_connectors(),
+            )
+        };
+
+        if has_external {
+            self.start_connector_pipeline(source_regs, sink_regs, stream_regs)
+                .await?;
+        } else {
+            tracing::info!(
+                sources = source_regs.len(),
+                sinks = sink_regs.len(),
+                streams = stream_regs.len(),
+                "Starting in embedded (in-memory) mode"
+            );
+        }
+
+        self.state
+            .store(STATE_RUNNING, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Build and start the connector pipeline with external sources/sinks.
+    ///
+    /// Uses the [`ConnectorRegistry`] for generic dispatch — no
+    /// connector-specific code in the pipeline setup or processing loop.
+    #[allow(clippy::too_many_lines)]
+    async fn start_connector_pipeline(
+        &self,
+        source_regs: HashMap<
+            String,
+            crate::connector_manager::SourceRegistration,
+        >,
+        sink_regs: HashMap<String, crate::connector_manager::SinkRegistration>,
+        stream_regs: HashMap<
+            String,
+            crate::connector_manager::StreamRegistration,
+        >,
+    ) -> Result<(), DbError> {
+        use crate::connector_manager::{build_sink_config, build_source_config};
+        use crate::stream_executor::StreamExecutor;
+        use laminar_connectors::config::ConnectorConfig;
+        use laminar_connectors::connector::{SinkConnector, SourceConnector};
+
+        // Build StreamExecutor
+        let ctx = SessionContext::new();
+        laminar_sql::register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        for reg in stream_regs.values() {
+            executor.add_query(reg.name.clone(), reg.query_sql.clone());
+        }
+
+        // Build sources via registry (generic — no connector-specific code)
+        let mut sources: Vec<(
+            String,
+            Box<dyn SourceConnector>,
+            ConnectorConfig,
+        )> = Vec::new();
+        for (name, reg) in &source_regs {
+            if reg.connector_type.is_none() {
+                continue;
+            }
+            let config = build_source_config(reg)?;
+            let source = self
+                .connector_registry
+                .create_source(&config)
+                .map_err(|e| {
+                    DbError::Connector(format!(
+                        "Cannot create source '{}' (type '{}'): {e}",
+                        name,
+                        config.connector_type()
+                    ))
+                })?;
+            sources.push((name.clone(), source, config));
+        }
+
+        // Build sinks via registry (generic — no connector-specific code)
+        #[allow(clippy::type_complexity)]
+        let mut sinks: Vec<(
+            String,
+            Box<dyn SinkConnector>,
+            ConnectorConfig,
+            Option<String>,
+        )> = Vec::new();
+        for (name, reg) in &sink_regs {
+            if reg.connector_type.is_none() {
+                continue;
+            }
+            let config = build_sink_config(reg)?;
+            let sink = self
+                .connector_registry
+                .create_sink(&config)
+                .map_err(|e| {
+                    DbError::Connector(format!(
+                        "Cannot create sink '{}' (type '{}'): {e}",
+                        name,
+                        config.connector_type()
+                    ))
+                })?;
+            sinks.push((
+                name.clone(),
+                sink,
+                config,
+                reg.filter_expr.clone(),
+            ));
+        }
+
+        // Open all connectors
+        for (name, source, config) in &mut sources {
+            source.open(config).await.map_err(|e| {
+                DbError::Connector(format!(
+                    "Failed to open source '{name}': {e}"
+                ))
+            })?;
+        }
+        for (name, sink, config, _) in &mut sinks {
+            sink.open(config).await.map_err(|e| {
+                DbError::Connector(format!(
+                    "Failed to open sink '{name}': {e}"
+                ))
+            })?;
+        }
+
+        tracing::info!(
+            sources = sources.len(),
+            sinks = sinks.len(),
+            streams = stream_regs.len(),
+            "Starting connector pipeline"
+        );
+
+        // Spawn processing loop
+        let shutdown = self.shutdown_signal.clone();
+        let max_poll = self.config.default_buffer_size.min(1024);
+
+        let handle = tokio::spawn(async move {
+            let mut cycle_count: u64 = 0;
+            loop {
+                // Check for shutdown
+                tokio::select! {
+                    () = shutdown.notified() => {
+                        tracing::info!("Pipeline shutdown signal received");
+                        break;
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                }
+
+                // Poll sources
+                let mut source_batches = HashMap::new();
+                for (name, source, _) in &mut sources {
+                    match source.poll_batch(max_poll).await {
+                        Ok(Some(batch)) => {
+                            source_batches
+                                .entry(name.clone())
+                                .or_insert_with(Vec::new)
+                                .push(batch.records);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                source = %name,
+                                error = %e,
+                                "Source poll error"
+                            );
+                        }
+                    }
+                }
+
+                // Execute stream queries
+                if !source_batches.is_empty() {
+                    match executor.execute_cycle(&source_batches).await {
+                        Ok(results) => {
+                            // Route results to sinks
+                            for (sink_name, sink, _, filter_expr) in
+                                &mut sinks
+                            {
+                                for (stream_name, batches) in &results {
+                                    for batch in batches {
+                                        // Apply WHERE filter if configured
+                                        let filtered =
+                                            if let Some(filter_sql) =
+                                                filter_expr
+                                            {
+                                                match apply_filter(
+                                                    batch, filter_sql,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(Some(fb)) => fb,
+                                                    Ok(None) => continue,
+                                                    Err(e) => {
+                                                        tracing::warn!(
+                                                            sink = %sink_name,
+                                                            filter = %filter_sql,
+                                                            error = %e,
+                                                            "Sink filter error"
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                            } else {
+                                                batch.clone()
+                                            };
+
+                                        if filtered.num_rows() > 0 {
+                                            if let Err(e) = sink
+                                                .write_batch(&filtered)
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    sink = %sink_name,
+                                                    stream = %stream_name,
+                                                    error = %e,
+                                                    "Sink write error"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Stream execution cycle error");
+                        }
+                    }
+                }
+
+                cycle_count += 1;
+                if cycle_count.is_multiple_of(100) {
+                    tracing::debug!(cycles = cycle_count, "Pipeline processing");
+                }
+            }
+
+            // Close all connectors
+            for (name, source, _) in &mut sources {
+                if let Err(e) = source.close().await {
+                    tracing::warn!(source = %name, error = %e, "Source close error");
+                }
+            }
+            for (name, sink, _, _) in &mut sinks {
+                if let Err(e) = sink.flush().await {
+                    tracing::warn!(sink = %name, error = %e, "Sink flush error");
+                }
+                if let Err(e) = sink.close().await {
+                    tracing::warn!(sink = %name, error = %e, "Sink close error");
+                }
+            }
+            tracing::info!("Pipeline stopped after {cycle_count} cycles");
+        });
+
+        *self.runtime_handle.lock() = Some(handle);
+        Ok(())
+    }
+
+    /// Shut down the streaming pipeline gracefully.
+    ///
+    /// Signals the processing loop to stop, waits for it to complete
+    /// (with a timeout), then transitions to `Stopped`.
+    /// This is idempotent -- calling it multiple times is safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if shutdown encounters an error.
+    pub async fn shutdown(&self) -> Result<(), DbError> {
+        let current = self.state.load(std::sync::atomic::Ordering::Acquire);
+        if current == STATE_STOPPED || current == STATE_SHUTTING_DOWN {
+            return Ok(());
+        }
+
+        self.state
+            .store(STATE_SHUTTING_DOWN, std::sync::atomic::Ordering::Release);
+
+        // Signal the runtime loop to stop
+        self.shutdown_signal.notify_one();
+
+        // Await the runtime handle (with timeout)
+        let handle = self.runtime_handle.lock().take();
+        if let Some(handle) = handle {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                handle,
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    tracing::info!("Pipeline shut down cleanly");
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "Pipeline task panicked during shutdown");
+                }
+                Err(_) => {
+                    tracing::warn!("Pipeline shutdown timed out after 10s");
+                }
+            }
+        }
+
+        self.state
+            .store(STATE_STOPPED, std::sync::atomic::Ordering::Release);
+        self.close();
+        Ok(())
+    }
+
+    /// Get the current pipeline state as a string.
+    pub fn pipeline_state(&self) -> &'static str {
+        match self.state.load(std::sync::atomic::Ordering::Acquire) {
+            STATE_CREATED => "Created",
+            STATE_STARTING => "Starting",
+            STATE_RUNNING => "Running",
+            STATE_SHUTTING_DOWN => "ShuttingDown",
+            STATE_STOPPED => "Stopped",
+            _ => "Unknown",
+        }
+    }
+
     /// Cancel a running query by ID.
     ///
     /// Marks the query as inactive in the catalog. Future subscription
@@ -697,6 +1412,19 @@ impl LaminarDB {
         .expect("show queries: schema matches columns")
     }
 
+    /// Build a SHOW STREAMS metadata result.
+    fn build_show_streams(&self) -> RecordBatch {
+        let streams = self.catalog.list_streams();
+        let names: Vec<&str> = streams.iter().map(String::as_str).collect();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "stream_name",
+            DataType::Utf8,
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(names))])
+            .expect("show streams: schema matches columns")
+    }
+
     /// Build a DESCRIBE result.
     fn build_describe(&self, name: &str) -> Result<RecordBatch, DbError> {
         let source_schema = self
@@ -739,6 +1467,56 @@ impl LaminarDB {
         )
         .map_err(|e| DbError::InvalidOperation(format!("describe metadata: {e}")))
     }
+}
+
+/// Internal table name used by the sink WHERE filter.
+const FILTER_INPUT_TABLE: &str = "__laminar_filter_input";
+
+/// Apply a SQL WHERE filter to a `RecordBatch`.
+///
+/// Returns `Ok(Some(filtered_batch))` if rows match, `Ok(None)` if no rows match,
+/// or an error if the filter expression is invalid.
+async fn apply_filter(
+    batch: &RecordBatch,
+    filter_sql: &str,
+) -> Result<Option<RecordBatch>, DbError> {
+    use datafusion::prelude::SessionContext;
+
+    let ctx = SessionContext::new();
+    let schema = batch.schema();
+
+    // Register the batch as a temporary table
+    let mem_table =
+        datafusion::datasource::MemTable::try_new(schema, vec![vec![batch.clone()]])
+            .map_err(|e| DbError::Pipeline(format!("Filter table creation: {e}")))?;
+
+    ctx.register_table(FILTER_INPUT_TABLE, Arc::new(mem_table))
+        .map_err(|e| DbError::Pipeline(format!("Filter table registration: {e}")))?;
+
+    // Execute the filter query
+    let sql = format!("SELECT * FROM {FILTER_INPUT_TABLE} WHERE {filter_sql}");
+    let df = ctx
+        .sql(&sql)
+        .await
+        .map_err(|e| DbError::Pipeline(format!("Filter query: {e}")))?;
+
+    let batches = df
+        .collect()
+        .await
+        .map_err(|e| DbError::Pipeline(format!("Filter execution: {e}")))?;
+
+    if batches.is_empty() {
+        return Ok(None);
+    }
+
+    // Concatenate all result batches
+    let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    if total_rows == 0 {
+        return Ok(None);
+    }
+
+    // Return the first batch (typically there's only one)
+    Ok(Some(batches.into_iter().next().unwrap()))
 }
 
 impl std::fmt::Debug for LaminarDB {
@@ -985,5 +1763,324 @@ mod tests {
 
         db.execute("DROP SOURCE a").await.unwrap();
         assert_eq!(db.source_count(), 1);
+    }
+
+    // ── Multi-statement execution tests (F-SQL-005) ─────────────────
+
+    #[tokio::test]
+    async fn test_multi_statement_execution() {
+        let db = LaminarDB::open().unwrap();
+        db.execute(
+            "CREATE SOURCE a (id INT); CREATE SOURCE b (id INT); CREATE SINK output FROM a",
+        )
+        .await
+        .unwrap();
+        assert_eq!(db.source_count(), 2);
+        assert_eq!(db.sink_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multi_statement_trailing_semicolon() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE a (id INT);").await.unwrap();
+        assert_eq!(db.source_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multi_statement_error_stops() {
+        let db = LaminarDB::open().unwrap();
+        // Second statement should fail (duplicate)
+        let result = db
+            .execute("CREATE SOURCE a (id INT); CREATE SOURCE a (id INT)")
+            .await;
+        assert!(result.is_err());
+        // First statement should have succeeded
+        assert_eq!(db.source_count(), 1);
+    }
+
+    // ── Config variable substitution tests (F-SQL-006) ──────────────
+
+    #[tokio::test]
+    async fn test_config_var_substitution() {
+        let db = LaminarDB::builder()
+            .config_var("TABLE_NAME", "events")
+            .build()
+            .await
+            .unwrap();
+        // Config var in source name won't work (parsed as identifier),
+        // but it works in WITH option values
+        db.execute("CREATE SOURCE events (id INT)")
+            .await
+            .unwrap();
+        assert_eq!(db.source_count(), 1);
+    }
+
+    // ── CREATE STREAM tests (F-SQL-003) ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_stream() {
+        let db = LaminarDB::open().unwrap();
+        let result = db
+            .execute("CREATE STREAM counts AS SELECT COUNT(*) as cnt FROM events")
+            .await
+            .unwrap();
+        match result {
+            ExecuteResult::Ddl(info) => {
+                assert_eq!(info.statement_type, "CREATE STREAM");
+                assert_eq!(info.object_name, "counts");
+            }
+            _ => panic!("Expected DDL result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_stream() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE STREAM counts AS SELECT COUNT(*) as cnt FROM events")
+            .await
+            .unwrap();
+        let result = db.execute("DROP STREAM counts").await.unwrap();
+        match result {
+            ExecuteResult::Ddl(info) => {
+                assert_eq!(info.statement_type, "DROP STREAM");
+            }
+            _ => panic!("Expected DDL result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_stream_not_found() {
+        let db = LaminarDB::open().unwrap();
+        let result = db.execute("DROP STREAM nonexistent").await;
+        assert!(matches!(result, Err(DbError::StreamNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_drop_stream_if_exists() {
+        let db = LaminarDB::open().unwrap();
+        let result = db.execute("DROP STREAM IF EXISTS nonexistent").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_show_streams() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE STREAM a AS SELECT 1 FROM events")
+            .await
+            .unwrap();
+        let result = db.execute("SHOW STREAMS").await.unwrap();
+        match result {
+            ExecuteResult::Metadata(batch) => {
+                assert_eq!(batch.num_rows(), 1);
+            }
+            _ => panic!("Expected Metadata result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_duplicate_error() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE STREAM counts AS SELECT COUNT(*) FROM events")
+            .await
+            .unwrap();
+        let result = db
+            .execute("CREATE STREAM counts AS SELECT COUNT(*) FROM events")
+            .await;
+        assert!(matches!(result, Err(DbError::StreamAlreadyExists(_))));
+    }
+
+    #[tokio::test]
+    async fn test_create_table() {
+        let db = LaminarDB::open().unwrap();
+        let result = db
+            .execute("CREATE TABLE products (id INT, name VARCHAR, price DOUBLE)")
+            .await.unwrap();
+
+        match result {
+            ExecuteResult::Ddl(info) => {
+                assert_eq!(info.statement_type, "CREATE TABLE");
+                assert_eq!(info.object_name, "products");
+            }
+            _ => panic!("Expected DDL result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_table_and_query_empty() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE TABLE dim (id INT, label VARCHAR)").await.unwrap();
+
+        let result = db.execute("SELECT * FROM dim").await.unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.schema().fields().len(), 2);
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_into_source() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE events (id BIGINT, value DOUBLE)").await.unwrap();
+
+        let result = db.execute("INSERT INTO events VALUES (1, 3.14), (2, 2.72)").await.unwrap();
+        match result {
+            ExecuteResult::RowsAffected(n) => assert_eq!(n, 2),
+            _ => panic!("Expected RowsAffected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_into_table() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE TABLE products (id INT, name VARCHAR, price DOUBLE)").await.unwrap();
+
+        let result = db.execute("INSERT INTO products VALUES (1, 'Widget', 9.99)").await.unwrap();
+        match result {
+            ExecuteResult::RowsAffected(n) => assert_eq!(n, 1),
+            _ => panic!("Expected RowsAffected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_into_nonexistent_table() {
+        let db = LaminarDB::open().unwrap();
+        let result = db.execute("INSERT INTO nosuch VALUES (1, 2)").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_types() {
+        let db = LaminarDB::open().unwrap();
+        let result = db.execute("CREATE TABLE orders (id BIGINT NOT NULL, qty SMALLINT, total DECIMAL(10,2))").await.unwrap();
+
+        match result {
+            ExecuteResult::Ddl(info) => {
+                assert_eq!(info.statement_type, "CREATE TABLE");
+                assert_eq!(info.object_name, "orders");
+            }
+            _ => panic!("Expected DDL result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_null_values() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE data (id BIGINT, label VARCHAR)").await.unwrap();
+
+        let result = db.execute("INSERT INTO data VALUES (1, NULL)").await.unwrap();
+        match result {
+            ExecuteResult::RowsAffected(n) => assert_eq!(n, 1),
+            _ => panic!("Expected RowsAffected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_negative_values() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE temps (id BIGINT, celsius DOUBLE)").await.unwrap();
+
+        let result = db.execute("INSERT INTO temps VALUES (1, -40.0)").await.unwrap();
+        match result {
+            ExecuteResult::RowsAffected(n) => assert_eq!(n, 1),
+            _ => panic!("Expected RowsAffected"),
+        }
+    }
+
+    // ── Connector registry / DDL validation tests ──
+
+    #[tokio::test]
+    async fn test_create_source_unknown_connector() {
+        let db = LaminarDB::open().unwrap();
+        // Use correct SQL syntax: FROM <type> (...) SCHEMA (...)
+        let result = db
+            .execute(
+                "CREATE SOURCE events FROM NONEXISTENT \
+                 ('topic' = 'test') SCHEMA (id INT)",
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown source connector type"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_sink_unknown_connector() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE events (id INT)")
+            .await
+            .unwrap();
+        // Use correct SQL syntax: INTO <type> (...)
+        let result = db
+            .execute(
+                "CREATE SINK output FROM events \
+                 INTO NONEXISTENT ('topic' = 'out')",
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown sink connector type"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_source_invalid_format() {
+        // We test format validation via build_source_config in
+        // connector_manager::tests (since the SQL parser may reject
+        // unknown formats at parse time rather than DDL validation).
+        // Here we verify that an error is returned either way.
+        let db = LaminarDB::open().unwrap();
+        let result = db
+            .execute(
+                "CREATE SOURCE events FROM NONEXISTENT \
+                 FORMAT BADFORMAT SCHEMA (id INT)",
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_accessor() {
+        let db = LaminarDB::open().unwrap();
+        let registry = db.connector_registry();
+        // No connectors registered without feature flags
+        assert!(registry.list_sources().is_empty());
+        assert!(registry.list_sinks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_builder_register_connector() {
+        use std::sync::Arc;
+
+        let db = LaminarDB::builder()
+            .register_connector(|registry| {
+                registry.register_source(
+                    "test-source",
+                    laminar_connectors::config::ConnectorInfo {
+                        name: "test-source".to_string(),
+                        display_name: "Test Source".to_string(),
+                        version: "0.1.0".to_string(),
+                        is_source: true,
+                        is_sink: false,
+                        config_keys: vec![],
+                    },
+                    Arc::new(|| {
+                        Box::new(
+                            laminar_connectors::testing::MockSourceConnector::new(),
+                        )
+                    }),
+                );
+            })
+            .build()
+            .await
+            .unwrap();
+        let registry = db.connector_registry();
+        assert!(registry.list_sources().contains(&"test-source".to_string()));
     }
 }

@@ -1,4 +1,4 @@
-//! Implementation of `#[derive(FromRecordBatch)]`.
+//! Implementation of `#[derive(FromRecordBatch)]` and `#[derive(FromRow)]`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -12,23 +12,27 @@ struct FieldInfo {
     is_option: bool,
 }
 
-pub fn expand_from_record_batch(input: DeriveInput) -> Result<TokenStream, Error> {
-    let name = &input.ident;
-
+/// Parse struct fields from a `DeriveInput`, returning field metadata.
+///
+/// Shared by both `FromRecordBatch` and `FromRow` derives.
+fn parse_fields(input: &DeriveInput, macro_name: &str) -> Result<Vec<FieldInfo>, Error> {
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(named) => &named.named,
             _ => {
                 return Err(Error::new_spanned(
-                    &input,
-                    "FromRecordBatch can only be derived for structs with named fields",
+                    input,
+                    format!(
+                        "{} can only be derived for structs with named fields",
+                        macro_name
+                    ),
                 ));
             }
         },
         _ => {
             return Err(Error::new_spanned(
-                &input,
-                "FromRecordBatch can only be derived for structs",
+                input,
+                format!("{} can only be derived for structs", macro_name),
             ));
         }
     };
@@ -57,6 +61,13 @@ pub fn expand_from_record_batch(input: DeriveInput) -> Result<TokenStream, Error
         });
     }
 
+    Ok(field_infos)
+}
+/// Generate the inherent `from_batch` and `from_batch_all` method implementations.
+fn generate_inherent_methods(
+    name: &syn::Ident,
+    field_infos: &[FieldInfo],
+) -> TokenStream {
     let field_extractions = field_infos.iter().map(|f| {
         let ident = &f.ident;
         let col_name = &f.column_name;
@@ -65,7 +76,7 @@ pub fn expand_from_record_batch(input: DeriveInput) -> Result<TokenStream, Error
 
     let field_names = field_infos.iter().map(|f| &f.ident);
 
-    let expanded = quote! {
+    quote! {
         impl #name {
             /// Deserialize a single row from a `RecordBatch`.
             ///
@@ -85,11 +96,52 @@ pub fn expand_from_record_batch(input: DeriveInput) -> Result<TokenStream, Error
                 (0..batch.num_rows()).map(|i| Self::from_batch(batch, i)).collect()
             }
         }
-    };
-
-    Ok(expanded)
+    }
 }
 
+/// Expand `#[derive(FromRecordBatch)]`.
+///
+/// Generates inherent `from_batch` and `from_batch_all` methods on the struct.
+pub fn expand_from_record_batch(input: DeriveInput) -> Result<TokenStream, Error> {
+    let name = &input.ident;
+    let field_infos = parse_fields(&input, "FromRecordBatch")?;
+    let inherent_impl = generate_inherent_methods(name, &field_infos);
+
+    Ok(inherent_impl)
+}
+
+/// Expand `#[derive(FromRow)]`.
+///
+/// Generates the same inherent `from_batch` / `from_batch_all` methods as
+/// `FromRecordBatch`, **plus** an `impl laminar_db::FromBatch for T` block
+/// that delegates to those inherent methods.
+pub fn expand_from_row(input: DeriveInput) -> Result<TokenStream, Error> {
+    let name = &input.ident;
+    let field_infos = parse_fields(&input, "FromRow")?;
+    let inherent_impl = generate_inherent_methods(name, &field_infos);
+
+    let trait_impl = quote! {
+        impl laminar_db::FromBatch for #name {
+            fn from_batch(
+                batch: &arrow::array::RecordBatch,
+                row: usize,
+            ) -> Self {
+                #name::from_batch(batch, row)
+            }
+
+            fn from_batch_all(
+                batch: &arrow::array::RecordBatch,
+            ) -> Vec<Self> {
+                #name::from_batch_all(batch)
+            }
+        }
+    };
+
+    Ok(quote! {
+        #inherent_impl
+        #trait_impl
+    })
+}
 fn is_option_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {

@@ -24,17 +24,25 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+mod builder;
 mod catalog;
 mod config;
+mod connector_manager;
 mod db;
 mod error;
 mod handle;
+mod sql_utils;
+mod stream_executor;
 
+pub use builder::LaminarDbBuilder;
 pub use catalog::{SourceEntry, SourceCatalog};
 pub use config::LaminarConfig;
 pub use db::LaminarDB;
 pub use error::DbError;
 pub use handle::{
-    ExecuteResult, DdlInfo, QueryHandle, SourceHandle, UntypedSourceHandle,
+    ExecuteResult, DdlInfo, FromBatch, QueryHandle, SourceHandle, UntypedSourceHandle,
     TypedSubscription, QueryInfo, SourceInfo, SinkInfo,
 };
+
+/// Re-export the connector registry for custom connector registration.
+pub use laminar_connectors::registry::ConnectorRegistry;

@@ -63,10 +63,22 @@ pub(crate) struct QueryEntry {
     pub(crate) active: bool,
 }
 
-/// Catalog of registered sources, sinks, and queries.
+/// A registered stream in the catalog.
+#[allow(dead_code)]
+pub(crate) struct StreamEntry {
+    /// Stream name.
+    pub(crate) name: String,
+    /// The underlying streaming source (for pushing data into the stream).
+    pub(crate) source: streaming::Source<ArrowRecord>,
+    /// The underlying streaming sink (for subscribing to the stream).
+    pub(crate) sink: streaming::Sink<ArrowRecord>,
+}
+
+/// Catalog of registered sources, sinks, streams, and queries.
 pub struct SourceCatalog {
     sources: RwLock<HashMap<String, Arc<SourceEntry>>>,
     sinks: RwLock<HashMap<String, SinkEntry>>,
+    streams: RwLock<HashMap<String, Arc<StreamEntry>>>,
     queries: RwLock<HashMap<u64, QueryEntry>>,
     next_query_id: AtomicU64,
     default_buffer_size: usize,
@@ -80,6 +92,7 @@ impl SourceCatalog {
         Self {
             sources: RwLock::new(HashMap::new()),
             sinks: RwLock::new(HashMap::new()),
+            streams: RwLock::new(HashMap::new()),
             queries: RwLock::new(HashMap::new()),
             next_query_id: AtomicU64::new(1),
             default_buffer_size: buffer_size,
@@ -173,6 +186,60 @@ impl SourceCatalog {
     /// Remove a sink by name.
     pub fn drop_sink(&self, name: &str) -> bool {
         self.sinks.write().remove(name).is_some()
+    }
+
+    /// Register a named stream.
+    pub(crate) fn register_stream(
+        &self,
+        name: &str,
+    ) -> Result<(), crate::DbError> {
+        let mut streams = self.streams.write();
+        if streams.contains_key(name) {
+            return Err(crate::DbError::StreamAlreadyExists(name.to_string()));
+        }
+
+        let config = SourceConfig {
+            channel: streaming::ChannelConfig {
+                buffer_size: self.default_buffer_size,
+                backpressure: self.default_backpressure,
+                wait_strategy: WaitStrategy::SpinYield,
+                track_stats: false,
+            },
+            name: Some(name.to_string()),
+        };
+
+        let (source, sink) = streaming::create_with_config::<ArrowRecord>(config);
+
+        streams.insert(
+            name.to_string(),
+            Arc::new(StreamEntry {
+                name: name.to_string(),
+                source,
+                sink,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Get a subscription to a named stream.
+    pub(crate) fn get_stream_subscription(
+        &self,
+        name: &str,
+    ) -> Option<streaming::Subscription<ArrowRecord>> {
+        self.streams
+            .read()
+            .get(name)
+            .map(|entry| entry.sink.subscribe())
+    }
+
+    /// Remove a stream by name.
+    pub fn drop_stream(&self, name: &str) -> bool {
+        self.streams.write().remove(name).is_some()
+    }
+
+    /// List all stream names.
+    pub fn list_streams(&self) -> Vec<String> {
+        self.streams.read().keys().cloned().collect()
     }
 
     /// List all source names.

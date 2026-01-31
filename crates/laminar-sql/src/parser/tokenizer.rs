@@ -61,6 +61,18 @@ pub enum StreamingDdlKind {
         /// Whether OR REPLACE was specified
         or_replace: bool,
     },
+    /// CREATE [OR REPLACE] STREAM
+    CreateStream {
+        /// Whether OR REPLACE was specified
+        or_replace: bool,
+    },
+    /// DROP STREAM [IF EXISTS]
+    DropStream {
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+    /// SHOW STREAMS
+    ShowStreams,
     /// Not a streaming DDL statement
     None,
 }
@@ -127,6 +139,9 @@ fn detect_create_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
         Token::Word(w) if is_word_ci(w, "CONTINUOUS") => {
             StreamingDdlKind::CreateContinuousQuery { or_replace: false }
         }
+        Token::Word(w) if is_word_ci(w, "STREAM") => {
+            StreamingDdlKind::CreateStream { or_replace: false }
+        }
         Token::Word(Word {
             keyword: Keyword::MATERIALIZED,
             ..
@@ -178,6 +193,10 @@ fn detect_drop_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
             let if_exists = has_if_exists(significant, 2);
             StreamingDdlKind::DropSink { if_exists }
         }
+        Token::Word(w) if is_word_ci(w, "STREAM") => {
+            let if_exists = has_if_exists(significant, 2);
+            StreamingDdlKind::DropStream { if_exists }
+        }
         Token::Word(Word {
             keyword: Keyword::MATERIALIZED,
             ..
@@ -209,6 +228,7 @@ fn detect_show_ddl(significant: &[&TokenWithSpan]) -> StreamingDdlKind {
         Token::Word(w) if is_word_ci(w, "SOURCES") => StreamingDdlKind::ShowSources,
         Token::Word(w) if is_word_ci(w, "SINKS") => StreamingDdlKind::ShowSinks,
         Token::Word(w) if is_word_ci(w, "QUERIES") => StreamingDdlKind::ShowQueries,
+        Token::Word(w) if is_word_ci(w, "STREAMS") => StreamingDdlKind::ShowStreams,
         Token::Word(Word {
             keyword: Keyword::MATERIALIZED,
             ..
@@ -283,6 +303,9 @@ fn classify_after_or_replace(
         }
         Token::Word(w) if is_word_ci(w, "CONTINUOUS") => {
             StreamingDdlKind::CreateContinuousQuery { or_replace: true }
+        }
+        Token::Word(w) if is_word_ci(w, "STREAM") => {
+            StreamingDdlKind::CreateStream { or_replace: true }
         }
         Token::Word(Word {
             keyword: Keyword::MATERIALIZED,

@@ -10,6 +10,7 @@ members = [
     "crates/laminar-server",
     "crates/laminar-derive",
     "crates/laminar-db",
+    "examples/shopstream",
 ]
 resolver = "2"
 
@@ -72,6 +73,9 @@ arrayvec = "0.7"
 # Platform-specific
 libc = "0.2"
 io-uring = "0.7"  # Low-level io_uring bindings (Linux only)
+
+# Randomness
+rand = "0.8"
 
 # Testing
 criterion = { version = "0.8", features = ["html_reports"] }

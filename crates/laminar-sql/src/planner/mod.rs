@@ -110,10 +110,17 @@ impl StreamingPlanner {
                 name,
                 query,
                 emit_clause,
+            }
+            | StreamingStatement::CreateStream {
+                name,
+                query,
+                emit_clause,
+                ..
             } => self.plan_continuous_query(name, query, emit_clause.as_ref()),
             StreamingStatement::Standard(stmt) => self.plan_standard_statement(stmt),
             StreamingStatement::DropSource { .. }
             | StreamingStatement::DropSink { .. }
+            | StreamingStatement::DropStream { .. }
             | StreamingStatement::DropMaterializedView { .. }
             | StreamingStatement::Show(_)
             | StreamingStatement::Describe { .. }

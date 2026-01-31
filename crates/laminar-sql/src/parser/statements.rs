@@ -22,6 +22,8 @@ pub enum ShowCommand {
     Queries,
     /// SHOW MATERIALIZED VIEWS - list all materialized views
     MaterializedViews,
+    /// SHOW STREAMS - list all named streams
+    Streams,
 }
 
 /// Streaming-specific SQL statements
@@ -103,6 +105,28 @@ pub enum StreamingStatement {
         if_not_exists: bool,
     },
 
+    /// CREATE STREAM — named streaming pipeline
+    CreateStream {
+        /// Stream name
+        name: ObjectName,
+        /// Backing query (AS SELECT ...)
+        query: Box<StreamingStatement>,
+        /// Optional EMIT clause
+        emit_clause: Option<EmitClause>,
+        /// Whether OR REPLACE was specified
+        or_replace: bool,
+        /// Whether IF NOT EXISTS was specified
+        if_not_exists: bool,
+    },
+
+    /// DROP STREAM statement
+    DropStream {
+        /// Stream name to drop
+        name: ObjectName,
+        /// Whether IF EXISTS was specified
+        if_exists: bool,
+    },
+
     /// INSERT INTO a streaming source or table
     InsertInto {
         /// Target table or source name
@@ -114,6 +138,15 @@ pub enum StreamingStatement {
     },
 }
 
+/// Format specification for serialization (e.g., FORMAT JSON, FORMAT AVRO).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatSpec {
+    /// Format type (e.g., "JSON", "AVRO", "PROTOBUF").
+    pub format_type: String,
+    /// Additional format options (from WITH clause after FORMAT).
+    pub options: HashMap<String, String>,
+}
+
 /// CREATE SOURCE statement
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateSourceStatement {
@@ -123,12 +156,18 @@ pub struct CreateSourceStatement {
     pub columns: Vec<ColumnDef>,
     /// Watermark definition
     pub watermark: Option<WatermarkDef>,
-    /// Source connector options
+    /// Source connector options (from WITH clause)
     pub with_options: HashMap<String, String>,
     /// Whether to replace existing source
     pub or_replace: bool,
     /// Whether to skip if exists
     pub if_not_exists: bool,
+    /// Connector type (e.g., "KAFKA") from `FROM KAFKA (...)` syntax
+    pub connector_type: Option<String>,
+    /// Connector-specific options (from `FROM KAFKA (...)`)
+    pub connector_options: HashMap<String, String>,
+    /// Format specification (e.g., `FORMAT JSON`)
+    pub format: Option<FormatSpec>,
 }
 
 /// CREATE SINK statement
@@ -138,12 +177,22 @@ pub struct CreateSinkStatement {
     pub name: ObjectName,
     /// Input query or table
     pub from: SinkFrom,
-    /// Sink connector options
+    /// Sink connector options (from WITH clause)
     pub with_options: HashMap<String, String>,
     /// Whether to replace existing sink
     pub or_replace: bool,
     /// Whether to skip if exists
     pub if_not_exists: bool,
+    /// Optional WHERE filter expression
+    pub filter: Option<Expr>,
+    /// Connector type (e.g., "KAFKA") from `INTO KAFKA (...)` syntax
+    pub connector_type: Option<String>,
+    /// Connector-specific options (from `INTO KAFKA (...)`)
+    pub connector_options: HashMap<String, String>,
+    /// Format specification (e.g., `FORMAT JSON`)
+    pub format: Option<FormatSpec>,
+    /// Output options (from `WITH (key = ...)` after FORMAT)
+    pub output_options: HashMap<String, String>,
 }
 
 /// Source for a sink
@@ -404,6 +453,9 @@ mod tests {
             ]),
             or_replace: false,
             if_not_exists: true,
+            connector_type: None,
+            connector_options: HashMap::new(),
+            format: None,
         };
 
         // Check the statement fields
