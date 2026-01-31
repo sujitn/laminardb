@@ -55,7 +55,7 @@ impl StreamExecutor {
     /// Register a static reference table (e.g., from `CREATE TABLE`).
     ///
     /// Unlike source tables, these persist across cycles.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Public API for Phase 3 CREATE TABLE support
     pub fn register_table(
         &self,
         name: &str,
@@ -166,7 +166,7 @@ impl StreamExecutor {
     }
 
     /// Get the number of registered queries.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Public API for admin/observability queries
     pub fn query_count(&self) -> usize {
         self.queries.len()
     }

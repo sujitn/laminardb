@@ -40,12 +40,12 @@ pub struct SourceEntry {
     /// The underlying streaming source (type-erased via `ArrowRecord`).
     pub(crate) source: streaming::Source<ArrowRecord>,
     /// The underlying streaming sink (type-erased via `ArrowRecord`).
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reserved for Phase 3 connector manager sink routing
     pub(crate) sink: streaming::Sink<ArrowRecord>,
 }
 
 /// A registered sink in the catalog.
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for Phase 3 CREATE SINK execution
 pub(crate) struct SinkEntry {
     /// Sink name.
     pub(crate) name: String,
@@ -64,7 +64,7 @@ pub(crate) struct QueryEntry {
 }
 
 /// A registered stream in the catalog.
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for Phase 3 CREATE STREAM execution
 pub(crate) struct StreamEntry {
     /// Stream name.
     pub(crate) name: String,

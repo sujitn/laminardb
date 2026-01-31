@@ -46,7 +46,7 @@ impl Lsn {
 
     /// Returns the lower 32 bits (offset within segment).
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Intentional: extracts lower 32 bits of u64 LSN
     pub const fn offset(self) -> u32 {
         self.0 as u32
     }

@@ -146,7 +146,7 @@ impl CoreWalWriter {
     ///
     /// Returns an error if serialization or I/O fails.
     #[inline]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // core_id bounded by physical CPU count (< u16::MAX)
     pub fn append_put(&mut self, key: &[u8], value: &[u8]) -> Result<u64, PerCoreWalError> {
         let entry = PerCoreWalEntry::put(
             self.core_id as u16,
@@ -164,7 +164,7 @@ impl CoreWalWriter {
     ///
     /// Returns an error if serialization or I/O fails.
     #[inline]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // core_id bounded by physical CPU count (< u16::MAX)
     pub fn append_delete(&mut self, key: &[u8]) -> Result<u64, PerCoreWalError> {
         let entry = PerCoreWalEntry::delete(
             self.core_id as u16,
@@ -193,13 +193,13 @@ impl CoreWalWriter {
         let crc = crc32c::crc32c(&bytes);
 
         // Write record: [length: 4 bytes][crc32: 4 bytes][data: length bytes]
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // rkyv entry serialization is well below u32::MAX
         let len = bytes.len() as u32;
         self.writer.write_all(&len.to_le_bytes())?;
         self.writer.write_all(&crc.to_le_bytes())?;
         self.writer.write_all(&bytes)?;
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // usize → u64: lossless on 64-bit
         let bytes_len = bytes.len() as u64;
         self.position += RECORD_HEADER_SIZE + bytes_len;
         self.sequence += 1;
@@ -213,7 +213,7 @@ impl CoreWalWriter {
     /// # Errors
     ///
     /// Returns an error if serialization or I/O fails.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // core_id bounded by physical CPU count (< u16::MAX)
     pub fn append_checkpoint(&mut self, checkpoint_id: u64) -> Result<u64, PerCoreWalError> {
         let entry = PerCoreWalEntry::checkpoint(
             self.core_id as u16,
@@ -229,7 +229,7 @@ impl CoreWalWriter {
     /// # Errors
     ///
     /// Returns an error if serialization or I/O fails.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // core_id bounded by physical CPU count (< u16::MAX)
     pub fn append_epoch_barrier(&mut self) -> Result<u64, PerCoreWalError> {
         let entry = PerCoreWalEntry::epoch_barrier(
             self.core_id as u16,
@@ -244,7 +244,7 @@ impl CoreWalWriter {
     /// # Errors
     ///
     /// Returns an error if serialization or I/O fails.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // core_id bounded by physical CPU count (< u16::MAX)
     pub fn append_commit(
         &mut self,
         offsets: std::collections::HashMap<String, u64>,

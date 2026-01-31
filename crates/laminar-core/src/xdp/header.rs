@@ -221,7 +221,7 @@ impl PacketBuilder {
 
     /// Builds a packet with the given payload.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Packet payloads bounded by MTU (< u32::MAX)
     pub fn build(&self, payload: &[u8]) -> Vec<u8> {
         let header = LaminarHeader::with_sequence(
             self.partition_key,
@@ -238,7 +238,7 @@ impl PacketBuilder {
     /// Writes a packet to the given buffer.
     ///
     /// Returns the total packet size, or `None` if the buffer is too small.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Packet payloads bounded by MTU (< u32::MAX)
     pub fn build_into(&self, payload: &[u8], buffer: &mut [u8]) -> Option<usize> {
         let total_size = LaminarHeader::SIZE + payload.len();
         if buffer.len() < total_size {

@@ -362,7 +362,7 @@ impl Operator for PartitionedTopKOperator {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Checkpoint wire format uses u64 for counts
     fn restore(&mut self, state: OperatorState) -> Result<(), OperatorError> {
         if state.data.len() < 16 {
             return Err(OperatorError::SerializationFailed(

@@ -201,7 +201,7 @@ impl Default for DagBuilder {
 
 /// Builder for fan-out branches from a shared stage.
 pub struct FanOutBuilder {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Stored for future DAG visualization and error messages
     shared_node: String,
     branches: Vec<(String, DagNodeType, SchemaRef)>,
 }

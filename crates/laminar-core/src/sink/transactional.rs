@@ -235,6 +235,9 @@ impl<S: Sink> ExactlyOnceSink for TransactionalSink<S> {
         cp
     }
 
+    /// # Panics
+    ///
+    /// Will not panic — array conversions are guarded by length checks before `try_into().unwrap()`.
     #[allow(clippy::missing_panics_doc)]
     fn restore(&mut self, checkpoint: &SinkCheckpoint) -> Result<(), SinkError> {
         // Force-rollback any pending transaction

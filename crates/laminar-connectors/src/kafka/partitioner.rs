@@ -127,7 +127,7 @@ fn murmur2(data: &[u8]) -> u32 {
     let r: u32 = 24;
 
     let len = data.len();
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // MurmurHash2 spec: seed XOR with 32-bit length
     let mut h: u32 = seed ^ (len as u32);
 
     let chunks = len / 4;

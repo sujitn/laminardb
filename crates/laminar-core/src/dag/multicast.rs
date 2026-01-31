@@ -101,7 +101,7 @@ impl<T> MulticastBuffer<T> {
             read_positions: read_positions.into_boxed_slice(),
             capacity,
             mask: capacity - 1,
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation)] // Consumer count bounded by MAX_FAN_OUT (8)
             consumer_count: consumer_count as u32,
         }
     }

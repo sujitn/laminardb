@@ -396,7 +396,7 @@ pub struct LookupJoinOperator {
 impl LookupJoinOperator {
     /// Creates a new lookup join operator.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_micros() fits i64 for practical values
     pub fn new(config: LookupJoinConfig) -> Self {
         let operator_id = config.operator_id.clone().unwrap_or_else(|| {
             let num = LOOKUP_OPERATOR_COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -300,7 +300,7 @@ impl DagCheckpointCoordinator {
         let epoch = self.next_epoch;
         self.next_epoch += 1;
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // Timestamp ms fits i64 for ~292 years from epoch
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);

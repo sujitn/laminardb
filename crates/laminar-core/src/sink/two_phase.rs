@@ -249,7 +249,7 @@ pub struct TransactionLogEntry {
 impl TransactionLogEntry {
     /// Serialize to bytes
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Wire format uses u32 for string/collection lengths
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -278,6 +278,10 @@ impl TransactionLogEntry {
     }
 
     /// Deserialize from bytes
+    ///
+    /// # Panics
+    ///
+    /// Will not panic — all slice indexing is bounds-checked via `Option` returns.
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
@@ -373,7 +377,7 @@ impl TransactionLog {
     }
 
     /// Log a coordinator decision
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Timestamp ms fits i64 for ~292 years from epoch
     pub fn log_decision(
         &mut self,
         tx_id: &TransactionId,
@@ -467,7 +471,7 @@ impl TransactionLog {
 
     /// Serialize the entire log to bytes
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Wire format uses u32 for entry/string lengths
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 

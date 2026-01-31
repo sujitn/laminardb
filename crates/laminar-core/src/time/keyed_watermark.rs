@@ -298,7 +298,7 @@ pub struct KeyedWatermarkTracker<K: Hash + Eq + Clone> {
 impl<K: Hash + Eq + Clone> KeyedWatermarkTracker<K> {
     /// Creates a new keyed watermark tracker with the given configuration.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn new(config: KeyedWatermarkConfig) -> Self {
         let bounded_delay_ms = config.bounded_delay.as_millis() as i64;
         Self {

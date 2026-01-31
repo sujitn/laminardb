@@ -476,7 +476,7 @@ impl IncrementalCheckpointManager {
         let state_path = checkpoint_path.join("state.bin");
         fs::write(&state_path, state_data)?;
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // usize → u64: lossless on 64-bit, acceptable on 32-bit
         {
             metadata.size_bytes = state_data.len() as u64;
         }

@@ -209,7 +209,7 @@ fn build_array_from_json(
                         expected: "Float32".into(),
                         message: format!("cannot convert {n}"),
                     })?;
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(clippy::cast_possible_truncation)] // f64 → f32: precision loss acceptable for Float32 columns
                     builder.append_value(v as f32);
                 }
                 Some(Value::Null) | None => builder.append_null(),

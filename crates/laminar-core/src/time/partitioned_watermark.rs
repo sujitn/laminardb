@@ -275,7 +275,7 @@ impl PartitionedWatermarkTracker {
         self.source_partition_counts[source_id] = num_partitions;
 
         // Create partition state for each partition
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // Partition count bounded by Kafka max (< u32::MAX)
         for partition in 0..num_partitions {
             let pid = PartitionId::new(source_id, partition as u32);
             self.partitions.entry(pid).or_default();

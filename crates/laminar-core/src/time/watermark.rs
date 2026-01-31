@@ -109,7 +109,7 @@ impl BoundedOutOfOrdernessGenerator {
 
     /// Creates a new generator from a `Duration`.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn from_duration(max_out_of_orderness: Duration) -> Self {
         Self::new(max_out_of_orderness.as_millis() as i64)
     }

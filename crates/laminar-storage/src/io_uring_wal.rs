@@ -156,7 +156,7 @@ mod linux_impl {
             })?;
 
             // Write record format: [length: 4][crc32: 4][data: length]
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation)] // WAL records are validated < u32::MAX above
             let len = bytes.len() as u32;
             let header_size = 8usize;
             let total_size = header_size + bytes.len();

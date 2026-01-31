@@ -158,7 +158,7 @@ pub fn resolve_config_vars(
 ///
 /// Covers the most commonly used SQL types. Unrecognized types fall back
 /// to `Utf8` so that they can still be stored as text.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation)] // SQL precision/scale values are small (< 38)
 pub fn sql_type_to_arrow(sql_type: &sqlparser::ast::DataType) -> arrow::datatypes::DataType {
     use arrow::datatypes::DataType as AT;
     use sqlparser::ast::DataType as ST;
@@ -276,7 +276,7 @@ pub fn expr_to_bool(expr: Option<&sqlparser::ast::Expr>) -> Option<bool> {
 ///
 /// Returns `DbError::InsertError` if the batch cannot be constructed
 /// (e.g. column count mismatch).
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation)] // SQL literal values converted to Arrow numeric types
 pub fn sql_values_to_record_batch(
     schema: &arrow::datatypes::SchemaRef,
     values: &[Vec<sqlparser::ast::Expr>],

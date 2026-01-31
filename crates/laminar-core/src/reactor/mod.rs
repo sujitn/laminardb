@@ -360,7 +360,7 @@ impl Reactor {
     }
 
     /// Get current processing time in microseconds since reactor start
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Saturating conversion handles overflow on next line
     fn get_processing_time(&self) -> i64 {
         // Saturating conversion - after ~292 years this will saturate at i64::MAX
         let micros = self.start_time.elapsed().as_micros();

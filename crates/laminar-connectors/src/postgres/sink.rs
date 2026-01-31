@@ -433,7 +433,7 @@ impl SinkConnector for PostgresSink {
         Ok(())
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Record batch row/column counts fit in narrower types
     async fn write_batch(
         &mut self,
         batch: &RecordBatch,

@@ -425,7 +425,7 @@ impl NumaAllocator {
 ///
 /// Wraps a NUMA-allocated buffer with automatic cleanup.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for NUMA-local allocations in thread-per-core runtime
 pub struct NumaBuffer {
     ptr: *mut u8,
     size: usize,
@@ -436,7 +436,7 @@ pub struct NumaBuffer {
 // SAFETY: NumaBuffer can be sent between threads
 unsafe impl Send for NumaBuffer {}
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for NUMA-local allocations in thread-per-core runtime
 impl NumaBuffer {
     /// Default alignment for NUMA buffers (cache line size).
     const DEFAULT_ALIGN: usize = 64;
@@ -531,7 +531,7 @@ impl Drop for NumaBuffer {
 /// Unlike `Vec`, this allocates memory on a specified NUMA node for
 /// better memory locality in thread-per-core architectures.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for NUMA-aware typed collections
 pub struct NumaVec<T> {
     ptr: *mut T,
     len: usize,
@@ -542,7 +542,7 @@ pub struct NumaVec<T> {
 // SAFETY: NumaVec is Send if T is Send
 unsafe impl<T: Send> Send for NumaVec<T> {}
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for NUMA-aware typed collections
 impl<T> NumaVec<T> {
     /// Create a new empty NUMA-local vector.
     #[must_use]

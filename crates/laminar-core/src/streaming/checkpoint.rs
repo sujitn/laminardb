@@ -367,7 +367,7 @@ impl StreamCheckpoint {
     /// [num_ops: 4][ [name_len:4][name][data_len:4][data] ... ]
     /// ```
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Wire format uses u32 for collection lengths
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256);
 
@@ -647,7 +647,7 @@ impl StreamCheckpointManager {
     /// Triggers a checkpoint, capturing current source/sink state.
     ///
     /// Returns the checkpoint ID, or `None` if checkpointing is disabled.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Timestamp ms fits i64 for ~292 years from epoch
     pub fn trigger(&mut self) -> Option<u64> {
         if !self.enabled {
             return None;

@@ -90,4 +90,8 @@ pub enum DbError {
     /// Pipeline error (start/shutdown lifecycle)
     #[error("Pipeline error: {0}")]
     Pipeline(String),
+
+    /// Materialized view error
+    #[error("Materialized view error: {0}")]
+    MaterializedView(String),
 }

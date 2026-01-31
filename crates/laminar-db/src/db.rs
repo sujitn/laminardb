@@ -74,6 +74,7 @@ pub struct LaminarDB {
     checkpoint_manager: parking_lot::Mutex<StreamCheckpointManager>,
     connector_manager: parking_lot::Mutex<crate::connector_manager::ConnectorManager>,
     connector_registry: Arc<laminar_connectors::registry::ConnectorRegistry>,
+    mv_registry: parking_lot::Mutex<laminar_core::mv::MvRegistry>,
     state: std::sync::atomic::AtomicU8,
     /// Handle to the background processing task (if running).
     runtime_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -139,6 +140,7 @@ impl LaminarDB {
                 crate::connector_manager::ConnectorManager::new(),
             ),
             connector_registry,
+            mv_registry: parking_lot::Mutex::new(laminar_core::mv::MvRegistry::new()),
             state: std::sync::atomic::AtomicU8::new(STATE_CREATED),
             runtime_handle: parking_lot::Mutex::new(None),
             shutdown_signal: Arc::new(tokio::sync::Notify::new()),
@@ -263,17 +265,11 @@ impl LaminarDB {
                 self.handle_drop_stream(name, *if_exists)
             }
             StreamingStatement::DropMaterializedView {
-                name, if_exists, ..
+                name,
+                if_exists,
+                cascade,
             } => {
-                // For now, treat materialized views like queries
-                let name_str = name.to_string();
-                if !if_exists {
-                    // Verify it exists (future: MV catalog)
-                }
-                Ok(ExecuteResult::Ddl(DdlInfo {
-                    statement_type: "DROP MATERIALIZED VIEW".to_string(),
-                    object_name: name_str,
-                }))
+                self.handle_drop_materialized_view(name, *if_exists, *cascade)
             }
             StreamingStatement::Show(cmd) => {
                 let batch = match cmd {
@@ -281,8 +277,7 @@ impl LaminarDB {
                     ShowCommand::Sinks => self.build_show_sinks(),
                     ShowCommand::Queries => self.build_show_queries(),
                     ShowCommand::MaterializedViews => {
-                        // Placeholder - no MV catalog yet
-                        self.build_show_sources()
+                        self.build_show_materialized_views()
                     }
                     ShowCommand::Streams => self.build_show_streams(),
                 };
@@ -296,18 +291,17 @@ impl LaminarDB {
             StreamingStatement::Explain { statement } => {
                 self.handle_explain(statement)
             }
-            StreamingStatement::CreateMaterializedView { name, .. } => {
-                // Treat CREATE MV as a continuous query
-                let name_str = name.to_string();
-                // Execute the backing query
-                let result = self.handle_query(sql).await?;
-                match result {
-                    ExecuteResult::Query(_) => Ok(ExecuteResult::Ddl(DdlInfo {
-                        statement_type: "CREATE MATERIALIZED VIEW".to_string(),
-                        object_name: name_str,
-                    })),
-                    other => Ok(other),
-                }
+            StreamingStatement::CreateMaterializedView {
+                name,
+                query,
+                or_replace,
+                if_not_exists,
+                ..
+            } => {
+                self.handle_create_materialized_view(
+                    sql, name, query, *or_replace, *if_not_exists,
+                )
+                .await
             }
         }
     }
@@ -366,6 +360,9 @@ impl LaminarDB {
                 );
             }
         }
+
+        // Register as a base table in the MV registry for dependency tracking
+        self.mv_registry.lock().register_base_table(name);
 
         // Also register in the planner
         {
@@ -1364,6 +1361,157 @@ impl LaminarDB {
             .count()
     }
 
+    /// Handle CREATE MATERIALIZED VIEW statement.
+    ///
+    /// Registers the view in the MV registry with dependency tracking,
+    /// then executes the backing query through DataFusion to obtain the
+    /// output schema.
+    async fn handle_create_materialized_view(
+        &self,
+        sql: &str,
+        name: &sqlparser::ast::ObjectName,
+        query: &StreamingStatement,
+        or_replace: bool,
+        if_not_exists: bool,
+    ) -> Result<ExecuteResult, DbError> {
+        let name_str = name.to_string();
+
+        // Check if the MV already exists
+        {
+            let registry = self.mv_registry.lock();
+            if registry.get(&name_str).is_some() {
+                if if_not_exists {
+                    return Ok(ExecuteResult::Ddl(DdlInfo {
+                        statement_type: "CREATE MATERIALIZED VIEW".to_string(),
+                        object_name: name_str,
+                    }));
+                }
+                if !or_replace {
+                    return Err(DbError::MaterializedView(format!(
+                        "Materialized view '{name_str}' already exists"
+                    )));
+                }
+            }
+        }
+
+        // Convert the inner query to SQL for execution
+        let query_sql = streaming_statement_to_sql(query);
+
+        // Execute the backing query to get the output schema
+        let result = self.handle_query(&query_sql).await?;
+        let schema = match &result {
+            ExecuteResult::Query(qh) => qh.schema().clone(),
+            _ => Arc::new(Schema::new(vec![Field::new(
+                "result",
+                DataType::Utf8,
+                true,
+            )])),
+        };
+
+        // Discover source references: check which catalog sources and
+        // existing MVs appear in the query SQL
+        let catalog_sources = self.catalog.list_sources();
+        let mut sources: Vec<String> = catalog_sources
+            .into_iter()
+            .filter(|s| query_sql.contains(s.as_str()))
+            .collect();
+
+        // Also check existing MVs as potential sources (cascading MVs)
+        {
+            let registry = self.mv_registry.lock();
+            for view in registry.views() {
+                if view.name != name_str && query_sql.contains(view.name.as_str()) {
+                    sources.push(view.name.clone());
+                }
+            }
+        }
+
+        // Register in the MV registry
+        {
+            let mv = laminar_core::mv::MaterializedView::new(
+                &name_str,
+                sql,
+                sources,
+                schema,
+            );
+
+            let mut registry = self.mv_registry.lock();
+
+            if or_replace {
+                // Drop existing view (and dependents) before re-registering
+                let _ = registry.unregister_cascade(&name_str);
+            }
+
+            registry.register(mv).map_err(|e| {
+                DbError::MaterializedView(e.to_string())
+            })?;
+        }
+
+        Ok(ExecuteResult::Ddl(DdlInfo {
+            statement_type: "CREATE MATERIALIZED VIEW".to_string(),
+            object_name: name_str,
+        }))
+    }
+
+    /// Handle DROP MATERIALIZED VIEW statement.
+    fn handle_drop_materialized_view(
+        &self,
+        name: &sqlparser::ast::ObjectName,
+        if_exists: bool,
+        cascade: bool,
+    ) -> Result<ExecuteResult, DbError> {
+        let name_str = name.to_string();
+        let mut registry = self.mv_registry.lock();
+
+        let result = if cascade {
+            registry.unregister_cascade(&name_str)
+        } else {
+            registry.unregister(&name_str).map(|v| vec![v])
+        };
+
+        match result {
+            Ok(_) => Ok(ExecuteResult::Ddl(DdlInfo {
+                statement_type: "DROP MATERIALIZED VIEW".to_string(),
+                object_name: name_str,
+            })),
+            Err(_) if if_exists => Ok(ExecuteResult::Ddl(DdlInfo {
+                statement_type: "DROP MATERIALIZED VIEW".to_string(),
+                object_name: name_str,
+            })),
+            Err(e) => Err(DbError::MaterializedView(e.to_string())),
+        }
+    }
+
+    /// Build a SHOW MATERIALIZED VIEWS metadata result.
+    fn build_show_materialized_views(&self) -> RecordBatch {
+        let registry = self.mv_registry.lock();
+        let mut names = Vec::new();
+        let mut sqls = Vec::new();
+        let mut states = Vec::new();
+        for view in registry.views() {
+            names.push(view.name.clone());
+            sqls.push(view.sql.clone());
+            states.push(format!("{:?}", view.state));
+        }
+        let names_ref: Vec<&str> = names.iter().map(String::as_str).collect();
+        let sqls_ref: Vec<&str> = sqls.iter().map(String::as_str).collect();
+        let states_ref: Vec<&str> = states.iter().map(String::as_str).collect();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("view_name", DataType::Utf8, false),
+            Field::new("sql", DataType::Utf8, false),
+            Field::new("state", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(names_ref)),
+                Arc::new(StringArray::from(sqls_ref)),
+                Arc::new(StringArray::from(states_ref)),
+            ],
+        )
+        .expect("show materialized views: schema matches columns")
+    }
+
     /// Build a SHOW SOURCES metadata result.
     fn build_show_sources(&self) -> RecordBatch {
         let sources = self.sources();
@@ -1524,6 +1672,7 @@ impl std::fmt::Debug for LaminarDB {
         f.debug_struct("LaminarDB")
             .field("sources", &self.catalog.list_sources().len())
             .field("sinks", &self.catalog.list_sinks().len())
+            .field("materialized_views", &self.mv_registry.lock().len())
             .field("checkpoint_enabled", &self.is_checkpoint_enabled())
             .field("shutdown", &self.is_closed())
             .finish_non_exhaustive()
@@ -2049,9 +2198,28 @@ mod tests {
     async fn test_connector_registry_accessor() {
         let db = LaminarDB::open().unwrap();
         let registry = db.connector_registry();
-        // No connectors registered without feature flags
-        assert!(registry.list_sources().is_empty());
-        assert!(registry.list_sinks().is_empty());
+
+        // With feature flags enabled, built-in connectors are auto-registered.
+        // Without any features, registry should be empty.
+        let mut expected_sources = 0;
+        let mut expected_sinks = 0;
+
+        #[cfg(feature = "kafka")]
+        {
+            expected_sources += 1; // kafka source
+            expected_sinks += 1; // kafka sink
+        }
+        #[cfg(feature = "postgres-cdc")]
+        {
+            expected_sources += 1; // postgres CDC source
+        }
+        #[cfg(feature = "postgres-sink")]
+        {
+            expected_sinks += 1; // postgres sink
+        }
+
+        assert_eq!(registry.list_sources().len(), expected_sources);
+        assert_eq!(registry.list_sinks().len(), expected_sinks);
     }
 
     #[tokio::test]

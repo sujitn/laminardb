@@ -239,7 +239,7 @@ impl SourceConnector for KafkaSource {
         Ok(())
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Kafka partition/offset values fit in narrower types
     async fn poll_batch(
         &mut self,
         max_records: usize,

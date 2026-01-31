@@ -341,7 +341,7 @@ impl ConnectorBridgeRuntime {
         }
 
         // 7. Update metrics
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // u64 μs won't overflow for ~584K years
         let elapsed_us = start.elapsed().as_micros() as u64;
         self.metrics
             .checkpoints_completed

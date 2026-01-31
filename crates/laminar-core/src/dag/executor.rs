@@ -322,7 +322,7 @@ impl DagExecutor {
         let mut states = FxHashMap::default();
         for (idx, op) in self.operators.iter().enumerate() {
             if let Some(operator) = op {
-                #[allow(clippy::cast_possible_truncation)]
+                #[allow(clippy::cast_possible_truncation)] // DAG node count bounded by topology (< u32::MAX)
                 let node_id = NodeId(idx as u32);
                 states.insert(node_id, operator.checkpoint());
             }

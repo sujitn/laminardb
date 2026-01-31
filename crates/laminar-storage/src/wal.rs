@@ -222,7 +222,7 @@ impl WriteAheadLog {
                 u32::MAX
             )));
         }
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // Validated < u32::MAX on line 215
         let len = bytes.len() as u32;
         self.writer.write_all(&len.to_le_bytes())?;
         self.writer.write_all(&crc.to_le_bytes())?;

@@ -126,7 +126,7 @@ impl AsofJoinConfig {
 
     /// Returns the tolerance in milliseconds, or `i64::MAX` if unlimited.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn tolerance_ms(&self) -> i64 {
         self.tolerance
             .map_or(i64::MAX, |d| d.as_millis() as i64)
