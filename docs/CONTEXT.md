@@ -8,25 +8,23 @@
 **Date**: 2026-01-31
 
 ### What Was Accomplished
+- **F027: PostgreSQL CDC Source** - IMPLEMENTATION COMPLETE (107 new tests, 178 total connector tests)
+  - `cdc/postgres/lsn.rs`: LSN type with parsing, display, ordering, arithmetic (13 tests)
+  - `cdc/postgres/types.rs`: 28 PG OID constants, PgColumn, pg_type_to_arrow mapping (13 tests)
+  - `cdc/postgres/config.rs`: PostgresCdcConfig, SslMode, SnapshotMode, ConnectorConfig parsing (14 tests)
+  - `cdc/postgres/decoder.rs`: Full pgoutput binary protocol parser — Begin, Commit, Relation, Insert, Update, Delete, Truncate, Origin, Type messages (19 tests)
+  - `cdc/postgres/schema.rs`: RelationInfo, RelationCache, cdc_envelope_schema (8 tests)
+  - `cdc/postgres/changelog.rs`: Z-set ChangeEvent, tuple_to_json, events_to_record_batch (5 tests)
+  - `cdc/postgres/metrics.rs`: CdcMetrics with 11 atomic counters (3 tests)
+  - `cdc/postgres/source.rs`: PostgresCdcSource implementing SourceConnector — transaction buffering, table filtering, checkpoint/restore, health checks (28 tests)
+  - `cdc/postgres/mod.rs`: Re-exports, register_postgres_cdc factory, config keys (2 tests)
+  - Feature-gated behind `postgres-cdc` Cargo feature
+  - CDC envelope schema: _table, _op, _lsn, _ts_ms, _before, _after columns
+  - All clippy clean with `-D warnings` (pedantic)
+
+Previous session (2026-01-31):
 - **F027: PostgreSQL CDC Source** - SPEC UPDATED to v2.0 based on comprehensive 2026 research
-  - Replaced `tokio-postgres` replication approach with `pgwire-replication` crate (split control/replication plane)
-  - Updated snapshot approach: exported snapshot from slot creation (not SERIALIZABLE txn)
-  - Added TOAST handling strategy (REPLICA IDENTITY FULL default + stateful cache mode)
-  - Added pgoutput protocol v1-v4 versioning and negotiation
-  - Added PG 15+ publication features (row filtering, column lists)
-  - Added WAL retention safety section (`max_slot_wal_keep_size`, idle slot detection)
-  - Added `pg_logical_emit_message()` heartbeat for idle slot advancement
-  - Updated competitive comparison and PostgreSQL version matrix
-  - Added Appendix D: 2026 Research Findings with all sources
 - **F027B: PostgreSQL Sink Connector** - NEW SPEC CREATED (v1.0)
-  - Two write strategies: COPY BINARY (>500K rows/sec append) and UNNEST upsert (>100K rows/sec)
-  - Co-transactional exactly-once: data + epoch in same PG transaction (no distributed 2PC)
-  - `deadpool-postgres` connection pooling (no deadlocks, no background tasks)
-  - `pgpq` crate for zero-copy Arrow→PG binary COPY encoding
-  - Changelog/retraction support (F063 Z-set: split INSERT/DELETE by `_op`)
-  - Auto-create table from Arrow schema
-  - 6-phase implementation roadmap, 30+ test target
-  - Full type mapping (Arrow↔PostgreSQL), SQL DDL examples, Rust API examples
 
 Previous session (2026-01-30):
 - **F-DAG-004: DAG Checkpointing** - COMPLETE (18 new tests, 84 total DAG tests, 1082 core tests)
@@ -62,25 +60,24 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1666 base + 118 kafka = 1784 (1082 core + 365 sql + 120 storage + 28 laminar-db + 189 connectors)
+**Total tests**: 1666 base + 107 postgres-cdc + 118 kafka = 1891 (1082 core + 365 sql + 120 storage + 28 laminar-db + 178 connectors-base + 118 kafka-only)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 14/29 features COMPLETE (48%)**
+**Phase 3 Connectors & Integration: 15/29 features COMPLETE (52%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - DAG pipeline complete (F-DAG-001, F-DAG-002, F-DAG-003, F-DAG-004)
 - Kafka Source Connector complete (F025)
 - Kafka Sink Connector complete (F026)
-- F027 PostgreSQL CDC Source spec updated to v2.0 (research-reviewed)
+- PostgreSQL CDC Source complete (F027) — 107 tests, full pgoutput decoder
 - F027B PostgreSQL Sink spec created (v1.0)
-- Next: Implement F027 (PostgreSQL CDC Source code)
+- Next: Implement F027B (PostgreSQL Sink code)
 
 ### Immediate Next Steps
-1. **F027: PostgreSQL CDC Source** — Implement code (spec v2.0 ready)
-2. **F027B: PostgreSQL Sink** — Implement code (spec v1.0 ready)
-3. F031: Delta Lake Sink
-4. F028: MySQL CDC Source
-5. F-DAG-005: SQL & MV Integration
+1. **F027B: PostgreSQL Sink** — Implement code (spec v1.0 ready)
+2. F031: Delta Lake Sink
+3. F028: MySQL CDC Source
+4. F-DAG-005: SQL & MV Integration
 
 ### Open Issues
 None.
@@ -208,6 +205,15 @@ laminar-connectors/src/
     avro_serializer   # AvroSerializer (arrow-avro Writer, Confluent wire format)
     partitioner       # KafkaPartitioner trait, KeyHash/RoundRobin/Sticky
     sink_metrics      # KafkaSinkMetrics (AtomicU64 counters)
+  cdc/postgres/       # F027: PostgreSQL CDC Source Connector
+    lsn               # LSN type (X/Y hex format, ordering, arithmetic)
+    types             # 28 PG OID constants, PgColumn, pg_type_to_arrow mapping
+    config            # PostgresCdcConfig, SslMode, SnapshotMode
+    decoder           # pgoutput binary protocol parser (9 message types)
+    schema            # RelationInfo, RelationCache, cdc_envelope_schema
+    changelog         # Z-set ChangeEvent, tuple_to_json, events_to_record_batch
+    metrics           # CdcMetrics (11 atomic counters)
+    source            # PostgresCdcSource (SourceConnector impl, transaction buffering)
   serde/              # RecordDeserializer/RecordSerializer traits
     json, csv, raw, debezium  # Format implementations
   connector           # SourceConnector/SinkConnector traits
