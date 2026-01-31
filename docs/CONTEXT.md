@@ -8,49 +8,33 @@
 **Date**: 2026-01-31
 
 ### What Was Accomplished
-- **F027: PostgreSQL CDC Source** - IMPLEMENTATION COMPLETE (107 new tests, 178 total connector tests)
-  - `cdc/postgres/lsn.rs`: LSN type with parsing, display, ordering, arithmetic (13 tests)
-  - `cdc/postgres/types.rs`: 28 PG OID constants, PgColumn, pg_type_to_arrow mapping (13 tests)
-  - `cdc/postgres/config.rs`: PostgresCdcConfig, SslMode, SnapshotMode, ConnectorConfig parsing (14 tests)
-  - `cdc/postgres/decoder.rs`: Full pgoutput binary protocol parser — Begin, Commit, Relation, Insert, Update, Delete, Truncate, Origin, Type messages (19 tests)
-  - `cdc/postgres/schema.rs`: RelationInfo, RelationCache, cdc_envelope_schema (8 tests)
-  - `cdc/postgres/changelog.rs`: Z-set ChangeEvent, tuple_to_json, events_to_record_batch (5 tests)
-  - `cdc/postgres/metrics.rs`: CdcMetrics with 11 atomic counters (3 tests)
-  - `cdc/postgres/source.rs`: PostgresCdcSource implementing SourceConnector — transaction buffering, table filtering, checkpoint/restore, health checks (28 tests)
-  - `cdc/postgres/mod.rs`: Re-exports, register_postgres_cdc factory, config keys (2 tests)
-  - Feature-gated behind `postgres-cdc` Cargo feature
-  - CDC envelope schema: _table, _op, _lsn, _ts_ms, _before, _after columns
-  - All clippy clean with `-D warnings` (pedantic)
+- **F027B: PostgreSQL Sink** - IMPLEMENTATION COMPLETE (84 new tests, 155 total connector tests with postgres-sink)
+  - `postgres/types.rs`: Arrow→PG type mapping — DDL types, UNNEST array casts, SQL types (12 tests)
+  - `postgres/sink_config.rs`: PostgresSinkConfig with WriteMode, DeliveryGuarantee, SslMode enums, validation, ConnectorConfig parsing (20 tests)
+  - `postgres/sink_metrics.rs`: 9 AtomicU64 counters — records, bytes, errors, batches, copy/upsert ops, epochs, changelog deletes (7 tests)
+  - `postgres/sink.rs`: PostgresSink implementing SinkConnector — COPY BINARY SQL, UNNEST upsert SQL, DELETE SQL, DDL generation, co-transactional epoch commit/recover SQL, Z-set changelog splitting, batch buffering with size/time flush triggers (41 tests)
+  - `postgres/mod.rs`: Re-exports, register_postgres_sink factory, 18 config key specs (4 tests)
+  - Feature-gated behind `postgres-sink` Cargo feature
+  - Two write strategies: Append (COPY BINARY >500K rows/sec) and Upsert (INSERT...ON CONFLICT DO UPDATE with UNNEST)
+  - Exactly-once via co-transactional offset storage (_laminardb_sink_offsets table)
+  - Z-set changelog support: splits batches by _op column into inserts (I/U/r) and deletes (D)
+  - All clippy clean with `-D warnings`
 
 Previous session (2026-01-31):
-- **F027: PostgreSQL CDC Source** - SPEC UPDATED to v2.0 based on comprehensive 2026 research
+- **F027: PostgreSQL CDC Source** - IMPLEMENTATION COMPLETE (107 new tests, 178 total connector tests)
+  - Full pgoutput binary protocol parser (9 message types)
+  - CDC envelope schema: _table, _op, _lsn, _ts_ms, _before, _after columns
+  - Feature-gated behind `postgres-cdc` Cargo feature
+
+Previous session (2026-01-31):
+- **F027: PostgreSQL CDC Source** - SPEC UPDATED to v2.0
 - **F027B: PostgreSQL Sink Connector** - NEW SPEC CREATED (v1.0)
 
 Previous session (2026-01-30):
-- **F-DAG-004: DAG Checkpointing** - COMPLETE (18 new tests, 84 total DAG tests, 1082 core tests)
-  - `dag/checkpoint.rs`: Chandy-Lamport barrier checkpointing (~340 lines)
-    - `CheckpointBarrier`, `BarrierType::Aligned`, `CheckpointId`
-    - `BarrierAligner`: buffers events at fan-in (MPSC) nodes until all inputs deliver barrier
-    - `DagCheckpointCoordinator`: Ring 1 orchestrator — trigger, track progress, finalize snapshots
-    - `DagCheckpointConfig`: interval (60s), alignment_timeout (10s), max_retained (3)
-  - `dag/recovery.rs`: Snapshot and recovery management (~220 lines)
-    - `DagCheckpointSnapshot` (Serialize/Deserialize): node_states, source_offsets, watermark
-    - `SerializableOperatorState`: serde-compatible form of `OperatorState`
-    - `RecoveredDagState`: operator states + source offsets + watermark
-    - `DagRecoveryManager`: add/recover_latest/recover_by_id
-  - `dag/error.rs`: 5 new error variants
-    - `CheckpointInProgress`, `NoCheckpointInProgress`, `CheckpointIncomplete`, `CheckpointNotFound`, `RestoreFailed`
-  - `dag/executor.rs`: 4 new methods + `input_counts` field
-    - `restore()`, `inject_events()`, `input_count()`, `process_checkpoint_barrier()`
-  - `dag/mod.rs`: module declarations + re-exports for checkpoint and recovery
-  - All clippy clean with `-D warnings`
-
-Previous session (2026-01-30):
-- F026: Kafka Sink Connector - COMPLETE (51 new sink tests, 189 total connector tests with kafka feature)
+- F-DAG-004: DAG Checkpointing - COMPLETE (18 new tests, 84 total DAG tests)
+- F026: Kafka Sink Connector - COMPLETE (51 new sink tests)
 - F025: Kafka Source Connector - COMPLETE (67 tests)
-
-Previous session (2026-01-30):
-- F-DAG-003: DAG Executor - COMPLETE (21 tests, 66 total DAG tests)
+- F-DAG-003: DAG Executor - COMPLETE (21 tests)
 - F-DAG-002: Multicast & Routing - COMPLETE (16 tests)
 - F-DAG-001: Core DAG Topology - COMPLETE (29 tests)
 
@@ -60,24 +44,24 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1666 base + 107 postgres-cdc + 118 kafka = 1891 (1082 core + 365 sql + 120 storage + 28 laminar-db + 178 connectors-base + 118 kafka-only)
+**Total tests**: 1666 base + 84 postgres-sink + 107 postgres-cdc + 118 kafka = 1975 (1082 core + 365 sql + 120 storage + 28 laminar-db + 155 connectors-base-with-pg-sink + 107 postgres-cdc-only + 118 kafka-only)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 15/29 features COMPLETE (52%)**
+**Phase 3 Connectors & Integration: 16/29 features COMPLETE (55%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - DAG pipeline complete (F-DAG-001, F-DAG-002, F-DAG-003, F-DAG-004)
 - Kafka Source Connector complete (F025)
 - Kafka Sink Connector complete (F026)
 - PostgreSQL CDC Source complete (F027) — 107 tests, full pgoutput decoder
-- F027B PostgreSQL Sink spec created (v1.0)
-- Next: Implement F027B (PostgreSQL Sink code)
+- PostgreSQL Sink complete (F027B) — 84 tests, COPY BINARY + upsert + exactly-once
+- Next: F031 Delta Lake Sink or F028 MySQL CDC Source
 
 ### Immediate Next Steps
-1. **F027B: PostgreSQL Sink** — Implement code (spec v1.0 ready)
-2. F031: Delta Lake Sink
-3. F028: MySQL CDC Source
-4. F-DAG-005: SQL & MV Integration
+1. F031: Delta Lake Sink
+2. F028: MySQL CDC Source
+3. F-DAG-005: SQL & MV Integration
+4. F034: Connector SDK
 
 ### Open Issues
 None.
@@ -205,6 +189,11 @@ laminar-connectors/src/
     avro_serializer   # AvroSerializer (arrow-avro Writer, Confluent wire format)
     partitioner       # KafkaPartitioner trait, KeyHash/RoundRobin/Sticky
     sink_metrics      # KafkaSinkMetrics (AtomicU64 counters)
+  postgres/           # F027B: PostgreSQL Sink Connector
+    types             # Arrow→PG type mapping (DDL, UNNEST casts, SQL types)
+    sink_config       # PostgresSinkConfig, WriteMode, DeliveryGuarantee, SslMode
+    sink_metrics      # PostgresSinkMetrics (9 AtomicU64 counters)
+    sink              # PostgresSink (SinkConnector impl, COPY BINARY + upsert + changelog)
   cdc/postgres/       # F027: PostgreSQL CDC Source Connector
     lsn               # LSN type (X/Y hex format, ordering, arithmetic)
     types             # 28 PG OID constants, PgColumn, pg_type_to_arrow mapping

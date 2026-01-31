@@ -70,5 +70,9 @@ pub mod kafka;
 /// Change Data Capture connectors for databases.
 pub mod cdc;
 
+/// PostgreSQL sink connector.
+#[cfg(feature = "postgres-sink")]
+pub mod postgres;
+
 /// Lookup table support for enrichment joins.
 pub mod lookup;
