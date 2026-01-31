@@ -5,9 +5,30 @@
 
 ## Last Session
 
-**Date**: 2026-01-30
+**Date**: 2026-01-31
 
 ### What Was Accomplished
+- **F027: PostgreSQL CDC Source** - SPEC UPDATED to v2.0 based on comprehensive 2026 research
+  - Replaced `tokio-postgres` replication approach with `pgwire-replication` crate (split control/replication plane)
+  - Updated snapshot approach: exported snapshot from slot creation (not SERIALIZABLE txn)
+  - Added TOAST handling strategy (REPLICA IDENTITY FULL default + stateful cache mode)
+  - Added pgoutput protocol v1-v4 versioning and negotiation
+  - Added PG 15+ publication features (row filtering, column lists)
+  - Added WAL retention safety section (`max_slot_wal_keep_size`, idle slot detection)
+  - Added `pg_logical_emit_message()` heartbeat for idle slot advancement
+  - Updated competitive comparison and PostgreSQL version matrix
+  - Added Appendix D: 2026 Research Findings with all sources
+- **F027B: PostgreSQL Sink Connector** - NEW SPEC CREATED (v1.0)
+  - Two write strategies: COPY BINARY (>500K rows/sec append) and UNNEST upsert (>100K rows/sec)
+  - Co-transactional exactly-once: data + epoch in same PG transaction (no distributed 2PC)
+  - `deadpool-postgres` connection pooling (no deadlocks, no background tasks)
+  - `pgpq` crate for zero-copy Arrow→PG binary COPY encoding
+  - Changelog/retraction support (F063 Z-set: split INSERT/DELETE by `_op`)
+  - Auto-create table from Arrow schema
+  - 6-phase implementation roadmap, 30+ test target
+  - Full type mapping (Arrow↔PostgreSQL), SQL DDL examples, Rust API examples
+
+Previous session (2026-01-30):
 - **F-DAG-004: DAG Checkpointing** - COMPLETE (18 new tests, 84 total DAG tests, 1082 core tests)
   - `dag/checkpoint.rs`: Chandy-Lamport barrier checkpointing (~340 lines)
     - `CheckpointBarrier`, `BarrierType::Aligned`, `CheckpointId`
@@ -44,19 +65,22 @@ Previous session (2026-01-28):
 **Total tests**: 1666 base + 118 kafka = 1784 (1082 core + 365 sql + 120 storage + 28 laminar-db + 189 connectors)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 14/28 features COMPLETE (50%)**
+**Phase 3 Connectors & Integration: 14/29 features COMPLETE (48%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db, laminardb crates)
 - DAG pipeline complete (F-DAG-001, F-DAG-002, F-DAG-003, F-DAG-004)
 - Kafka Source Connector complete (F025)
 - Kafka Sink Connector complete (F026)
-- Next: F027 (PostgreSQL CDC Source)
+- F027 PostgreSQL CDC Source spec updated to v2.0 (research-reviewed)
+- F027B PostgreSQL Sink spec created (v1.0)
+- Next: Implement F027 (PostgreSQL CDC Source code)
 
 ### Immediate Next Steps
-1. F027: PostgreSQL CDC Source
-2. F031: Delta Lake Sink
-3. F028: MySQL CDC Source
-4. F-DAG-005: SQL & MV Integration
+1. **F027: PostgreSQL CDC Source** — Implement code (spec v2.0 ready)
+2. **F027B: PostgreSQL Sink** — Implement code (spec v1.0 ready)
+3. F031: Delta Lake Sink
+4. F028: MySQL CDC Source
+5. F-DAG-005: SQL & MV Integration
 
 ### Open Issues
 None.

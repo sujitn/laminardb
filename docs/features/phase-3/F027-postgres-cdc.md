@@ -1,6 +1,11 @@
 # F027: PostgreSQL CDC Source Connector
 
-## Feature Specification v1.0
+## Feature Specification v2.0
+
+> **v2.0 Update (2026-01-30)**: Updated based on comprehensive 2026 research review.
+> Key changes: pgwire-replication transport layer, exported snapshot approach,
+> TOAST handling strategy, pgoutput protocol v1-v4 negotiation, PG 15+ publication
+> features, WAL retention safety parameters. See [Research Appendix](#appendix-d-2026-research-findings).
 
 **Target Phase:** Phase 3 (Connectors & Integration)
 **Priority:** P0 (Critical for real-world data pipelines)
@@ -23,6 +28,7 @@
 | **Owner** | TBD |
 | **Crate** | `laminar-connectors` (feature: `postgres-cdc`) |
 | **Created** | 2026-01-29 |
+| **Updated** | 2026-01-30 (v2.0 - research review) |
 
 ---
 
@@ -142,13 +148,17 @@ EMIT CHANGES;
 
 | Pattern | Source | LaminarDB Adaptation |
 |---------|--------|---------------------|
-| **Logical Replication Protocol** | PostgreSQL 10+ built-in | Native `pgoutput` plugin via `tokio-postgres` replication API |
+| **Logical Replication Protocol** | PostgreSQL 10+ built-in | Native `pgoutput` plugin via `pgwire-replication` crate (transport) + `tokio-postgres` (control plane) |
+| **Split Control/Replication Plane** | Materialize, Supabase ETL | `tokio-postgres` for DDL/snapshot queries; `pgwire-replication` for WAL streaming |
 | **Replication Slot Management** | Debezium PostgreSQL Connector | Create/drop/advance slots; monitor slot lag to prevent WAL bloat |
-| **Initial Snapshot + Streaming** | Debezium snapshot modes | Consistent snapshot via `SERIALIZABLE` txn, then switch to WAL stream |
-| **Before/After Images** | PostgreSQL `REPLICA IDENTITY FULL` | Full before-image for UPDATE/DELETE when `REPLICA IDENTITY` is `FULL` |
-| **LSN-Based Checkpointing** | Flink CDC Connector | LSN stored in `SourceCheckpoint.offsets["lsn"]`; deterministic recovery |
-| **Heartbeat Mechanism** | Debezium heartbeat.interval.ms | Periodic status update to PostgreSQL to prevent replication timeout |
-| **Publication Filtering** | PostgreSQL 10+ PUBLICATION | Restrict WAL decoding to specific tables via publication membership |
+| **Exported Snapshot** | PostgreSQL slot creation API | Use snapshot exported by `pg_create_logical_replication_slot()` for consistent initial copy (not SERIALIZABLE txn) |
+| **Before/After Images** | PostgreSQL `REPLICA IDENTITY FULL` | Default to FULL for complete before-images; optional DEFAULT/INDEX with TOAST caching |
+| **LSN-Based Checkpointing** | Flink CDC Connector | LSN stored in `SourceCheckpoint.offsets["lsn"]`; deterministic recovery. Delay LSN confirmation by 1 checkpoint for recovery safety |
+| **Heartbeat Mechanism** | Debezium, PeerDB | `pg_logical_emit_message()` for idle slot advancement + periodic `StandbyStatusUpdate` |
+| **Publication Filtering** | PostgreSQL 15+ PUBLICATION | Row filtering (`WHERE`), column lists, schema-level publications |
+| **pgoutput Protocol Versioning** | PostgreSQL 14-17 | Negotiate highest available version (v4 for PG 16+, v2 for PG 14+, v1 for PG 10+) |
+| **WAL Retention Safety** | Production CDC best practices | Recommend `max_slot_wal_keep_size`, monitor `wal_status`, idle slot detection |
+| **TOAST Handling** | Materialize, Debezium, PeerDB | Default: require REPLICA IDENTITY FULL; Advanced: stateful TOAST value cache |
 | **Z-Set CDC Mapping** | DBSP/Feldera (VLDB 2025) | INSERT=weight(+1), DELETE=weight(-1), UPDATE=pair(-1,+1) |
 
 ---
@@ -165,6 +175,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use tokio_postgres::Client;
+use pgwire_replication::{ReplicationClient as PgWireReplicationClient, ReplicationConfig, Lsn};
 
 use crate::connector::{
     ConnectorConfig, ConnectorError, ConnectorInfo, ConnectorMetrics,
@@ -450,6 +461,17 @@ pub enum CdcPhase {
 /// replication (pgoutput plugin). Runs in Ring 1 as a tokio task,
 /// pushing Arrow RecordBatch data into Ring 0 via SPSC channels.
 ///
+/// # Architecture (v2.0)
+///
+/// Uses a **split-plane** approach based on 2026 best practices:
+/// - **Control plane** (`tokio-postgres`): DDL, schema discovery, snapshot queries, slot management
+/// - **Replication plane** (`pgwire-replication`): WAL streaming, LSN tracking, keepalive
+///
+/// This split is necessary because `tokio-postgres` does not support the PostgreSQL
+/// streaming replication protocol (open issue since 2015). The `pgwire-replication`
+/// crate provides a lean, tokio-native replication client that handles pgoutput
+/// transport, SCRAM-SHA-256 auth, and explicit LSN control.
+///
 /// # Lifecycle
 ///
 /// ```text
@@ -458,10 +480,10 @@ pub enum CdcPhase {
 ///              |             |             commit_offsets()
 ///              |             |             (on checkpoint)
 ///              |             |
-///         create slot    read table
-///         create pub     emit rows
-///         discover       switch to
-///         schema         streaming
+///         create slot    exported        use pgwire-replication
+///         create pub     snapshot        for WAL streaming
+///         discover       from slot
+///         schema         creation
 /// ```
 ///
 /// # Exactly-Once Semantics
@@ -471,6 +493,8 @@ pub enum CdcPhase {
 /// 2. On recovery, resuming WAL consumption from the checkpointed LSN
 /// 3. PostgreSQL guarantees that logical replication replays from
 ///    the slot's confirmed_flush_lsn
+/// 4. LSN confirmation is delayed by 1 checkpoint for recovery safety
+///    (Flink CDC pattern: `scan.lsn-commit.checkpoints-num-delay`)
 ///
 /// # Ring Architecture
 ///
@@ -478,10 +502,12 @@ pub enum CdcPhase {
 /// - **Ring 1**: WAL consumption, event parsing, Arrow conversion, watermark emission.
 /// - **Ring 2**: Slot lifecycle, publication management, health checks, schema discovery.
 pub struct PostgresCdcSource {
-    /// Primary client for queries (schema discovery, snapshot).
+    /// Primary client for queries (schema discovery, snapshot, slot management).
+    /// Uses `tokio-postgres` for the control plane.
     client: Option<Client>,
     /// Replication client for WAL streaming.
-    replication_client: Option<ReplicationClient>,
+    /// Uses `pgwire-replication` crate for the replication plane.
+    replication_client: Option<PgWireReplicationClient>,
     /// Replication slot name.
     slot_name: String,
     /// Publication name.
@@ -502,23 +528,20 @@ pub struct PostgresCdcSource {
     schema: Option<SchemaRef>,
     /// PostgreSQL column metadata (for type mapping).
     pg_columns: Vec<PgColumn>,
+    /// Relation message cache by OID (for schema change detection).
+    relation_cache: HashMap<u32, RelationMessage>,
     /// Row decoder for converting pgoutput tuples to Arrow arrays.
     decoder: Option<PgOutputDecoder>,
     /// Timestamp of last heartbeat sent to PostgreSQL.
     last_heartbeat: Instant,
     /// Whether initial snapshot has been completed.
     snapshot_completed: bool,
-}
-
-/// Wrapper around the PostgreSQL replication connection.
-///
-/// Uses `tokio-postgres` with the `replication` connection parameter
-/// to establish a streaming replication session.
-pub struct ReplicationClient {
-    /// The underlying tokio-postgres client in replication mode.
-    client: Client,
-    /// Replication stream for receiving WAL data.
-    stream: Option<ReplicationStream>,
+    /// Exported snapshot ID from slot creation (for initial snapshot).
+    exported_snapshot_id: Option<String>,
+    /// pgoutput protocol version negotiated with server.
+    protocol_version: u32,
+    /// TOAST value cache for DEFAULT/INDEX replica identity mode.
+    toast_cache: Option<HashMap<Vec<u8>, Vec<TupleValue>>>,
 }
 
 /// Decoded WAL message from pgoutput.
@@ -1488,71 +1511,111 @@ pub fn pg_type_to_arrow(type_oid: u32, type_modifier: i32) -> arrow_schema::Data
 
 ## 8. Key Subsystems
 
-### 8.1 Initial Snapshot
+### 8.1 Initial Snapshot (v2.0 - Exported Snapshot Approach)
 
 ```rust
 impl PostgresCdcSource {
     /// Performs initial snapshot of the table for bootstrapping.
     ///
-    /// Uses a SERIALIZABLE transaction to get a consistent snapshot,
-    /// then reads the table in batches. The snapshot LSN is recorded
-    /// so that WAL streaming can resume from the correct position.
+    /// **v2.0**: Uses the **exported snapshot** from slot creation rather than
+    /// a separate SERIALIZABLE transaction. This is the approach recommended by
+    /// PostgreSQL documentation and used by Debezium, Materialize, and Flink CDC.
+    ///
+    /// When `pg_create_logical_replication_slot()` is called, PostgreSQL
+    /// establishes a consistent point (LSN) and exports a snapshot ID. Using
+    /// `SET TRANSACTION SNAPSHOT <id>` in a REPEATABLE READ transaction
+    /// guarantees the snapshot sees exactly the database state at the slot's
+    /// consistent point. All changes after that point will be delivered via
+    /// WAL streaming.
     ///
     /// # Algorithm
     ///
-    /// 1. BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ ONLY
-    /// 2. SELECT pg_current_wal_lsn() -- record snapshot LSN
-    /// 3. SELECT * FROM schema.table ORDER BY pk LIMIT batch_size OFFSET n
-    ///    (repeated until all rows read)
-    /// 4. COMMIT
-    /// 5. Switch to WAL streaming from snapshot LSN
+    /// 1. Slot creation (in open()) returns consistent_point LSN + exported snapshot_id
+    /// 2. BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ
+    /// 3. SET TRANSACTION SNAPSHOT '<exported_snapshot_id>'
+    /// 4. SELECT * FROM schema.table (paginated via CURSOR for memory efficiency)
+    /// 5. COMMIT
+    /// 6. Start WAL streaming from slot's consistent_point LSN
+    ///
+    /// # Pagination
+    ///
+    /// Uses server-side CURSORs for memory-efficient reading of large tables.
+    /// Fetches `max_batch_size` rows at a time, emitting each batch as a
+    /// SourceBatch with op='r' (read/snapshot).
     async fn perform_snapshot(&mut self) -> Result<(), ConnectorError> {
         let client = self.client.as_ref()
             .ok_or(ConnectorError::Connection("No query client".into()))?;
 
-        // Start serializable transaction for consistent snapshot
+        let snapshot_id = self.exported_snapshot_id.as_ref()
+            .ok_or(ConnectorError::Config(
+                "No exported snapshot ID from slot creation".into()
+            ))?;
+
+        // Use the exported snapshot for a consistent read
         client.execute(
-            "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ ONLY",
+            "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ",
             &[],
         ).await.map_err(|e| ConnectorError::Connection(e.to_string()))?;
 
-        // Record snapshot LSN
-        let row = client.query_one("SELECT pg_current_wal_lsn()::text", &[]).await
-            .map_err(|e| ConnectorError::Connection(e.to_string()))?;
-        let lsn_str: &str = row.get(0);
-        let snapshot_lsn = PgLsn::from_pg_str(lsn_str)?;
+        client.execute(
+            &format!("SET TRANSACTION SNAPSHOT '{}'", snapshot_id),
+            &[],
+        ).await.map_err(|e| ConnectorError::Connection(e.to_string()))?;
 
         tracing::info!(
             table = %self.config.qualified_table_name(),
-            lsn = %snapshot_lsn,
-            "Starting initial snapshot"
+            snapshot_id = %snapshot_id,
+            lsn = %self.lsn,
+            "Starting initial snapshot using exported snapshot"
         );
 
-        // Read table in batches
+        // Use server-side cursor for memory-efficient pagination
+        let cursor_name = "laminardb_snapshot_cursor";
         let query = format!(
-            "SELECT * FROM {} ORDER BY ctid",
+            "DECLARE {} CURSOR FOR SELECT * FROM {}",
+            cursor_name,
             self.config.qualified_table_name()
         );
-
-        let rows = client.query(&query, &[]).await
+        client.execute(&query, &[]).await
             .map_err(|e| ConnectorError::Connection(e.to_string()))?;
 
-        // Convert rows to CDC events (all as INSERT operations)
-        let total_rows = rows.len();
-        self.metrics.snapshot_rows = total_rows as u64;
+        let mut total_rows: u64 = 0;
+        loop {
+            let fetch_query = format!(
+                "FETCH {} FROM {}",
+                self.config.max_batch_size, cursor_name
+            );
+            let rows = client.query(&fetch_query, &[]).await
+                .map_err(|e| ConnectorError::Connection(e.to_string()))?;
 
-        // Commit snapshot transaction
+            if rows.is_empty() {
+                break;
+            }
+
+            total_rows += rows.len() as u64;
+
+            // Convert rows to CDC events (all as READ/snapshot operations)
+            // Emitted with op='r' to distinguish from streaming inserts
+            // ... (batch conversion and emission via SPSC channel)
+
+            tracing::debug!(
+                rows_so_far = total_rows,
+                "Snapshot progress"
+            );
+        }
+
+        self.metrics.snapshot_rows = total_rows;
+
+        // Close cursor and commit
+        client.execute(&format!("CLOSE {}", cursor_name), &[]).await
+            .map_err(|e| ConnectorError::Connection(e.to_string()))?;
         client.execute("COMMIT", &[]).await
             .map_err(|e| ConnectorError::Connection(e.to_string()))?;
-
-        // Set LSN to snapshot position for WAL streaming start
-        self.lsn = snapshot_lsn;
-        self.metrics.current_lsn = snapshot_lsn.value();
 
         tracing::info!(
             table = %self.config.qualified_table_name(),
             rows = total_rows,
-            lsn = %snapshot_lsn,
+            lsn = %self.lsn,
             "Initial snapshot complete"
         );
 
@@ -1828,7 +1891,7 @@ fn detect_schema_changes(old: &[PgColumn], new: &[PgColumn]) -> Vec<SchemaChange
 }
 ```
 
-### 8.4 Heartbeat and Keepalive
+### 8.4 Heartbeat and Keepalive (v2.0)
 
 ```rust
 impl PostgresCdcSource {
@@ -1838,25 +1901,50 @@ impl PostgresCdcSource {
     /// 1. Prevents PostgreSQL from timing out the replication connection
     /// 2. Reports the confirmed flush LSN so PostgreSQL can reclaim WAL
     ///
+    /// **v2.0**: Uses `pgwire-replication`'s `update_applied_lsn()` method
+    /// which sends the StandbyStatusUpdate message over the replication protocol.
+    ///
     /// The standby status update includes:
     /// - write_lsn: Last WAL position written to local storage
     /// - flush_lsn: Last WAL position flushed/confirmed
     /// - apply_lsn: Last WAL position applied to state
     /// - timestamp: Current time (microseconds since 2000-01-01)
-    /// - reply_requested: false (we initiate, not responding)
     async fn send_heartbeat(&mut self) -> Result<(), ConnectorError> {
         let repl = self.replication_client.as_mut()
             .ok_or(ConnectorError::Connection("No replication client".into()))?;
 
-        repl.send_standby_status(
-            self.lsn,           // write position
-            self.confirmed_lsn, // flush position
-            self.confirmed_lsn, // apply position
-        ).await.map_err(|e| ConnectorError::Connection(
-            format!("Failed to send heartbeat: {e}")
-        ))?;
+        // pgwire-replication: report confirmed LSN
+        repl.update_applied_lsn(Lsn::from(self.confirmed_lsn.value()))
+            .map_err(|e| ConnectorError::Connection(
+                format!("Failed to send heartbeat: {e}")
+            ))?;
 
         self.metrics.heartbeats_sent += 1;
+        Ok(())
+    }
+
+    /// Emits a heartbeat message on the source database to advance
+    /// the replication slot during idle periods.
+    ///
+    /// **v2.0**: When the source database has no changes, the replication
+    /// slot cannot advance. Using `pg_logical_emit_message()` emits a
+    /// non-transactional WAL message that forces the slot LSN forward.
+    /// This prevents WAL accumulation during idle periods.
+    ///
+    /// Alternative approach: a dedicated `_laminardb_heartbeat` table
+    /// with periodic upserts, but `pg_logical_emit_message()` is
+    /// lower-overhead (no table lock, no MVCC overhead).
+    async fn emit_server_heartbeat(&mut self) -> Result<(), ConnectorError> {
+        let client = self.client.as_ref()
+            .ok_or(ConnectorError::Connection("No query client".into()))?;
+
+        client.execute(
+            "SELECT pg_logical_emit_message(false, 'heartbeat', now()::text)",
+            &[],
+        ).await.map_err(|e| ConnectorError::Connection(
+            format!("Failed to emit server heartbeat: {e}")
+        ))?;
+
         Ok(())
     }
 }
@@ -1936,6 +2024,282 @@ impl PostgresCdcSource {
 
 ---
 
+## 8.6 TOAST Column Handling (v2.0)
+
+PostgreSQL TOAST (The Oversized-Attribute Storage Technique) stores large column values out-of-line. When a TOASTed column is NOT modified during an UPDATE, PostgreSQL does NOT include its value in the WAL — the CDC consumer sees `TupleValue::Unchanged`.
+
+### 8.6.1 Impact by Replica Identity
+
+| REPLICA IDENTITY | Unchanged TOAST in UPDATE | Strategy |
+|-----------------|--------------------------|----------|
+| `FULL` | **Always present** (old + new rows) | Simple, correct, recommended |
+| `DEFAULT` (PK only) | **Missing** in new tuple | Requires cache or re-query |
+| `INDEX` | **Missing** in new tuple | Requires cache or re-query |
+
+### 8.6.2 LaminarDB Strategy (Two Modes)
+
+**Mode 1: Require REPLICA IDENTITY FULL (Default)**
+
+The simplest and most correct approach, used by Materialize. All column values are always available in both old and new tuples. Trade-off: increased WAL volume (~2x for UPDATE/DELETE).
+
+```rust
+/// During open(), verify REPLICA IDENTITY setting
+async fn verify_replica_identity(&self) -> Result<(), ConnectorError> {
+    let client = self.client.as_ref().unwrap();
+    let row = client.query_one(
+        "SELECT relreplident FROM pg_class \
+         WHERE oid = $1::regclass",
+        &[&self.config.qualified_table_name()],
+    ).await?;
+
+    let identity: i8 = row.get(0);
+    if identity != b'f' as i8 && self.config.toast_handling == ToastHandling::RequireFull {
+        return Err(ConnectorError::Config(format!(
+            "Table {} has REPLICA IDENTITY {:?}, but FULL is required. \
+             Run: ALTER TABLE {} REPLICA IDENTITY FULL",
+            self.config.qualified_table_name(),
+            identity as u8 as char,
+            self.config.qualified_table_name(),
+        )));
+    }
+    Ok(())
+}
+```
+
+**Mode 2: Stateful TOAST Cache (Advanced)**
+
+For users who cannot set REPLICA IDENTITY FULL (e.g., high-write tables where WAL volume matters), maintain a per-primary-key cache of the last known full row state. The cache is populated from the initial snapshot and maintained via CDC events.
+
+```rust
+/// TOAST handling strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastHandling {
+    /// Require REPLICA IDENTITY FULL (default, recommended).
+    RequireFull,
+    /// Cache last-known values for unchanged TOAST columns.
+    /// Risk: cache staleness if events are missed.
+    CacheUnchanged,
+    /// Replace unchanged TOAST with a sentinel value.
+    /// Downstream must handle `__toast_unavailable__`.
+    Sentinel,
+}
+```
+
+### 8.6.3 Identifying TOAST-Eligible Columns
+
+```sql
+SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a
+JOIN pg_class c ON a.attrelid = c.oid
+WHERE c.relname = 'your_table' AND a.attlen = -1
+  AND a.attstorage != 'p' AND a.attnum > 0;
+```
+
+Common TOAST types: `text`, `varchar(>2000)`, `bytea`, `jsonb`, `json`, `xml`, `hstore`.
+
+---
+
+## 8.7 pgoutput Protocol Versioning (v2.0)
+
+The `pgoutput` output plugin supports protocol versions that map to PostgreSQL server versions. The connector negotiates the highest available version for optimal functionality.
+
+### 8.7.1 Protocol Version Matrix
+
+| Version | PG Version | Key Capability |
+|---------|-----------|----------------|
+| **v1** | PG 10+ | Basic logical replication (Relation, Insert, Update, Delete, Begin, Commit) |
+| **v2** | PG 14+ | **Streaming large in-progress transactions** — avoids OOM on long txns |
+| **v3** | PG 15+ | **Two-phase commit streaming** — PREPARE/COMMIT PREPARED messages |
+| **v4** | PG 16+ | **Parallel apply** + binary transfer mode (faster than text decoding) |
+
+### 8.7.2 Version Negotiation
+
+```rust
+impl PostgresCdcSource {
+    /// Negotiates the pgoutput protocol version with the server.
+    ///
+    /// Attempts v4 first, falls back to v2, then v1.
+    /// The negotiated version determines which message types
+    /// and features are available.
+    fn negotiate_protocol_version(&mut self, pg_version: u32) -> u32 {
+        let version = match pg_version {
+            v if v >= 160000 => 4, // PG 16+: parallel apply + binary
+            v if v >= 140000 => 2, // PG 14+: streaming transactions
+            _ => 1,                // PG 10+: basic
+        };
+
+        tracing::info!(
+            pg_version = pg_version,
+            protocol_version = version,
+            "Negotiated pgoutput protocol version"
+        );
+
+        self.protocol_version = version;
+        version
+    }
+
+    /// Builds the START_REPLICATION options based on negotiated protocol version.
+    fn replication_options(&self) -> Vec<(&str, &str)> {
+        let mut opts = vec![
+            ("proto_version", match self.protocol_version {
+                4 => "4",
+                2 | 3 => "2",
+                _ => "1",
+            }),
+            ("publication_names", &self.publication),
+        ];
+
+        // PG 16+ (v4): enable binary mode for faster decoding
+        if self.protocol_version >= 4 {
+            opts.push(("binary", "true"));
+        }
+
+        opts
+    }
+}
+```
+
+### 8.7.3 Streaming Transaction Support (v2+)
+
+Protocol v2 adds `StreamStart`, `StreamStop`, `StreamCommit`, `StreamAbort` messages for handling large in-progress transactions without buffering the entire transaction in memory. When streaming mode is active:
+
+1. `StreamStart` — begin receiving events from an in-progress transaction
+2. DML messages (Insert/Update/Delete) — part of the streamed transaction
+3. `StreamStop` — pause streaming (may interleave with other transactions)
+4. `StreamCommit` — transaction committed (events are now final)
+5. `StreamAbort` — transaction aborted (discard streamed events)
+
+```rust
+/// Extended WAL message types for protocol v2+.
+pub enum WalMessage {
+    // ... v1 messages ...
+    /// Stream start (v2+): begin streaming an in-progress transaction.
+    StreamStart(StreamStartMessage),
+    /// Stream stop (v2+): pause streaming.
+    StreamStop,
+    /// Stream commit (v2+): in-progress transaction committed.
+    StreamCommit(StreamCommitMessage),
+    /// Stream abort (v2+): in-progress transaction aborted.
+    StreamAbort(StreamAbortMessage),
+}
+```
+
+---
+
+## 8.8 Publication Features (PG 15+) (v2.0)
+
+PostgreSQL 15 added row filtering and column lists to publications, reducing WAL decoding overhead.
+
+### 8.8.1 Row Filtering
+
+```sql
+-- Only capture active users (reduces WAL decoding work)
+CREATE PUBLICATION laminardb_pub FOR TABLE users WHERE (status = 'active');
+```
+
+### 8.8.2 Column Lists
+
+```sql
+-- Only replicate specific columns (reduces network and memory)
+CREATE PUBLICATION laminardb_pub FOR TABLE users (id, name, email, updated_at);
+```
+
+### 8.8.3 Schema-Level Publications
+
+```sql
+-- All tables in a schema (PG 15+)
+CREATE PUBLICATION laminardb_pub FOR TABLES IN SCHEMA public;
+```
+
+### 8.8.4 Configuration Options
+
+```rust
+/// Publication configuration (v2.0).
+pub struct PublicationConfig {
+    /// Publication name.
+    pub name: String,
+    /// Which operations to publish (default: all).
+    pub publish: Vec<PublishOp>,
+    /// Row filter expression (PG 15+, optional).
+    pub row_filter: Option<String>,
+    /// Column list (PG 15+, optional — None = all columns).
+    pub column_list: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PublishOp {
+    Insert,
+    Update,
+    Delete,
+    Truncate,
+}
+```
+
+---
+
+## 8.9 WAL Retention Safety (v2.0)
+
+Replication slots prevent WAL cleanup until the consumer confirms processing. If a consumer stops or falls behind, WAL files accumulate indefinitely — **this can fill disk and crash PostgreSQL**.
+
+### 8.9.1 Server-Side Safety Parameters
+
+```ini
+# postgresql.conf — CRITICAL for production CDC
+max_slot_wal_keep_size = 25GB          # PG 13+: prevent unbounded WAL growth
+idle_replication_slot_timeout = 48h     # PG 18+: auto-invalidate idle slots
+statement_timeout = 30s                 # Kill long-running queries
+idle_in_transaction_session_timeout = 60s  # Kill idle transactions
+logical_decoding_work_mem = 128MB       # Memory per slot for decoding
+```
+
+### 8.9.2 Monitoring Queries
+
+```sql
+-- Monitor replication slot lag (run periodically from Ring 2)
+SELECT slot_name, active,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS lag,
+       wal_status  -- 'reserved', 'extended', 'unreserved', 'lost'
+FROM pg_replication_slots;
+
+-- Detect slots at risk of WAL loss
+SELECT slot_name, wal_status
+FROM pg_replication_slots
+WHERE wal_status IN ('unreserved', 'lost');
+```
+
+### 8.9.3 Health Check Integration
+
+```rust
+impl PostgresCdcSource {
+    /// Checks WAL retention status for the connector's slot.
+    ///
+    /// Returns warning when:
+    /// - wal_status is 'extended' (approaching max_slot_wal_keep_size)
+    /// - wal_status is 'unreserved' or 'lost' (WAL has been recycled!)
+    /// - lag exceeds configured threshold
+    async fn check_wal_retention(&self) -> Result<WalRetentionStatus, ConnectorError> {
+        let client = self.client.as_ref().unwrap();
+        let row = client.query_one(
+            "SELECT wal_status, \
+             pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) as lag_bytes \
+             FROM pg_replication_slots WHERE slot_name = $1",
+            &[&self.config.slot_name],
+        ).await?;
+
+        let wal_status: &str = row.get(0);
+        let lag_bytes: i64 = row.get(1);
+
+        Ok(WalRetentionStatus {
+            wal_status: wal_status.to_string(),
+            lag_bytes: lag_bytes as u64,
+            at_risk: wal_status != "reserved",
+        })
+    }
+}
+```
+
+---
+
 ## 9. Configuration Reference
 
 ### 9.1 Required Options
@@ -1967,17 +2331,28 @@ impl PostgresCdcSource {
 | `slot.advance.interval.ms` | Integer | `5000` | How often to confirm LSN to PostgreSQL |
 | `connect.timeout.ms` | Integer | `10000` | Connection timeout |
 | `include.before.image` | Boolean | `true` | Include old row values for UPDATE/DELETE (requires REPLICA IDENTITY FULL) |
+| `toast.handling` | String | `"require-full"` | TOAST strategy: `require-full`, `cache-unchanged`, `sentinel` |
+| `publication.row.filter` | String | `""` | Row filter expression for publication (PG 15+) |
+| `publication.column.list` | String | `""` | Comma-separated column list for publication (PG 15+) |
+| `server.heartbeat.enabled` | Boolean | `true` | Emit `pg_logical_emit_message()` heartbeats for idle slot advancement |
+| `server.heartbeat.interval.ms` | Integer | `30000` | Server-side heartbeat interval for idle periods |
 
 ### 9.3 PostgreSQL Server Prerequisites
 
 The PostgreSQL server must be configured for logical replication:
 
 ```ini
-# postgresql.conf
+# postgresql.conf — Required
 wal_level = logical
-max_replication_slots = 4      # At least 1 per CDC source
-max_wal_senders = 4            # At least 1 per CDC source
-wal_sender_timeout = 60s       # Must be > heartbeat interval
+max_replication_slots = 4          # At least 1 per CDC source
+max_wal_senders = 4                # At least 1 per CDC source
+wal_sender_timeout = 60s           # Must be > heartbeat interval
+
+# postgresql.conf — Recommended for production CDC
+max_slot_wal_keep_size = 25GB      # PG 13+: prevent unbounded WAL growth (CRITICAL)
+logical_decoding_work_mem = 128MB  # Memory per slot for logical decoding
+statement_timeout = 30s            # Kill long-running queries
+idle_in_transaction_session_timeout = 60s  # Kill idle transactions
 ```
 
 The connecting user must have the `REPLICATION` role:
@@ -2271,7 +2646,8 @@ crates/laminar-connectors/src/
    - [Watermark Generator Research 2026](../../research/watermark-generator-research-2026.md) - Idle detection patterns
 
 6. **Crate Dependencies**
-   - [`tokio-postgres`](https://docs.rs/tokio-postgres/) - Async PostgreSQL client (v0.7)
+   - [`pgwire-replication`](https://github.com/vnvo/pgwire-replication) - Lean tokio-based logical replication client (v2.0: primary replication transport)
+   - [`tokio-postgres`](https://docs.rs/tokio-postgres/) - Async PostgreSQL client (v0.7) — control plane only
    - [`arrow-array`](https://docs.rs/arrow-array/) - Arrow columnar arrays
    - [`arrow-schema`](https://docs.rs/arrow-schema/) - Arrow schema definitions
 
@@ -2313,25 +2689,89 @@ crates/laminar-connectors/src/
 | **Z-Set Integration** | Native (F063) | N/A (raw CDC) | N/A (retraction mode) | Internal retraction |
 | **Arrow Format** | Native RecordBatch | Java objects | Java objects | Internal columnar |
 | **Ring Architecture** | Ring 1 (no hot path impact) | N/A | N/A | N/A |
-| **Dependencies** | tokio-postgres only | Kafka + Connect + JVM | Flink + JVM | Full RisingWave cluster |
+| **TOAST Handling** | FULL default + cache mode | Sentinel value | Snapshot-based | Fixed in v2.6 |
+| **Protocol Version** | v1-v4 (auto-negotiate) | v1-v2 | v1 | v1-v2 |
+| **Dependencies** | pgwire-replication + tokio-postgres | Kafka + Connect + JVM | Flink + JVM | Full RisingWave cluster |
 | **WAL Lag Monitoring** | Built-in health check | JMX metrics | N/A | System tables |
 | **Multi-Table** | Publication-based | Per-table or regex | Per-table | Per-table |
 
 ---
 
-## Appendix C: PostgreSQL Version Compatibility
+## Appendix C: PostgreSQL Version Compatibility (v2.0 Updated)
 
-| PostgreSQL Version | Support Level | Notes |
-|-------------------|---------------|-------|
-| 10.x | Full | Minimum version (logical replication introduced) |
-| 11.x | Full | |
-| 12.x | Full | |
-| 13.x | Full | Improved logical replication performance |
-| 14.x | Full | Binary mode for pgoutput (optional optimization) |
-| 15.x | Full | Row filtering in publications, column lists |
-| 16.x | Full | Logical replication from standby |
-| 17.x | Full | Slot failover support |
+| PostgreSQL Version | Support Level | pgoutput Protocol | Key CDC Features |
+|-------------------|---------------|-------------------|------------------|
+| 10.x | Full | v1 | Minimum version (logical replication introduced) |
+| 11.x | Full | v1 | |
+| 12.x | Full | v1 | |
+| 13.x | Full | v1 | `max_slot_wal_keep_size` (WAL retention safety) |
+| 14.x | Full | **v2** | **Streaming large transactions**, binary mode option |
+| 15.x | Full | v3 | **Row filtering** in publications, **column lists**, two-phase commit streaming, schema-level publications |
+| 16.x | Full | **v4** | **Parallel apply**, binary transfer mode, logical replication from standby |
+| 17.x | Full | v4 | **Slot failover** synchronization, `pg_upgrade` preserves slots, `pg_createsubscriber` |
 
 **Minimum Requirement:** PostgreSQL 10+ with `wal_level = logical`
 
-**Recommended:** PostgreSQL 14+ for binary mode optimization and publication column lists.
+**Recommended:** PostgreSQL 14+ for protocol v2 (streaming transactions) and binary mode. PostgreSQL 15+ for row filtering and column lists in publications.
+
+---
+
+## Appendix D: 2026 Research Findings
+
+> This appendix documents the key research findings that informed the v2.0 spec update.
+
+### D.1 Replication Transport: pgwire-replication
+
+**Problem**: `tokio-postgres` does not support the PostgreSQL streaming replication protocol (open issue [#116](https://github.com/sfackler/rust-postgres/issues/116) since 2015). The v1.0 spec assumed it did.
+
+**Solution**: Use [`pgwire-replication`](https://github.com/vnvo/pgwire-replication), a lean tokio-based logical replication client extracted from the Deltaforge CDC project (Jan 2026):
+- Direct wire protocol implementation (no libpq dependency)
+- Explicit LSN control: `start_lsn`, `stop_at_lsn`, `update_applied_lsn()`
+- SCRAM-SHA-256 and MD5 auth, TLS via rustls
+- Returns raw pgoutput bytes — decoding is done in a higher layer
+
+**Alternative considered**: Supabase ETL (formerly pg_replicate) — higher-level, includes snapshot support. Rejected because LaminarDB needs low-level control for Ring 1 integration.
+
+### D.2 Snapshot: Exported Snapshot from Slot Creation
+
+**Problem**: The v1.0 spec used `SERIALIZABLE` transaction for snapshot isolation. This is not the recommended approach — it doesn't guarantee consistency with the slot's WAL start position.
+
+**Solution**: Use the **exported snapshot** from `pg_create_logical_replication_slot()`. This approach is used by Debezium, Materialize, and Flink CDC:
+1. Slot creation exports a snapshot ID and consistent LSN
+2. `SET TRANSACTION SNAPSHOT '<id>'` guarantees the snapshot sees the exact database state at the slot's LSN
+3. All changes after that LSN will be delivered via WAL streaming — no gaps, no duplicates
+
+### D.3 TOAST Handling: Industry Consensus
+
+| System | TOAST Strategy |
+|--------|---------------|
+| **Materialize** | Require REPLICA IDENTITY FULL (simplest, correct) |
+| **Debezium** | Sentinel value (`__debezium_unavailable_value`) |
+| **PeerDB** | Re-query source for missing values (race condition risk) |
+| **RisingWave v2.6** | Fixed TOAST handling (retains unchanged values) |
+
+LaminarDB defaults to Materialize's approach (require FULL) with an optional cache mode.
+
+### D.4 Production CDC Patterns from Industry
+
+| Pattern | Source | Adopted? |
+|---------|--------|----------|
+| Single slot per source | Debezium, Materialize | Yes |
+| Publication scoping (not ALL TABLES) | All systems | Yes |
+| `pg_logical_emit_message()` heartbeat | Debezium | Yes (v2.0) |
+| LSN delay for recovery safety | Flink CDC | Yes (1 checkpoint delay) |
+| Parallel snapshot via CTID/PK chunking | Flink CDC, PeerDB | Future optimization |
+| Temporary replication slots for parallel scan | Flink CDC | Not yet |
+
+### D.5 Key Research Sources
+
+1. [pgwire-replication GitHub](https://github.com/vnvo/pgwire-replication) — Lean replication client
+2. [Supabase ETL GitHub](https://github.com/supabase/etl) — Full CDC pipeline framework
+3. [PostgreSQL Logical Replication Message Formats](https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html)
+4. [Debezium PostgreSQL Connector](https://debezium.io/documentation/reference/stable/connectors/postgresql.html)
+5. [Materialize PostgreSQL CDC Design Doc](https://github.com/MaterializeInc/materialize/blob/main/doc/developer/design/20210412_postgres_sources.md)
+6. [Flink CDC PostgreSQL Connector](https://nightlies.apache.org/flink/flink-cdc-docs-master/docs/connectors/flink-sources/postgres-cdc/)
+7. [Mastering Postgres Replication Slots (Gunnar Morling)](https://www.morling.dev/blog/mastering-postgres-replication-slots/)
+8. [Debezium: TOAST Column Strategies](https://debezium.io/blog/2019/10/08/handling-unchanged-postgres-toast-values/)
+9. [PostgreSQL 17 Logical Replication Features](https://www.pgedge.com/blog/logical-replication-features-in-pg-17)
+10. [Real-Time Postgres CDC: Exactly-Once Delivery (Stacksync)](https://www.stacksync.com/blog/real-time-postgres-cdc-architecting-exactly-once-delivery)

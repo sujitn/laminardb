@@ -99,6 +99,7 @@ LaminarDB development is organized into 5 phases, each building on the previous.
 | F025 | Kafka Source Connector | P0 | 📝 Draft |
 | F026 | Kafka Sink Connector | P0 | 📝 Draft |
 | F027 | PostgreSQL CDC Source | P0 | 📝 Draft |
+| F027B | PostgreSQL Sink | P0 | 📝 Draft |
 | F028 | MySQL CDC Source | P1 | 📝 Draft |
 | F029 | MongoDB CDC Source | P2 | 📝 Draft |
 | F030 | Redis Lookup Table | P1 | 📝 Draft |
