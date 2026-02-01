@@ -5,20 +5,28 @@
 
 ## Last Session
 
-**Date**: 2026-01-31
+**Date**: 2026-02-01
 
 ### What Was Accomplished
+- **F-SUB-001 to F-SUB-008: Reactive Subscription System** - ALL COMPLETE (8/8 features)
+  - F-SUB-001: ChangeEvent types (EventType, ChangeEvent, ChangeEventBatch, NotificationRef)
+  - F-SUB-002: Notification Slot (NotificationSlot 64-byte cache-aligned, NotificationRing SPSC, NotificationHub)
+  - F-SUB-003: Subscription Registry (SubscriptionRegistry, SubscriptionEntry, SubscriptionConfig, SubscriptionMetrics)
+  - F-SUB-004: Subscription Dispatcher (SubscriptionDispatcher, Ring 1 broadcast, NotificationDataSource trait)
+  - F-SUB-005: Push Subscription API (PushSubscription channel-based handle)
+  - F-SUB-006: Callback Subscriptions (subscribe_callback, subscribe_fn, CallbackSubscriptionHandle)
+  - F-SUB-007: Stream Subscriptions (subscribe_stream, ChangeEventStream, ChangeEventResultStream)
+  - F-SUB-008: Backpressure & Filtering (BackpressureController, DemandBackpressure, NotificationBatcher, Ring0Predicate, compile_filter via sqlparser)
+  - New files: event.rs, notification.rs, registry.rs, dispatcher.rs, handle.rs, callback.rs, stream.rs, backpressure.rs, batcher.rs, filter.rs
+  - Added sqlparser dependency to laminar-core for filter compilation (SQL → Ring 0/Ring 1 predicate classification)
+  - 42 new tests from F-SUB-008 alone (10 backpressure + 6 batcher + 26 filter)
+  - All clippy clean with `-D warnings`, 1240 total laminar-core tests pass
+
+Previous session (2026-01-31):
 - **Performance Optimization: Event.data → Arc<RecordBatch>** - COMPLETE
   - Changed `Event.data` from owned `RecordBatch` to `Arc<RecordBatch>` for zero-copy multicast
-  - Added `Event::new(timestamp, batch)` constructor that wraps internally
-  - Updated ~100 construction sites across 35 files (operators, reactor, sinks, connectors, benchmarks)
   - Multicast fan-out clone cost: O(columns) → O(1) (~2ns atomic increment)
-  - For 50-column schema with 4-way fan-out: ~200-1000ns → ~6ns per event
-  - Performance audit: no P0 hot path violations, no double-Arc, no unnecessary clones
-  - DAG executor multicast (`executor.rs:497`) now clones Arc instead of RecordBatch
-  - Benchmark PassthroughOperator correctly clones Arc in struct literal form
   - All clippy clean with `-D warnings`, all 1709 tests pass
-  - Resolves open issue R3 from F-DAG-007 performance audit
 
 Previous session (2026-01-31):
 - **F-DAG-007: Performance Validation** - IMPLEMENTATION COMPLETE
@@ -79,10 +87,10 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1709 base + 84 postgres-sink + 107 postgres-cdc + 118 kafka = 2018 (1098 core + 367 sql + 120 storage + 28 laminar-db + 96 connectors-base + 84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only)
+**Total tests**: 1240 core + 367 sql + 120 storage + 28 laminar-db + 96 connectors-base + 84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only = 2160
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 19/29 features COMPLETE (66%)**
+**Phase 3 Connectors & Integration: 27/37 features COMPLETE (73%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -93,6 +101,7 @@ Previous session (2026-01-28):
 - SQL & MV Integration complete (F-DAG-005) — 18 new tests, DAG from MvRegistry, watermarks, changelog
 - Connector Bridge complete (F-DAG-006) — 25 new tests, source/sink bridge + runtime orchestration
 - Performance Validation complete (F-DAG-007) — 16 benchmarks, performance audit + optimizations
+- **Reactive Subscription System complete (F-SUB-001 to F-SUB-008)** — 8 features, 10 new modules in laminar-core/src/subscription/
 - Next: F031 Delta Lake Sink or F028 MySQL CDC Source
 
 ### Immediate Next Steps
@@ -102,6 +111,7 @@ Previous session (2026-01-28):
 
 ### Open Issues
 - ~~Performance audit R3 (medium): Consider wrapping Event.data in Arc<RecordBatch> to make multicast zero-allocation for wide schemas.~~ ✅ RESOLVED — Event.data is now `Arc<RecordBatch>`, multicast clone is O(1).
+- None currently blocking.
 
 ---
 
@@ -186,6 +196,17 @@ laminar-core/src/
   alloc/        # F071: Zero-allocation
   numa/         # F068: NUMA awareness
   tpc/          # F013/F014: Thread-per-core
+  subscription/ # F-SUB-001 to F-SUB-008: Reactive push-based subscription system
+    event         # F-SUB-001: ChangeEvent, ChangeEventBatch, EventType, NotificationRef
+    notification  # F-SUB-002: NotificationSlot (64-byte), NotificationRing (SPSC), NotificationHub
+    registry      # F-SUB-003: SubscriptionRegistry, SubscriptionEntry, SubscriptionConfig, SubscriptionMetrics
+    dispatcher    # F-SUB-004: SubscriptionDispatcher (Ring 1 broadcast), NotificationDataSource
+    handle        # F-SUB-005: PushSubscription (channel-based)
+    callback      # F-SUB-006: subscribe_callback, subscribe_fn, CallbackSubscriptionHandle
+    stream        # F-SUB-007: subscribe_stream, ChangeEventStream, ChangeEventResultStream
+    backpressure  # F-SUB-008: BackpressureController, DemandBackpressure, DemandHandle
+    batcher       # F-SUB-008: BatchConfig, NotificationBatcher (size/time triggers)
+    filter        # F-SUB-008: Ring0Predicate, ScalarValue, StringInternTable, compile_filter
   operator/     # Windows, joins, changelog
     window      # F074: CompositeAggregator, DynAccumulator, f64 aggregators
     changelog   # F076: RetractableFirst/LastValueAccumulator

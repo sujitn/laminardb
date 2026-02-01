@@ -42,15 +42,23 @@ This is the most Rust-idiomatic consumption pattern and integrates naturally wit
 
 ### Data Structures
 
+> **Implementation Note**: The `tokio_stream::wrappers::BroadcastStream` crate
+> already wraps `broadcast::Receiver` as a `Stream`. We use it internally
+> rather than implementing `Stream::poll_next` manually, which avoids the
+> **busy-spin bug** that occurs when calling `cx.waker().wake_by_ref()` in a
+> `Pending` branch (this causes 100% CPU usage because the waker is
+> immediately re-invoked without any actual readiness signal).
+
 ```rust
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio_stream::Stream;
+use tokio_stream::wrappers::BroadcastStream;
 
 /// Async stream wrapper for push subscriptions.
 ///
-/// Implements `Stream<Item = ChangeEvent>`, dropping errors
-/// and lagged events silently.
+/// Implements `Stream<Item = ChangeEvent>`, silently skipping lagged events.
+/// Uses `BroadcastStream` internally for correct async wakeup semantics.
 ///
 /// # Usage
 ///
@@ -78,77 +86,92 @@ use tokio_stream::Stream;
 ///     process(event);
 /// }
 /// ```
+#[pin_project::pin_project]
 pub struct ChangeEventStream {
-    /// Underlying push subscription.
-    inner: PushSubscription,
+    /// Subscription ID for lifecycle management.
+    id: SubscriptionId,
+    /// Registry reference for pause/resume/cancel.
+    registry: Arc<SubscriptionRegistry>,
+    /// Query string for diagnostics.
+    query: String,
+    /// Inner BroadcastStream that handles proper async wakeup.
+    #[pin]
+    inner: BroadcastStream<ChangeEvent>,
     /// Whether the stream has terminated.
     terminated: bool,
 }
 
 impl ChangeEventStream {
     /// Creates a new stream from a push subscription.
-    pub(crate) fn new(inner: PushSubscription) -> Self {
+    pub(crate) fn new(sub: PushSubscription) -> Self {
+        let id = sub.id();
+        let registry = sub.registry_clone();
+        let query = sub.query().to_string();
+        // Extract the broadcast receiver and wrap in BroadcastStream.
+        let receiver = sub.into_receiver();
         Self {
-            inner,
+            id,
+            registry,
+            query,
+            inner: BroadcastStream::new(receiver),
             terminated: false,
         }
     }
 
     /// Returns the subscription ID.
     pub fn id(&self) -> SubscriptionId {
-        self.inner.id()
+        self.id
     }
 
     /// Returns the query string.
     pub fn query(&self) -> &str {
-        self.inner.query()
+        &self.query
     }
 
     /// Pauses the underlying subscription.
     pub fn pause(&self) -> bool {
-        self.inner.pause()
+        self.registry.pause(self.id)
     }
 
     /// Resumes the underlying subscription.
     pub fn resume(&self) -> bool {
-        self.inner.resume()
+        self.registry.resume(self.id)
     }
 
     /// Cancels the underlying subscription.
-    pub fn cancel(&mut self) {
-        self.terminated = true;
-        self.inner.cancel();
+    pub fn cancel(self: Pin<&mut Self>) {
+        let this = self.project();
+        *this.terminated = true;
+        this.registry.cancel(*this.id);
     }
 }
 
 impl Stream for ChangeEventStream {
     type Item = ChangeEvent;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.terminated {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        if *this.terminated {
             return Poll::Ready(None);
         }
 
-        // Poll the broadcast receiver
-        match self.inner.receiver.try_recv() {
-            Ok(event) => Poll::Ready(Some(event)),
-            Err(broadcast::error::TryRecvError::Empty) => {
-                // Register waker and return Pending
-                // Note: broadcast::Receiver doesn't natively support
-                // polling, so we use a small wrapper that bridges
-                // the async recv to Poll-based Stream.
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                tracing::debug!("Stream lagged behind by {} events", n);
-                // Continue - try to get next available
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Err(broadcast::error::TryRecvError::Closed) => {
-                self.terminated = true;
-                Poll::Ready(None)
+        // Delegate to BroadcastStream which handles async wakeup correctly.
+        // BroadcastStream yields Result<T, BroadcastStreamRecvError>.
+        // We silently skip lagged errors and terminate on closed.
+        loop {
+            match this.inner.poll_next(cx) {
+                Poll::Ready(Some(Ok(event))) => return Poll::Ready(Some(event)),
+                Poll::Ready(Some(Err(_lagged))) => {
+                    // BroadcastStreamRecvError::Lagged — skip and try again.
+                    tracing::debug!("Stream subscription lagged, skipping missed events");
+                    continue;
+                }
+                Poll::Ready(None) => {
+                    *this.terminated = true;
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
@@ -157,23 +180,37 @@ impl Stream for ChangeEventStream {
 impl Drop for ChangeEventStream {
     fn drop(&mut self) {
         if !self.terminated {
-            self.inner.cancel();
+            self.registry.cancel(self.id);
         }
     }
 }
 
 /// Stream wrapper that also yields errors.
 ///
-/// Use this when you need to handle lagged/error conditions explicitly.
+/// Use this when you need to handle lagged/error conditions explicitly
+/// rather than silently skipping them.
+#[pin_project::pin_project]
 pub struct ChangeEventResultStream {
-    inner: PushSubscription,
+    /// Subscription ID.
+    id: SubscriptionId,
+    /// Registry reference.
+    registry: Arc<SubscriptionRegistry>,
+    /// Inner BroadcastStream.
+    #[pin]
+    inner: BroadcastStream<ChangeEvent>,
+    /// Whether the stream has terminated.
     terminated: bool,
 }
 
 impl ChangeEventResultStream {
-    pub(crate) fn new(inner: PushSubscription) -> Self {
+    pub(crate) fn new(sub: PushSubscription) -> Self {
+        let id = sub.id();
+        let registry = sub.registry_clone();
+        let receiver = sub.into_receiver();
         Self {
-            inner,
+            id,
+            registry,
+            inner: BroadcastStream::new(receiver),
             terminated: false,
         }
     }
@@ -182,34 +219,44 @@ impl ChangeEventResultStream {
 impl Stream for ChangeEventResultStream {
     type Item = Result<ChangeEvent, PushSubscriptionError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.terminated {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        if *this.terminated {
             return Poll::Ready(None);
         }
 
-        match self.inner.receiver.try_recv() {
-            Ok(event) => Poll::Ready(Some(Ok(event))),
-            Err(broadcast::error::TryRecvError::Empty) => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
+        match this.inner.poll_next(cx) {
+            Poll::Ready(Some(Ok(event))) => Poll::Ready(Some(Ok(event))),
+            Poll::Ready(Some(Err(lagged))) => {
+                Poll::Ready(Some(Err(PushSubscriptionError::Lagged(lagged.0 as u64))))
             }
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                Poll::Ready(Some(Err(PushSubscriptionError::Lagged(n))))
+            Poll::Ready(None) => {
+                *this.terminated = true;
+                Poll::Ready(None);
             }
-            Err(broadcast::error::TryRecvError::Closed) => {
-                self.terminated = true;
-                Poll::Ready(None)
-            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
 
 impl Drop for ChangeEventResultStream {
     fn drop(&mut self) {
-        // inner.drop() handles cancel via PushSubscription's Drop
+        if !self.terminated {
+            self.registry.cancel(self.id);
+        }
     }
 }
 ```
+
+> **Why not manual `poll_next` with `try_recv`?**
+>
+> The original design used `self.inner.receiver.try_recv()` with
+> `cx.waker().wake_by_ref()` in the `Empty` branch. This creates a
+> **busy-spin loop**: the waker fires immediately, `poll_next` is called
+> again, `try_recv` returns `Empty` again, and the cycle repeats at 100%
+> CPU. `BroadcastStream` correctly integrates with tokio's async machinery
+> — it only wakes the task when new data is actually available.
 
 ### Pipeline API Extension
 
@@ -327,9 +374,99 @@ impl Pipeline {
 - [ ] Documentation with combinator examples
 - [ ] Code reviewed
 
+## Advanced Features (from Research)
+
+### Subscription Composition (Merge Streams)
+
+The research identifies "Subscription composition (combine multiple queries)" as
+a Phase 5 feature. The Stream API is the natural integration point since
+`tokio_stream` already provides merge/select combinators:
+
+```rust
+use tokio_stream::StreamExt;
+
+// Merge multiple subscription streams into one
+let trades = pipeline.subscribe_stream("trades")?;
+let quotes = pipeline.subscribe_stream("quotes")?;
+
+// Option 1: tokio_stream merge (interleaves events by readiness)
+let merged = tokio_stream::StreamExt::merge(trades, quotes);
+tokio::pin!(merged);
+while let Some(event) = merged.next().await {
+    process(event);
+}
+
+// Option 2: select! for prioritized consumption
+tokio::pin!(trades);
+tokio::pin!(quotes);
+loop {
+    tokio::select! {
+        Some(event) = trades.next() => handle_trade(event),
+        Some(event) = quotes.next() => handle_quote(event),
+        else => break,
+    }
+}
+```
+
+A dedicated `Pipeline::subscribe_composed()` API could provide optimized
+multi-source subscription with a single registry entry:
+
+```rust
+impl Pipeline {
+    /// Subscribes to multiple sources as a single merged stream.
+    ///
+    /// More efficient than merging individual streams because it uses
+    /// a single notification slot and dispatcher route.
+    pub fn subscribe_composed(
+        &self,
+        queries: &[&str],
+    ) -> Result<ChangeEventStream, PushSubscriptionError> {
+        // ...
+    }
+}
+```
+
+### Alternative: async_stream Macro
+
+For simpler internal implementation, the `async_stream` crate provides a
+macro-based approach that avoids manual Stream trait implementation:
+
+```rust
+use async_stream::stream;
+
+fn make_stream(
+    mut sub: PushSubscription,
+) -> impl Stream<Item = ChangeEvent> {
+    stream! {
+        loop {
+            match sub.recv().await {
+                Ok(event) => yield event,
+                Err(PushSubscriptionError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+}
+```
+
+The `BroadcastStream` wrapper is preferred for the primary implementation
+because it avoids the `async_stream` dependency and has lower overhead.
+However, `async_stream` may be useful for testing or specialized stream
+adapters.
+
+## Dependencies
+
+| Crate | Purpose |
+|-------|---------|
+| `tokio-stream` | `BroadcastStream` wrapper, `StreamExt` combinators |
+| `pin-project` | Safe pin projection for `ChangeEventStream` / `ChangeEventResultStream` |
+| `async-stream` | Optional: macro-based stream construction for tests |
+
 ## References
 
 - [F-SUB-005: Push Subscription API](F-SUB-005-push-subscription-api.md)
 - [Reactive Subscriptions Research](../../../research/reactive-subscriptions-research-2026.md)
 - [tokio-stream docs](https://docs.rs/tokio-stream/)
+- [BroadcastStream docs](https://docs.rs/tokio-stream/latest/tokio_stream/wrappers/struct.BroadcastStream.html)
+- [pin-project docs](https://docs.rs/pin-project/)
 - [async-stream crate](https://docs.rs/async-stream/)

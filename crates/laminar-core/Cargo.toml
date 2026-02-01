@@ -50,8 +50,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Async for Ring 1 communication
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio-stream = { workspace = true, features = ["sync"] }
 async-trait = { workspace = true }
+
+# SQL parsing (for filter compilation)
+sqlparser = { workspace = true }
 
 # Observability
 tracing = { workspace = true }

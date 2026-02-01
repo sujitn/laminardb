@@ -368,8 +368,174 @@ impl Pipeline {
 - [ ] Documentation with examples
 - [ ] Code reviewed
 
+## Advanced Features (from Research)
+
+### Watch Channel Variant (Latest-Value Semantics)
+
+The research identifies `tokio::sync::watch` as ideal for "current state" subscriptions where
+only the latest value matters (e.g., "what is the current portfolio value?"). This is distinct
+from the broadcast channel which delivers every event.
+
+```rust
+/// A latest-value subscription that only delivers the most recent state.
+///
+/// Unlike `PushSubscription` (which delivers every event), this only
+/// yields when the value changes and always returns the latest state.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let watch = pipeline.subscribe_watch("portfolio_value")?;
+///
+/// // Only sees latest value, never lags
+/// while watch.changed().await.is_ok() {
+///     let current = watch.borrow();
+///     update_dashboard(current);
+/// }
+/// ```
+pub struct WatchSubscription {
+    id: SubscriptionId,
+    receiver: watch::Receiver<Option<ChangeEvent>>,
+    registry: Arc<SubscriptionRegistry>,
+    query: String,
+}
+
+impl WatchSubscription {
+    /// Waits until the value changes.
+    pub async fn changed(&mut self) -> Result<(), PushSubscriptionError> {
+        self.receiver.changed().await
+            .map_err(|_| PushSubscriptionError::Closed)
+    }
+
+    /// Returns a reference to the latest value.
+    pub fn borrow(&self) -> watch::Ref<'_, Option<ChangeEvent>> {
+        self.receiver.borrow()
+    }
+}
+
+impl Pipeline {
+    /// Creates a watch-based subscription (latest-value only).
+    ///
+    /// The watch subscription always reflects the most recent state.
+    /// It never lags - intermediate values are simply overwritten.
+    /// Best for dashboard/monitoring use cases.
+    pub fn subscribe_watch(
+        &self,
+        query: &str,
+    ) -> Result<WatchSubscription, PushSubscriptionError> {
+        // ...
+    }
+}
+```
+
+**When to use which**:
+| Pattern | Channel | Use Case |
+|---------|---------|----------|
+| `subscribe_push()` | `broadcast` | Every event matters (CDC, audit, analytics) |
+| `subscribe_watch()` | `watch` | Only latest state matters (dashboards, monitoring) |
+
+### Subscription Sharing
+
+When multiple consumers subscribe to the same query, they should share a single
+broadcast channel rather than creating independent computation pipelines. The
+`SubscriptionRegistry` (F-SUB-003) handles this via source_id deduplication:
+
+```rust
+// Both subscribers share the same broadcast::Sender
+let sub_a = pipeline.subscribe_push("SELECT * FROM trades")?;
+let sub_b = pipeline.subscribe_push("SELECT * FROM trades")?;
+// Only one notification slot + one broadcast channel is created for this query
+```
+
+The registry's `create()` method checks if a broadcast::Sender already exists for
+the resolved `source_id`. If so, it calls `tx.subscribe()` to create a new receiver
+on the existing channel. This is O(1) and avoids duplicate computation.
+
+### Historical Replay from Checkpoint
+
+Beyond the initial snapshot (FR-5), subscribers may need to replay from a historical
+checkpoint position. This enables:
+- **Late-joining consumers**: Start from a known epoch, not just "now"
+- **Recovery**: Re-subscribe after crash and continue from last committed position
+- **Testing**: Replay deterministic event sequences
+
+```rust
+/// Options for initial position when subscribing.
+#[derive(Debug, Clone)]
+pub enum SubscriptionStartPosition {
+    /// Start from the current position (default). No historical events.
+    Latest,
+    /// Deliver a snapshot of current state, then live changes.
+    Snapshot,
+    /// Replay from a specific epoch (requires WAL retention).
+    FromEpoch(u64),
+    /// Replay from a specific timestamp (best-effort from WAL).
+    FromTimestamp(i64),
+}
+
+impl Pipeline {
+    pub fn subscribe_push_from(
+        &self,
+        query: &str,
+        start: SubscriptionStartPosition,
+    ) -> Result<PushSubscription, PushSubscriptionError> {
+        // ...
+    }
+}
+```
+
+**Note**: `FromEpoch` and `FromTimestamp` require WAL retention and are bounded by
+the checkpoint truncation policy. If the requested position has been truncated,
+returns `PushSubscriptionError::PositionUnavailable`.
+
+### Exactly-Once Delivery
+
+For pipelines requiring exactly-once semantics (e.g., feeding downstream sinks),
+subscriptions can participate in the epoch-based commit protocol:
+
+```rust
+/// Exactly-once subscription that tracks committed epochs.
+///
+/// Events are delivered speculatively (at-least-once). The subscriber
+/// commits epochs to acknowledge processing. On failure, uncommitted
+/// epochs are replayed from the WAL.
+pub struct ExactlyOncePushSubscription {
+    inner: PushSubscription,
+    /// Last committed epoch.
+    committed_epoch: u64,
+}
+
+impl ExactlyOncePushSubscription {
+    /// Commits an epoch, acknowledging all events up to this point.
+    pub async fn commit_epoch(&mut self, epoch: u64) -> Result<(), PushSubscriptionError> {
+        // Persists epoch to subscription offset store
+        // ...
+        self.committed_epoch = epoch;
+        Ok(())
+    }
+}
+```
+
+This is a **Phase 5 advanced feature** per the research. The base `PushSubscription`
+provides at-most-once delivery (lagged events are lost). Exactly-once requires
+WAL integration and is deferred to a future feature.
+
+### Subscription Composition (Future)
+
+Combining multiple subscription queries into a single stream is deferred to a
+future feature. The natural integration point is F-SUB-007 (Stream API) where
+`tokio_stream::StreamExt::merge()` can combine multiple `ChangeEventStream`s:
+
+```rust
+// Future API sketch
+let trades = pipeline.subscribe_stream("trades")?;
+let quotes = pipeline.subscribe_stream("quotes")?;
+let merged = tokio_stream::StreamExt::merge(trades, quotes);
+```
+
 ## References
 
 - [F-STREAM-006: Subscription](../streaming/F-STREAM-006-subscription.md) (existing poll API)
 - [Reactive Subscriptions Research](../../../research/reactive-subscriptions-research-2026.md)
 - [tokio broadcast channel docs](https://docs.rs/tokio/latest/tokio/sync/broadcast/)
+- [tokio watch channel docs](https://docs.rs/tokio/latest/tokio/sync/watch/)
