@@ -16,7 +16,9 @@ use crate::parser::{
     CreateSinkStatement, CreateSourceStatement, EmitClause, SinkFrom, StreamingStatement,
     WindowFunction, WindowRewriter,
 };
-use crate::translator::{JoinOperatorConfig, OrderOperatorConfig, WindowOperatorConfig};
+use crate::translator::{
+    DagExplainOutput, JoinOperatorConfig, OrderOperatorConfig, WindowOperatorConfig,
+};
 
 /// Streaming query planner
 pub struct StreamingPlanner {
@@ -63,6 +65,9 @@ pub enum StreamingPlan {
 
     /// Standard SQL statement (pass-through to DataFusion)
     Standard(Box<Statement>),
+
+    /// DAG topology explanation (from EXPLAIN DAG)
+    DagExplain(DagExplainOutput),
 }
 
 /// A query plan with streaming operator configurations
@@ -105,8 +110,30 @@ impl StreamingPlanner {
                 name,
                 query,
                 emit_clause,
+            }
+            | StreamingStatement::CreateStream {
+                name,
+                query,
+                emit_clause,
+                ..
             } => self.plan_continuous_query(name, query, emit_clause.as_ref()),
             StreamingStatement::Standard(stmt) => self.plan_standard_statement(stmt),
+            StreamingStatement::DropSource { .. }
+            | StreamingStatement::DropSink { .. }
+            | StreamingStatement::DropStream { .. }
+            | StreamingStatement::DropMaterializedView { .. }
+            | StreamingStatement::Show(_)
+            | StreamingStatement::Describe { .. }
+            | StreamingStatement::Explain { .. }
+            | StreamingStatement::CreateMaterializedView { .. }
+            | StreamingStatement::InsertInto { .. } => {
+                // These statements are handled directly by the database facade
+                // and don't need query planning. Return as Standard pass-through.
+                Err(PlanningError::UnsupportedSql(format!(
+                    "Statement type {:?} is handled by the database layer, not the planner",
+                    std::mem::discriminant(statement)
+                )))
+            }
         }
     }
 
@@ -174,6 +201,7 @@ impl StreamingPlanner {
     }
 
     /// Plans a CREATE CONTINUOUS QUERY statement.
+    #[allow(clippy::unused_self)] // Will use planner state for query registration
     fn plan_continuous_query(
         &mut self,
         name: &ObjectName,
@@ -204,6 +232,7 @@ impl StreamingPlanner {
     }
 
     /// Plans a standard SQL statement.
+    #[allow(clippy::unused_self)] // Will use planner state for plan optimization
     fn plan_standard_statement(&self, stmt: &Statement) -> Result<StreamingPlan, PlanningError> {
         // Check if it's a query that might have streaming features
         if let Statement::Query(query) = stmt {
@@ -350,6 +379,7 @@ impl StreamingPlanner {
     /// # Errors
     ///
     /// Returns `PlanningError` if `DataFusion` cannot create the logical plan.
+    #[allow(clippy::unused_self)] // Method will use planner state for plan optimization
     pub async fn to_logical_plan(
         &self,
         plan: &QueryPlan,

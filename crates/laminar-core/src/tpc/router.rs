@@ -26,9 +26,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::operator::Event;
 
-// ============================================================================
 // RouterError - Static error variants for zero-allocation error paths
-// ============================================================================
 
 /// Routing errors with no heap allocation.
 ///
@@ -412,7 +410,7 @@ mod tests {
             ("user_id", user_ids as _),
             ("name", names as _),
         ]).unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     #[test]

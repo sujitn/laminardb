@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 12 | 12 | 0 | 0 | 0 |
+| Phase 3 | 41 | 13 | 0 | 0 | 28 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **80** | **33** | **0** | **0** | **47** |
+| **Total** | **109** | **34** | **0** | **0** | **75** |
 
 ## Status Legend
 
@@ -255,11 +255,63 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 
 ## Phase 3: Connectors & Integration
 
+### Streaming API (In-Memory Sources/Sinks)
+
+> **NEW**: In-memory streaming API - embedded Kafka Streams-like semantics.
+> See [Streaming API Index](phase-3/streaming/INDEX.md) for details.
+
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
-| F025 | Kafka Source Connector | P0 | 📝 | [Link](phase-3/F025-kafka-source.md) |
-| F026 | Kafka Sink Connector | P0 | 📝 | [Link](phase-3/F026-kafka-sink.md) |
-| F027 | PostgreSQL CDC Source | P0 | 📝 | [Link](phase-3/F027-postgres-cdc.md) |
+| F-STREAM-001 | Ring Buffer | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-001-ring-buffer.md) |
+| F-STREAM-002 | SPSC Channel | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-002-spsc-channel.md) |
+| F-STREAM-003 | MPSC Auto-Upgrade | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-003-mpsc-upgrade.md) |
+| F-STREAM-004 | Source | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-004-source.md) |
+| F-STREAM-005 | Sink | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-005-sink.md) |
+| F-STREAM-006 | Subscription | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-006-subscription.md) |
+| F-STREAM-007 | SQL DDL | P0 | ✅ | [Link](phase-3/streaming/F-STREAM-007-sql-ddl.md) |
+| F-STREAM-010 | Broadcast Channel | P1 | 📝 | [Link](phase-3/streaming/F-STREAM-010-broadcast-channel.md) |
+| F-STREAM-013 | Checkpointing | P1 | ✅ | [Link](phase-3/streaming/F-STREAM-013-checkpointing.md) |
+
+**Key Design Principles**:
+- Channel type is NEVER user-specified (auto-derived)
+- SPSC → MPSC upgrades automatically on `source.clone()`
+- Checkpointing is OPTIONAL (zero overhead when disabled)
+
+### DAG Pipeline
+
+> **NEW**: DAG pipeline with shared intermediate stages, fan-out/fan-in, zero-copy multicast.
+> See [DAG Pipeline Index](phase-3/dag/INDEX.md) for details.
+
+| ID | Feature | Priority | Status | Spec |
+|----|---------|----------|--------|------|
+| F-DAG-001 | Core DAG Topology | P0 | ✅ | [Link](phase-3/dag/F-DAG-001-core-topology.md) |
+| F-DAG-002 | Multicast & Routing | P0 | ✅ | [Link](phase-3/dag/F-DAG-002-multicast-routing.md) |
+| F-DAG-003 | DAG Executor | P0 | ✅ | [Link](phase-3/dag/F-DAG-003-dag-executor.md) |
+| F-DAG-004 | DAG Checkpointing | P1 | ✅ | [Link](phase-3/dag/F-DAG-004-dag-checkpointing.md) |
+| F-DAG-005 | SQL & MV Integration | P1 | ✅ | [Link](phase-3/dag/F-DAG-005-sql-mv-integration.md) |
+| F-DAG-006 | Connector Bridge | P1 | ✅ | [Link](phase-3/dag/F-DAG-006-connector-bridge.md) |
+| F-DAG-007 | Performance Validation | P2 | 📝 | [Link](phase-3/dag/F-DAG-007-performance-validation.md) |
+
+**Key Design Principles**:
+- Pre-computed routing table for O(1) hot path dispatch
+- Channel type auto-derived from topology (SPSC/SPMC/MPSC)
+- Zero-copy multicast via reference-counted slot buffers
+- Barrier-based checkpointing (Chandy-Lamport) through DAG edges
+
+### SQL Extensions
+
+| ID | Feature | Priority | Status | Spec |
+|----|---------|----------|--------|------|
+| F-SQL-001 | ASOF JOIN SQL Support | P1 | ✅ | [Link](phase-3/F-SQL-001-asof-join-sql.md) |
+
+### External Connectors
+
+| ID | Feature | Priority | Status | Spec |
+|----|---------|----------|--------|------|
+| F025 | Kafka Source Connector | P0 | ✅ | [Link](phase-3/F025-kafka-source.md) |
+| F026 | Kafka Sink Connector | P0 | ✅ | [Link](phase-3/F026-kafka-sink.md) |
+| F027 | PostgreSQL CDC Source | P0 | ✅ | [Link](phase-3/F027-postgres-cdc.md) |
+| F027B | PostgreSQL Sink | P0 | ✅ | [Link](phase-3/F027B-postgres-sink.md) |
 | F028 | MySQL CDC Source | P1 | 📝 | [Link](phase-3/F028-mysql-cdc.md) |
 | F029 | MongoDB CDC Source | P2 | 📝 | [Link](phase-3/F029-mongodb-cdc.md) |
 | F030 | Redis Lookup Table | P1 | 📝 | [Link](phase-3/F030-redis-lookup.md) |
@@ -269,6 +321,39 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 | F034 | Connector SDK | P1 | 📝 | [Link](phase-3/F034-connector-sdk.md) |
 | F058 | Async State Access | P1 | 📝 | [Link](phase-3/F058-async-state-access.md) |
 | F061 | Historical Backfill | P2 | 📝 | [Link](phase-3/F061-historical-backfill.md) |
+
+### Reactive Subscriptions
+
+> **NEW**: Reactive push-based subscription system - automatic data delivery to consumers.
+> See [Subscription Index](phase-3/subscription/INDEX.md) for details.
+
+| ID | Feature | Priority | Status | Spec |
+|----|---------|----------|--------|------|
+| F-SUB-001 | ChangeEvent Types | P0 | ✅ | [Link](phase-3/subscription/F-SUB-001-change-event-types.md) |
+| F-SUB-002 | Notification Slot (Ring 0) | P0 | ✅ | [Link](phase-3/subscription/F-SUB-002-notification-slot.md) |
+| F-SUB-003 | Subscription Registry | P0 | ✅ | [Link](phase-3/subscription/F-SUB-003-subscription-registry.md) |
+| F-SUB-004 | Subscription Dispatcher (Ring 1) | P0 | ✅ | [Link](phase-3/subscription/F-SUB-004-subscription-dispatcher.md) |
+| F-SUB-005 | Push Subscription API | P0 | ✅ | [Link](phase-3/subscription/F-SUB-005-push-subscription-api.md) |
+| F-SUB-006 | Callback Subscriptions | P1 | ✅ | [Link](phase-3/subscription/F-SUB-006-callback-subscriptions.md) |
+| F-SUB-007 | Stream Subscriptions | P1 | ✅ | [Link](phase-3/subscription/F-SUB-007-stream-subscriptions.md) |
+| F-SUB-008 | Backpressure & Filtering | P1 | ✅ | [Link](phase-3/subscription/F-SUB-008-backpressure-filtering.md) |
+
+**Key Design Principles**:
+- Three-tier: Ring 0 atomic notification, Ring 1 broadcast dispatch, Ring 2 lifecycle
+- Notification/data separation: lightweight sequence numbers in Ring 0, zero-copy data fetch in Ring 1
+- Three API styles: channel (F-SUB-005), callback (F-SUB-006), async Stream (F-SUB-007)
+- Latency budget: < 1us from Ring 0 notify to subscriber channel delivery
+
+### Production Demo
+
+> Market data demo with Ratatui TUI dashboard.
+> See [Demo Index](phase-3/demo/INDEX.md) for details.
+
+| ID | Feature | Priority | Status | Spec |
+|----|---------|----------|--------|------|
+| F-DEMO-001 | Market Data Pipeline | P0 | 📝 | [Link](phase-3/demo/F-DEMO-001-market-data-pipeline.md) |
+| F-DEMO-002 | Ratatui TUI Dashboard | P0 | 📝 | [Link](phase-3/demo/F-DEMO-002-ratatui-tui.md) |
+| F-DEMO-003 | Kafka Integration & Docker | P1 | 📝 | [Link](phase-3/demo/F-DEMO-003-kafka-docker.md) |
 
 ---
 
@@ -449,6 +534,7 @@ F006B ──▶ F025-F034 (Connectors need CREATE SOURCE/SINK)
 F013 + F019 ──▶ F058 (Async State Access) ◀── Flink 2.0 Innovation
 F060 + F031/F032 ──▶ F061 (Historical Backfill) ◀── Live+Historical Unification
 F063 ──▶ F027/F028 (CDC Connectors need changelog format)
+F034 + F023 + F063 ──▶ F027B (PostgreSQL Sink: COPY BINARY + upsert + co-transactional exactly-once)
 ```
 
 ---

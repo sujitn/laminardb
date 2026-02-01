@@ -235,6 +235,9 @@ impl<S: Sink> ExactlyOnceSink for TransactionalSink<S> {
         cp
     }
 
+    /// # Panics
+    ///
+    /// Will not panic — array conversions are guarded by length checks before `try_into().unwrap()`.
     #[allow(clippy::missing_panics_doc)]
     fn restore(&mut self, checkpoint: &SinkCheckpoint) -> Result<(), SinkError> {
         // Force-rollback any pending transaction
@@ -325,10 +328,7 @@ mod tests {
     fn make_event(timestamp: i64, value: i64) -> Event {
         let array = Arc::new(Int64Array::from(vec![value]));
         let batch = RecordBatch::try_from_iter(vec![("value", array as _)]).unwrap();
-        Event {
-            timestamp,
-            data: batch,
-        }
+        Event::new(timestamp, batch)
     }
 
     #[test]

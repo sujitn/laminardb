@@ -45,9 +45,7 @@ pub struct TaskBudget {
 }
 
 impl TaskBudget {
-    // ============================================================
     // Ring 0 budgets (microseconds or less)
-    // ============================================================
 
     /// Single event processing budget: 500ns
     pub const RING0_EVENT_NS: u64 = 500;
@@ -64,9 +62,7 @@ impl TaskBudget {
     /// Iteration budget: 10μs (for one reactor poll cycle)
     pub const RING0_ITERATION_NS: u64 = 10_000;
 
-    // ============================================================
     // Ring 1 budgets (milliseconds)
-    // ============================================================
 
     /// Background work chunk budget: 1ms
     pub const RING1_CHUNK_NS: u64 = 1_000_000;
@@ -80,9 +76,7 @@ impl TaskBudget {
     /// Compaction chunk budget: 5ms
     pub const RING1_COMPACTION_NS: u64 = 5_000_000;
 
-    // ============================================================
     // Ring 0 factory methods
-    // ============================================================
 
     /// Create budget for Ring 0 single event.
     ///
@@ -175,9 +169,7 @@ impl TaskBudget {
         }
     }
 
-    // ============================================================
     // Ring 1 factory methods
-    // ============================================================
 
     /// Create budget for Ring 1 background chunk.
     ///
@@ -239,9 +231,7 @@ impl TaskBudget {
         }
     }
 
-    // ============================================================
     // Custom budget
-    // ============================================================
 
     /// Create a custom budget.
     ///
@@ -275,9 +265,7 @@ impl TaskBudget {
         }
     }
 
-    // ============================================================
     // Accessors
-    // ============================================================
 
     /// Get the task name.
     #[inline]
@@ -300,9 +288,7 @@ impl TaskBudget {
         self.budget_ns
     }
 
-    // ============================================================
     // Budget checking
-    // ============================================================
 
     /// Get elapsed time in nanoseconds.
     ///

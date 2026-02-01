@@ -181,7 +181,7 @@ impl PerCoreWalEntry {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| {
-                #[allow(clippy::cast_possible_truncation)]
+                #[allow(clippy::cast_possible_truncation)] // i64 ns won't overflow for ~292 years
                 let ns = d.as_nanos() as i64;
                 ns
             })

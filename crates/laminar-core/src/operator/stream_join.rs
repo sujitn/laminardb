@@ -126,9 +126,7 @@ pub enum JoinSide {
     Right,
 }
 
-// ============================================================================
 // F057: Stream Join Optimizations
-// ============================================================================
 
 /// Row encoding strategy for join state (F057).
 ///
@@ -272,7 +270,7 @@ impl StreamJoinConfigBuilder {
 
     /// Sets the time bound for matching events.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn time_bound(mut self, duration: Duration) -> Self {
         self.config.time_bound_ms = duration.as_millis() as i64;
         self
@@ -315,7 +313,7 @@ impl StreamJoinConfigBuilder {
 
     /// Sets the idle threshold for asymmetric compaction (F057).
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn idle_threshold(mut self, duration: Duration) -> Self {
         self.config.idle_threshold_ms = duration.as_millis() as i64;
         self
@@ -330,7 +328,7 @@ impl StreamJoinConfigBuilder {
 
     /// Sets the key idle threshold for cleanup (F057).
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn key_idle_threshold(mut self, duration: Duration) -> Self {
         self.config.key_idle_threshold_ms = duration.as_millis() as i64;
         self
@@ -557,7 +555,7 @@ impl JoinRow {
     ///     - Int64: validity bitmap + raw i64 values
     ///     - Float64: validity bitmap + raw f64 values
     ///     - Utf8: validity bitmap + offsets (u32) + data bytes
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Wire format uses u32 for row/column counts and offsets
     fn serialize_cpu_friendly(batch: &RecordBatch) -> Result<Vec<u8>, OperatorError> {
         let schema = batch.schema();
         let num_rows = batch.num_rows();
@@ -1065,7 +1063,7 @@ impl StreamJoinOperator {
     /// * `time_bound` - Maximum time difference for matching events
     /// * `join_type` - Type of join to perform
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn new(
         left_key_column: String,
         right_key_column: String,
@@ -1102,7 +1100,7 @@ impl StreamJoinOperator {
 
     /// Creates a new stream join operator with a custom operator ID.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn with_id(
         left_key_column: String,
         right_key_column: String,
@@ -1728,10 +1726,7 @@ impl StreamJoinOperator {
 
         let joined_batch = self.concat_batches(&left_batch, &right_batch)?;
 
-        Some(Event {
-            timestamp: output_timestamp,
-            data: joined_batch,
-        })
+        Some(Event::new(output_timestamp, joined_batch))
     }
 
     /// Concatenates two batches horizontally.
@@ -1786,10 +1781,7 @@ impl StreamJoinOperator {
 
         let joined_batch = RecordBatch::try_new(Arc::clone(schema), columns).ok()?;
 
-        Some(Event {
-            timestamp: row.timestamp,
-            data: joined_batch,
-        })
+        Some(Event::new(row.timestamp, joined_batch))
     }
 
     /// Creates a null array of the given type and length.
@@ -2059,7 +2051,7 @@ mod tests {
             ],
         )
         .unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     fn create_payment_event(timestamp: i64, order_id: &str, status: &str) -> Event {
@@ -2075,7 +2067,7 @@ mod tests {
             ],
         )
         .unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     fn create_test_context<'a>(
@@ -2470,7 +2462,7 @@ mod tests {
                 ],
             )
             .unwrap();
-            Event { timestamp, data: batch }
+            Event::new(timestamp, batch)
         }
 
         let mut operator = StreamJoinOperator::with_id(
@@ -2503,9 +2495,7 @@ mod tests {
         assert_eq!(operator.metrics().matches, 1);
     }
 
-    // ========================================================================
     // F057: Stream Join Optimization Tests
-    // ========================================================================
 
     #[test]
     fn test_f057_join_row_encoding_enum() {

@@ -25,19 +25,17 @@ use std::time::Duration;
 fn make_event(user_id: i64, timestamp: i64) -> Event {
     let user_ids = Arc::new(Int64Array::from(vec![user_id]));
     let batch = RecordBatch::try_from_iter(vec![("user_id", user_ids as _)]).unwrap();
-    Event { timestamp, data: batch }
+    Event::new(timestamp, batch)
 }
 
 /// Create a test event with string user_id (for hashing variety)
 fn make_event_string(user_id: &str, timestamp: i64) -> Event {
     let user_ids = Arc::new(StringArray::from(vec![user_id]));
     let batch = RecordBatch::try_from_iter(vec![("user_id", user_ids as _)]).unwrap();
-    Event { timestamp, data: batch }
+    Event::new(timestamp, batch)
 }
 
-// =============================================================================
 // SPSC Queue Benchmarks
-// =============================================================================
 
 /// Benchmark SPSC queue push operation
 fn bench_spsc_push(c: &mut Criterion) {
@@ -159,9 +157,7 @@ fn bench_spsc_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Cache Padding Benchmarks
-// =============================================================================
 
 /// Benchmark CachePadded overhead
 fn bench_cache_padded(c: &mut Criterion) {
@@ -190,9 +186,7 @@ fn bench_cache_padded(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Key Router Benchmarks
-// =============================================================================
 
 /// Benchmark key routing by column name
 fn bench_router_column_name(c: &mut Criterion) {
@@ -288,9 +282,7 @@ fn bench_router_string_key(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // CoreHandle Benchmarks
-// =============================================================================
 
 /// Benchmark event submission to a single core
 fn bench_core_submit(c: &mut Criterion) {
@@ -348,9 +340,7 @@ fn bench_core_poll(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // ThreadPerCoreRuntime Benchmarks
-// =============================================================================
 
 /// Benchmark runtime submit throughput
 fn bench_runtime_submit(c: &mut Criterion) {
@@ -456,9 +446,7 @@ fn bench_runtime_poll(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Scaling Benchmarks
-// =============================================================================
 
 /// Benchmark scaling efficiency across cores
 ///
@@ -500,9 +488,7 @@ fn bench_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
 // Main
-// =============================================================================
 
 criterion_group!(
     spsc_benches,

@@ -156,7 +156,7 @@ impl PerCoreWalReader {
         }
 
         // Read data
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // u32 → usize: lossless on all supported platforms
         let mut data = vec![0u8; len as usize];
         self.reader.read_exact(&mut data)?;
         self.position += len;

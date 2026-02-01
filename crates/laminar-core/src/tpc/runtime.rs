@@ -35,9 +35,7 @@ use std::sync::Arc;
 use crate::operator::{Event, Operator, Output};
 use crate::reactor::ReactorConfig;
 
-// ============================================================================
 // OutputBuffer - Pre-allocated buffer for zero-allocation polling
-// ============================================================================
 
 /// A pre-allocated buffer for collecting outputs without allocation.
 ///
@@ -857,7 +855,7 @@ mod tests {
         let batch = RecordBatch::try_from_iter(vec![
             ("user_id", user_ids as _),
         ]).unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     #[test]

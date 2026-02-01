@@ -34,10 +34,7 @@ fn create_join_event(key: &str, timestamp: i64, value: i64) -> Event {
         ],
     )
     .unwrap();
-    Event {
-        timestamp,
-        data: batch,
-    }
+    Event::new(timestamp, batch)
 }
 
 /// Benchmark stream-stream join throughput
@@ -213,7 +210,8 @@ fn bench_asof_join(c: &mut Criterion) {
                     .right_time_column("ts".to_string())
                     .direction(AsofDirection::Backward)
                     .tolerance(Duration::from_secs(60))
-                    .build();
+                    .build()
+                    .unwrap();
                 let mut operator = AsofJoinOperator::new(config);
                 let mut timers = TimerService::new();
                 let mut state = InMemoryStore::new();

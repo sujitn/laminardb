@@ -351,6 +351,7 @@ pub trait TwoPhaseCommitSink: Send {
 
 /// Buffer for transactional writes
 #[derive(Debug, Default)]
+#[allow(dead_code)] // Public API for Phase 3 connector implementations
 pub struct TransactionBuffer {
     /// Buffered outputs
     outputs: Vec<Output>,
@@ -359,6 +360,7 @@ pub struct TransactionBuffer {
     size_bytes: usize,
 }
 
+#[allow(dead_code)] // Public API for Phase 3 connector implementations
 impl TransactionBuffer {
     /// Create a new transaction buffer
     #[must_use]
@@ -551,10 +553,7 @@ mod tests {
 
         let array = Arc::new(Int64Array::from(vec![1, 2, 3]));
         let batch = RecordBatch::try_from_iter(vec![("col", array as _)]).unwrap();
-        let event = Event {
-            timestamp: 1000,
-            data: batch,
-        };
+        let event = Event::new(1000, batch);
 
         buffer.push(vec![Output::Event(event)]);
 

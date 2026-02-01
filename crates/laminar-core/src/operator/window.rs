@@ -519,7 +519,7 @@ impl CdcOperation {
 /// # use arrow_schema::Schema;
 /// # let schema = Arc::new(Schema::empty());
 /// # let batch = RecordBatch::new_empty(schema);
-/// # let event = Event { timestamp: 0, data: batch.clone() };
+/// # let event = Event::new(0, batch.clone());
 /// # let old_event = event.clone();
 /// # let new_event = event.clone();
 ///
@@ -1106,9 +1106,7 @@ impl Aggregator for AvgAggregator {
     }
 }
 
-// ============================================================================
 // FIRST_VALUE / LAST_VALUE Aggregators (F059)
-// ============================================================================
 
 /// `FIRST_VALUE` aggregator - returns the first value seen in a window.
 ///
@@ -1375,9 +1373,7 @@ impl Aggregator for LastValueAggregator {
     }
 }
 
-// ============================================================================
 // FIRST_VALUE / LAST_VALUE for Float64 (F059)
-// ============================================================================
 
 /// Accumulator for `FIRST_VALUE` aggregation on f64 values.
 #[derive(Debug, Clone, Default, Archive, RkyvSerialize, RkyvDeserialize)]
@@ -1617,9 +1613,7 @@ impl Aggregator for LastValueF64Aggregator {
     }
 }
 
-// ============================================================================
 // F074: Composite Aggregator & f64 Type Support
-// ============================================================================
 
 /// Scalar result type supporting multiple numeric types.
 ///
@@ -3003,9 +2997,7 @@ impl Clone for CompositeAccumulator {
     }
 }
 
-// ============================================================================
 // End F074
-// ============================================================================
 
 /// State key prefix for window accumulators (4 bytes)
 const WINDOW_STATE_PREFIX: &[u8; 4] = b"win:";
@@ -3248,8 +3240,7 @@ where
     /// Returns a stack-allocated fixed-size array to avoid heap allocation
     /// on the hot path. This is critical for Ring 0 performance.
     #[inline]
-    #[allow(clippy::unused_self)] // May use self for namespacing in the future
-    fn state_key(&self, window_id: &WindowId) -> [u8; WINDOW_STATE_KEY_SIZE] {
+    fn state_key(window_id: &WindowId) -> [u8; WINDOW_STATE_KEY_SIZE] {
         let mut key = [0u8; WINDOW_STATE_KEY_SIZE];
         key[..4].copy_from_slice(WINDOW_STATE_PREFIX);
         let window_key = window_id.to_key_inline();
@@ -3259,7 +3250,7 @@ where
 
     /// Gets the accumulator for a window, creating a new one if needed.
     fn get_accumulator(&self, window_id: &WindowId, state: &dyn StateStore) -> A::Acc {
-        let key = self.state_key(window_id);
+        let key = Self::state_key(window_id);
         state
             .get_typed::<A::Acc>(&key)
             .ok()
@@ -3269,12 +3260,11 @@ where
 
     /// Stores the accumulator for a window.
     fn put_accumulator(
-        &self,
         window_id: &WindowId,
         acc: &A::Acc,
         state: &mut dyn StateStore,
     ) -> Result<(), OperatorError> {
-        let key = self.state_key(window_id);
+        let key = Self::state_key(window_id);
         state
             .put_typed(&key, acc)
             .map_err(|e| OperatorError::StateAccessFailed(e.to_string()))
@@ -3282,11 +3272,10 @@ where
 
     /// Deletes the accumulator for a window.
     fn delete_accumulator(
-        &self,
         window_id: &WindowId,
         state: &mut dyn StateStore,
     ) -> Result<(), OperatorError> {
-        let key = self.state_key(window_id);
+        let key = Self::state_key(window_id);
         state
             .delete(&key)
             .map_err(|e| OperatorError::StateAccessFailed(e.to_string()))
@@ -3394,10 +3383,7 @@ where
             ],
         ).ok()?;
 
-        Some(Event {
-            timestamp: window_id.end,
-            data: batch,
-        })
+        Some(Event::new(window_id.end, batch))
     }
 
     /// Handles periodic timer expiration for intermediate emissions.
@@ -3489,7 +3475,7 @@ where
         if let Some(value) = self.aggregator.extract(event) {
             let mut acc = self.get_accumulator(&window_id, ctx.state);
             acc.add(value);
-            if let Err(e) = self.put_accumulator(&window_id, &acc, ctx.state) {
+            if let Err(e) = Self::put_accumulator(&window_id, &acc, ctx.state) {
                 // Log error but don't fail - we'll retry on next event
                 tracing::error!("Failed to store window state: {e}");
             } else {
@@ -3570,7 +3556,7 @@ where
         // Skip empty windows
         if acc.is_empty() {
             // Clean up state
-            let _ = self.delete_accumulator(&window_id, ctx.state);
+            let _ = Self::delete_accumulator(&window_id, ctx.state);
             self.registered_windows.remove(&window_id);
             self.periodic_timer_windows.remove(&window_id);
             return OutputVec::new();
@@ -3580,7 +3566,7 @@ where
         let result = acc.result();
 
         // Clean up window state
-        let _ = self.delete_accumulator(&window_id, ctx.state);
+        let _ = Self::delete_accumulator(&window_id, ctx.state);
         self.registered_windows.remove(&window_id);
         self.periodic_timer_windows.remove(&window_id);
 
@@ -3600,10 +3586,7 @@ where
         let mut output = OutputVec::new();
         match batch {
             Ok(data) => {
-                let event = Event {
-                    timestamp: window_id.end,
-                    data,
-                };
+                let event = Event::new(window_id.end, data);
 
                 // F011B: Emit based on strategy
                 match &self.emit_strategy {
@@ -3675,70 +3658,6 @@ where
     }
 }
 
-/// Configuration for tumbling windows (legacy - use `TumblingWindowAssigner` instead).
-#[derive(Debug, Clone)]
-pub struct TumblingWindowConfig {
-    /// Window duration
-    pub duration: Duration,
-    /// Grace period for late data
-    pub allowed_lateness: Duration,
-}
-
-/// Legacy tumbling window operator (deprecated).
-///
-/// Use [`TumblingWindowOperator`] with [`TumblingWindowAssigner`] instead.
-#[deprecated(
-    since = "0.1.0",
-    note = "Use TumblingWindowOperator with TumblingWindowAssigner instead"
-)]
-pub struct TumblingWindow {
-    config: TumblingWindowConfig,
-}
-
-#[allow(deprecated)]
-impl TumblingWindow {
-    /// Get the window duration.
-    #[must_use]
-    pub fn duration(&self) -> Duration {
-        self.config.duration
-    }
-
-    /// Get the allowed lateness.
-    #[must_use]
-    pub fn allowed_lateness(&self) -> Duration {
-        self.config.allowed_lateness
-    }
-
-    /// Creates a new tumbling window operator.
-    #[must_use]
-    pub fn new(config: TumblingWindowConfig) -> Self {
-        Self { config }
-    }
-}
-
-#[allow(deprecated)]
-impl Operator for TumblingWindow {
-    fn process(&mut self, _event: &Event, _ctx: &mut OperatorContext) -> OutputVec {
-        // Legacy stub - use TumblingWindowOperator instead
-        OutputVec::new()
-    }
-
-    fn on_timer(&mut self, _timer: Timer, _ctx: &mut OperatorContext) -> OutputVec {
-        OutputVec::new()
-    }
-
-    fn checkpoint(&self) -> OperatorState {
-        OperatorState {
-            operator_id: "legacy_tumbling_window".to_string(),
-            data: vec![],
-        }
-    }
-
-    fn restore(&mut self, _state: OperatorState) -> Result<(), OperatorError> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3756,10 +3675,7 @@ mod tests {
         )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![value]))]).unwrap();
-        Event {
-            timestamp,
-            data: batch,
-        }
+        Event::new(timestamp, batch)
     }
 
     fn create_test_context<'a>(
@@ -4097,21 +4013,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_legacy_tumbling_window_config() {
-        let config = TumblingWindowConfig {
-            duration: Duration::from_secs(60),
-            allowed_lateness: Duration::from_secs(5),
-        };
-
-        let window = TumblingWindow::new(config);
-        assert_eq!(window.duration(), Duration::from_secs(60));
-        assert_eq!(window.allowed_lateness(), Duration::from_secs(5));
-    }
-
-    // ==================== EmitStrategy Tests ====================
-
-    #[test]
     fn test_emit_strategy_default() {
         let strategy = EmitStrategy::default();
         assert_eq!(strategy, EmitStrategy::OnWatermark);
@@ -4314,7 +4215,6 @@ mod tests {
         assert!(!TumblingWindowOperator::<CountAggregator>::is_periodic_timer_key(&regular_key));
     }
 
-    // ==================== Late Data Handling Tests (F012) ====================
 
     #[test]
     fn test_late_data_config_default() {
@@ -4559,7 +4459,6 @@ mod tests {
         assert_eq!(operator.late_data_metrics().late_events_total(), 0);
     }
 
-    // ==================== F011B Tests ====================
 
     #[test]
     fn test_emit_strategy_helper_methods() {
@@ -4859,9 +4758,7 @@ mod tests {
         }
     }
 
-    // ========================================================================
     // FIRST_VALUE / LAST_VALUE Tests (F059)
-    // ========================================================================
 
     #[test]
     fn test_first_value_single_event() {
@@ -5014,10 +4911,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let event = Event {
-            timestamp: 1000,
-            data: batch,
-        };
+        let event = Event::new(1000, batch);
 
         let extracted = aggregator.extract(&event);
         assert_eq!(extracted, Some((100, 1000)));
@@ -5039,10 +4933,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let event = Event {
-            timestamp: 1000,
-            data: batch,
-        };
+        let event = Event::new(1000, batch);
 
         let extracted = aggregator.extract(&event);
         assert_eq!(extracted, Some((100, 1000)));
@@ -5059,10 +4950,7 @@ mod tests {
         )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![100]))]).unwrap();
-        let event = Event {
-            timestamp: 1000,
-            data: batch,
-        };
+        let event = Event::new(1000, batch);
 
         assert_eq!(aggregator.extract(&event), None);
     }
@@ -5222,10 +5110,7 @@ mod tests {
             vec![Arc::new(arrow_array::Float64Array::from(values.to_vec()))],
         )
         .unwrap();
-        Event {
-            timestamp: 1000,
-            data: batch,
-        }
+        Event::new(1000, batch)
     }
 
     #[test]
@@ -5357,10 +5242,7 @@ mod tests {
             ],
         )
         .unwrap();
-        Event {
-            timestamp: 1000,
-            data: batch,
-        }
+        Event::new(1000, batch)
     }
 
     #[test]
@@ -5570,10 +5452,7 @@ mod tests {
             ],
         )
         .unwrap();
-        acc.add_event(&Event {
-            timestamp: 1000,
-            data: batch1,
-        });
+        acc.add_event(&Event::new(1000, batch1));
 
         // Trade 2: price=105.0 at t=2000
         let batch2 = RecordBatch::try_new(
@@ -5584,10 +5463,7 @@ mod tests {
             ],
         )
         .unwrap();
-        acc.add_event(&Event {
-            timestamp: 2000,
-            data: batch2,
-        });
+        acc.add_event(&Event::new(2000, batch2));
 
         // Trade 3: price=98.0 at t=3000
         let batch3 = RecordBatch::try_new(
@@ -5598,10 +5474,7 @@ mod tests {
             ],
         )
         .unwrap();
-        acc.add_event(&Event {
-            timestamp: 3000,
-            data: batch3,
-        });
+        acc.add_event(&Event::new(3000, batch3));
 
         // Trade 4: price=102.0 at t=4000
         let batch4 = RecordBatch::try_new(
@@ -5612,10 +5485,7 @@ mod tests {
             ],
         )
         .unwrap();
-        acc.add_event(&Event {
-            timestamp: 4000,
-            data: batch4,
-        });
+        acc.add_event(&Event::new(4000, batch4));
 
         let results = acc.results();
         // OHLC: Open=100, High=105, Low=98, Close=102, Count=4

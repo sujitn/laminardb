@@ -109,7 +109,7 @@ impl BoundedOutOfOrdernessGenerator {
 
     /// Creates a new generator from a `Duration`.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_millis() fits i64 for practical values
     pub fn from_duration(max_out_of_orderness: Duration) -> Self {
         Self::new(max_out_of_orderness.as_millis() as i64)
     }
@@ -701,7 +701,6 @@ impl<G: WatermarkGenerator> WatermarkGenerator for MeteredGenerator<G> {
 mod tests {
     use super::*;
 
-    // ==================== BoundedOutOfOrdernessGenerator Tests ====================
 
     #[test]
     fn test_bounded_generator_first_event() {
@@ -746,7 +745,6 @@ mod tests {
         assert_eq!(gen.on_periodic(), None);
     }
 
-    // ==================== AscendingTimestampsGenerator Tests ====================
 
     #[test]
     fn test_ascending_generator_advances_on_each_event() {
@@ -770,7 +768,6 @@ mod tests {
         assert_eq!(gen.current_watermark(), 2000);
     }
 
-    // ==================== PeriodicGenerator Tests ====================
 
     #[test]
     fn test_periodic_generator_passes_through() {
@@ -789,7 +786,6 @@ mod tests {
         assert_eq!(gen.inner().max_out_of_orderness(), 100);
     }
 
-    // ==================== PunctuatedGenerator Tests ====================
 
     #[test]
     fn test_punctuated_generator_predicate() {
@@ -819,7 +815,6 @@ mod tests {
         assert_eq!(gen.current_watermark(), 2000);
     }
 
-    // ==================== WatermarkTracker Tests ====================
 
     #[test]
     fn test_tracker_single_source() {
@@ -924,7 +919,6 @@ mod tests {
         assert_eq!(wm, None);
     }
 
-    // ==================== SourceProvidedGenerator Tests ====================
 
     #[test]
     fn test_source_provided_fallback() {
@@ -943,7 +937,6 @@ mod tests {
         assert_eq!(gen.current_watermark(), 500);
     }
 
-    // ==================== MeteredGenerator Tests ====================
 
     #[test]
     fn test_metered_generator_tracks_metrics() {
@@ -981,7 +974,6 @@ mod tests {
         assert_eq!(gen.metrics().late_events, 2);
     }
 
-    // ==================== WatermarkMetrics Tests ====================
 
     #[test]
     fn test_watermark_metrics_default() {

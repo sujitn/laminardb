@@ -440,7 +440,6 @@ pub enum TimeError {
 mod tests {
     use super::*;
 
-    // ==================== Watermark Tests ====================
 
     #[test]
     fn test_watermark_creation() {
@@ -490,7 +489,6 @@ mod tests {
         assert_eq!(wm.timestamp(), i64::MIN);
     }
 
-    // ==================== TimerService Tests ====================
 
     #[test]
     fn test_timer_service_creation() {
@@ -596,7 +594,6 @@ mod tests {
         assert_eq!(service.next_timer_timestamp(), None);
     }
 
-    // ==================== WatermarkGenerator Trait Tests ====================
 
     #[test]
     fn test_bounded_watermark_generator() {
@@ -630,7 +627,6 @@ mod tests {
         assert_eq!(wm3, None);
     }
 
-    // ==================== WatermarkTracker Tests ====================
 
     #[test]
     fn test_watermark_tracker_basic() {

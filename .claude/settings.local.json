@@ -32,7 +32,18 @@
       "Bash(where /r C:Userssujit.cargoregistrysrc *ScalarFunctionArgs*)",
       "Bash(powershell -Command \"Get-ChildItem -Path ''C:\\\\Users\\\\sujit\\\\.cargo\\\\registry\\\\src'' -Recurse -Filter ''*.rs'' | Select-String -Pattern ''pub struct ScalarFunctionArgs'' | Select-Object -First 3 -ExpandProperty Path\")",
       "Bash(powershell -Command \"Get-Content ''C:\\\\Users\\\\sujit\\\\.claude\\\\projects\\\\C--Users-sujit-source-laminardb\\\\64a8e73e-b0ce-47cb-b8fb-7b82ccce6163\\\\tool-results\\\\toolu_01N2Aa3K8T3BSWggHkVABsvQ.txt'' | Select-Object -Last 30\")",
-      "Bash(powershell -Command:*)"
+      "Bash(powershell -Command:*)",
+      "Bash(ls:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(python:*)",
+      "Bash(cargo run:*)",
+      "Bash(git grep:*)",
+      "Bash(tee:*)",
+      "Bash(powershell -NoProfile -Command:*)",
+      "Bash(for f in F025-kafka-source.md F026-kafka-sink.md F027-postgres-cdc.md F031-delta-lake-sink.md F034-connector-sdk.md F-DAG-001-dag-pipeline.md)",
+      "WebFetch(domain:arrow.apache.org)",
+      "WebFetch(domain:docs.confluent.io)",
+      "Bash(cmake:*)"
     ]
   }
 }

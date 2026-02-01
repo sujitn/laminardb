@@ -2,8 +2,6 @@
 //!
 //! This module provides exactly-once delivery semantics for sinks through two mechanisms:
 //!
-// Allow dead code for public APIs that will be used in connector implementations
-#![allow(dead_code)]
 //!
 //! 1. **Transactional Sinks**: For sinks that support transactions (Kafka, Delta Lake)
 //! 2. **Idempotent Sinks**: For sinks without transactions, using deduplication
@@ -75,7 +73,7 @@ mod tests {
     fn make_test_event(timestamp: i64, value: i64) -> Event {
         let array = Arc::new(Int64Array::from(vec![value]));
         let batch = RecordBatch::try_from_iter(vec![("value", array as _)]).unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     #[test]
@@ -193,9 +191,7 @@ mod tests {
         assert!(!caps.supports_upsert());
     }
 
-    // ========================================================================
     // F023 Recovery Integration Tests
-    // ========================================================================
 
     use crate::reactor::BufferingSink;
 

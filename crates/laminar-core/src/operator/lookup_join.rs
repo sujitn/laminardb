@@ -56,7 +56,8 @@
 //!     .lookup_key_column("id".to_string())
 //!     .cache_ttl(Duration::from_secs(300))  // 5 minute cache
 //!     .join_type(LookupJoinType::Left)
-//!     .build();
+//!     .build()
+//!     .unwrap();
 //!
 //! // let operator = LookupJoinOperator::new(config, Arc::new(loader));
 //! ```
@@ -199,23 +200,23 @@ impl LookupJoinConfigBuilder {
 
     /// Builds the configuration.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if required fields are not set.
-    #[must_use]
-    pub fn build(self) -> LookupJoinConfig {
-        LookupJoinConfig {
-            stream_key_column: self
-                .stream_key_column
-                .expect("stream_key_column is required"),
-            lookup_key_column: self
-                .lookup_key_column
-                .expect("lookup_key_column is required"),
+    /// Returns `OperatorError::ConfigError` if required fields
+    /// (`stream_key_column`, `lookup_key_column`) are not set.
+    pub fn build(self) -> Result<LookupJoinConfig, OperatorError> {
+        Ok(LookupJoinConfig {
+            stream_key_column: self.stream_key_column.ok_or_else(|| {
+                OperatorError::ConfigError("stream_key_column is required".into())
+            })?,
+            lookup_key_column: self.lookup_key_column.ok_or_else(|| {
+                OperatorError::ConfigError("lookup_key_column is required".into())
+            })?,
             cache_ttl: self.cache_ttl.unwrap_or(Duration::from_secs(300)),
             join_type: self.join_type.unwrap_or_default(),
             max_cache_size: self.max_cache_size.unwrap_or(0),
             operator_id: self.operator_id,
-        }
+        })
     }
 }
 
@@ -395,7 +396,7 @@ pub struct LookupJoinOperator {
 impl LookupJoinOperator {
     /// Creates a new lookup join operator.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation)] // Duration.as_micros() fits i64 for practical values
     pub fn new(config: LookupJoinConfig) -> Self {
         let operator_id = config.operator_id.clone().unwrap_or_else(|| {
             let num = LOOKUP_OPERATOR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -743,10 +744,7 @@ impl LookupJoinOperator {
 
         let joined_batch = RecordBatch::try_new(Arc::clone(schema), columns).ok()?;
 
-        Some(Event {
-            timestamp: event.timestamp,
-            data: joined_batch,
-        })
+        Some(Event::new(event.timestamp, joined_batch))
     }
 
     /// Creates an unmatched event for left joins (with null lookup columns).
@@ -764,10 +762,7 @@ impl LookupJoinOperator {
 
         let joined_batch = RecordBatch::try_new(Arc::clone(schema), columns).ok()?;
 
-        Some(Event {
-            timestamp: event.timestamp,
-            data: joined_batch,
-        })
+        Some(Event::new(event.timestamp, joined_batch))
     }
 
     /// Creates a null array of the given type and length.
@@ -896,7 +891,7 @@ mod tests {
             ],
         )
         .unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     fn create_customer_batch(id: &str, name: &str, tier: &str) -> RecordBatch {
@@ -963,7 +958,8 @@ mod tests {
             .join_type(LookupJoinType::Left)
             .max_cache_size(1000)
             .operator_id("test_op".to_string())
-            .build();
+            .build()
+            .unwrap();
 
         assert_eq!(config.stream_key_column, "customer_id");
         assert_eq!(config.lookup_key_column, "id");
@@ -980,7 +976,8 @@ mod tests {
             .lookup_key_column("id".to_string())
             .cache_ttl(Duration::from_secs(300))
             .join_type(LookupJoinType::Inner)
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
         let lookup_table = create_lookup_table();
@@ -1016,7 +1013,8 @@ mod tests {
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
             .join_type(LookupJoinType::Inner)
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
         let lookup_table = create_lookup_table();
@@ -1045,7 +1043,8 @@ mod tests {
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
             .join_type(LookupJoinType::Left)
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
 
@@ -1078,7 +1077,8 @@ mod tests {
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
             .cache_ttl(Duration::from_secs(300))
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
         let lookup_table = create_lookup_table();
@@ -1110,7 +1110,8 @@ mod tests {
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
             .cache_ttl(Duration::from_secs(1)) // 1 second TTL
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
         let lookup_table = create_lookup_table();
@@ -1148,7 +1149,8 @@ mod tests {
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
             .cache_ttl(Duration::from_secs(1))
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
         let lookup_table = create_lookup_table();
@@ -1190,7 +1192,8 @@ mod tests {
         let config = LookupJoinConfig::builder()
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config.clone(), "test_join".to_string());
 
@@ -1230,7 +1233,7 @@ mod tests {
                 ],
             )
             .unwrap();
-            Event { timestamp, data: batch }
+            Event::new(timestamp, batch)
         }
 
         fn create_int_key_lookup(key: i64, data: &str) -> RecordBatch {
@@ -1251,7 +1254,8 @@ mod tests {
         let config = LookupJoinConfig::builder()
             .stream_key_column("key".to_string())
             .lookup_key_column("key".to_string())
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
 
@@ -1278,7 +1282,8 @@ mod tests {
         let config = LookupJoinConfig::builder()
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
 
@@ -1365,7 +1370,8 @@ mod tests {
             .stream_key_column("customer_id".to_string())
             .lookup_key_column("id".to_string())
             .cache_ttl(Duration::from_secs(300))
-            .build();
+            .build()
+            .unwrap();
 
         let mut operator = LookupJoinOperator::with_id(config, "test_join".to_string());
         let lookup_table = create_lookup_table();

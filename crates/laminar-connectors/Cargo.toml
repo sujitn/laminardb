@@ -15,10 +15,13 @@ laminar-core = { path = "../laminar-core" }
 laminar-storage = { path = "../laminar-storage" }
 
 # Kafka
-rdkafka = { version = "0.36", optional = true }
+rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
+arrow-avro = { version = "57.2", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
-# Database drivers for CDC
+# Database drivers for CDC and sinks
 tokio-postgres = { version = "0.7", optional = true }
+postgres-types = { version = "0.2", optional = true }
 mysql_async = { version = "0.34", optional = true }
 
 # Common
@@ -32,12 +35,15 @@ parking_lot = { workspace = true }
 
 # Arrow for RecordBatch
 arrow-array = { workspace = true }
+arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-select = { workspace = true }
 
 [features]
 default = []
-kafka = ["dep:rdkafka"]
+kafka = ["dep:rdkafka", "dep:arrow-avro", "dep:reqwest"]
 postgres-cdc = ["dep:tokio-postgres"]
+postgres-sink = ["dep:tokio-postgres", "dep:postgres-types"]
 mysql-cdc = ["dep:mysql_async"]
 
 [dev-dependencies]

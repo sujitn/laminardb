@@ -35,6 +35,7 @@
 
 pub mod alloc;
 pub mod budget;
+pub mod dag;
 pub mod io_uring;
 pub mod mv;
 pub mod numa;
@@ -42,6 +43,8 @@ pub mod operator;
 pub mod reactor;
 pub mod sink;
 pub mod state;
+pub mod streaming;
+pub mod subscription;
 pub mod time;
 pub mod tpc;
 pub mod xdp;
@@ -94,4 +97,8 @@ pub enum Error {
     /// XDP/eBPF errors
     #[error("XDP error: {0}")]
     Xdp(#[from] xdp::XdpError),
+
+    /// DAG topology errors
+    #[error("DAG error: {0}")]
+    Dag(#[from] dag::DagError),
 }

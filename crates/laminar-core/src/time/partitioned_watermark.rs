@@ -275,7 +275,7 @@ impl PartitionedWatermarkTracker {
         self.source_partition_counts[source_id] = num_partitions;
 
         // Create partition state for each partition
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation)] // Partition count bounded by Kafka max (< u32::MAX)
         for partition in 0..num_partitions {
             let pid = PartitionId::new(source_id, partition as u32);
             self.partitions.entry(pid).or_default();
@@ -871,7 +871,6 @@ impl GlobalWatermarkCollector {
 mod tests {
     use super::*;
 
-    // ==================== PartitionId Tests ====================
 
     #[test]
     fn test_partition_id_creation() {
@@ -896,7 +895,6 @@ mod tests {
         assert_eq!(format!("{pid}"), "2:5");
     }
 
-    // ==================== PartitionedWatermarkTracker Tests ====================
 
     #[test]
     fn test_partitioned_tracker_single_partition_updates_watermark() {
@@ -1121,7 +1119,6 @@ mod tests {
         assert!(matches!(result, Err(WatermarkError::PartitionExists(_))));
     }
 
-    // ==================== CoreWatermarkState Tests ====================
 
     #[test]
     fn test_core_watermark_state_creation() {
@@ -1208,7 +1205,6 @@ mod tests {
         assert_eq!(state.local_watermark(), 5000);
     }
 
-    // ==================== GlobalWatermarkCollector Tests ====================
 
     #[test]
     fn test_global_collector_creation() {

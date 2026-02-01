@@ -49,11 +49,13 @@ impl RecordIdExtractor for DefaultIdExtractor {
 
 /// Column-based ID extractor that uses specific column values
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Public API for Phase 3 connector implementations
 pub struct ColumnIdExtractor {
     /// Column names to use as the ID
     columns: Vec<String>,
 }
 
+#[allow(dead_code)] // Public API for Phase 3 connector implementations
 impl ColumnIdExtractor {
     /// Create a new column-based extractor
     #[must_use]
@@ -398,7 +400,7 @@ mod tests {
     fn make_event(timestamp: i64, value: i64) -> Event {
         let array = Arc::new(Int64Array::from(vec![value]));
         let batch = RecordBatch::try_from_iter(vec![("value", array as _)]).unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     #[test]
@@ -483,10 +485,7 @@ mod tests {
 
         let array = Arc::new(Int64Array::from(vec![123]));
         let batch = RecordBatch::try_from_iter(vec![("id", array as _)]).unwrap();
-        let event = Event {
-            timestamp: 1000,
-            data: batch,
-        };
+        let event = Event::new(1000, batch);
 
         let ids = extractor.extract_ids(&[Output::Event(event)]);
         assert_eq!(ids.len(), 1);

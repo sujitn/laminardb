@@ -808,7 +808,6 @@ mod tests {
         RecordBatch::try_new(schema, vec![array]).unwrap()
     }
 
-    // ==================== Format Tests ====================
 
     #[test]
     fn test_unix_millis_extraction() {
@@ -869,7 +868,6 @@ mod tests {
         assert_eq!(ts, 1_705_312_200_000);
     }
 
-    // ==================== Extraction Mode Tests ====================
 
     #[test]
     fn test_extraction_mode_first() {
@@ -925,7 +923,6 @@ mod tests {
         assert_eq!(ts, 50);
     }
 
-    // ==================== Error Tests ====================
 
     #[test]
     fn test_column_not_found() {
@@ -1007,7 +1004,6 @@ mod tests {
         assert!(matches!(result, Err(EventTimeError::ParseError { .. })));
     }
 
-    // ==================== Caching Tests ====================
 
     #[test]
     fn test_column_index_caching() {
@@ -1037,7 +1033,6 @@ mod tests {
         assert_eq!(ts, 100);
     }
 
-    // ==================== Schema Validation Tests ====================
 
     #[test]
     fn test_validate_schema_success() {
@@ -1065,7 +1060,6 @@ mod tests {
         ));
     }
 
-    // ==================== Accessor Tests ====================
 
     #[test]
     fn test_format_accessor() {

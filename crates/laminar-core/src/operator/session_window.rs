@@ -423,9 +423,7 @@ where
     }
 
     /// Stores session state and accumulator.
-    #[allow(clippy::unused_self)]
     fn put_session(
-        &self,
         key_hash: u64,
         session: &SessionState,
         acc: &A::Acc,
@@ -511,10 +509,7 @@ where
         )
         .ok()?;
 
-        Some(Event {
-            timestamp: session.end,
-            data: batch,
-        })
+        Some(Event::new(session.end, batch))
     }
 
     /// Finds overlapping sessions for potential merging.
@@ -601,7 +596,7 @@ where
             session = SessionState::new(event_time, self.gap_ms, key);
             // Reset accumulator for new session
             let new_acc = self.aggregator.create_accumulator();
-            let _ = self.put_session(key_hash, &session, &new_acc, ctx.state);
+            let _ = Self::put_session(key_hash, &session, &new_acc, ctx.state);
         }
 
         // Get and update accumulator
@@ -611,7 +606,7 @@ where
         }
 
         // Store updated state
-        if self.put_session(key_hash, &session, &acc, ctx.state).is_ok() {
+        if Self::put_session(key_hash, &session, &acc, ctx.state).is_ok() {
             self.active_sessions.insert(key_hash, session.clone());
         }
 
@@ -763,7 +758,7 @@ mod tests {
         )]));
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![value]))]).unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     fn create_keyed_event(timestamp: i64, key: i64, value: i64) -> Event {
@@ -779,7 +774,7 @@ mod tests {
             ],
         )
         .unwrap();
-        Event { timestamp, data: batch }
+        Event::new(timestamp, batch)
     }
 
     fn create_test_context<'a>(
@@ -797,7 +792,6 @@ mod tests {
         }
     }
 
-    // ==================== Basic Tests ====================
 
     #[test]
     fn test_session_operator_creation() {
@@ -879,7 +873,6 @@ mod tests {
         assert_eq!(state1.end, 13000); // max(6000, 13000)
     }
 
-    // ==================== Processing Tests ====================
 
     #[test]
     fn test_session_single_event() {
