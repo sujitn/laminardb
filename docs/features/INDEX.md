@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 41 | 21 | 0 | 0 | 20 |
+| Phase 3 | 41 | 13 | 0 | 0 | 28 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **109** | **42** | **0** | **0** | **67** |
+| **Total** | **109** | **34** | **0** | **0** | **75** |
 
 ## Status Legend
 
@@ -330,13 +330,13 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 | ID | Feature | Priority | Status | Spec |
 |----|---------|----------|--------|------|
 | F-SUB-001 | ChangeEvent Types | P0 | ✅ | [Link](phase-3/subscription/F-SUB-001-change-event-types.md) |
-| F-SUB-002 | Notification Slot (Ring 0) | P0 | 📝 | [Link](phase-3/subscription/F-SUB-002-notification-slot.md) |
-| F-SUB-003 | Subscription Registry | P0 | 📝 | [Link](phase-3/subscription/F-SUB-003-subscription-registry.md) |
-| F-SUB-004 | Subscription Dispatcher (Ring 1) | P0 | 📝 | [Link](phase-3/subscription/F-SUB-004-subscription-dispatcher.md) |
-| F-SUB-005 | Push Subscription API | P0 | 📝 | [Link](phase-3/subscription/F-SUB-005-push-subscription-api.md) |
-| F-SUB-006 | Callback Subscriptions | P1 | 📝 | [Link](phase-3/subscription/F-SUB-006-callback-subscriptions.md) |
-| F-SUB-007 | Stream Subscriptions | P1 | 📝 | [Link](phase-3/subscription/F-SUB-007-stream-subscriptions.md) |
-| F-SUB-008 | Backpressure & Filtering | P1 | 📝 | [Link](phase-3/subscription/F-SUB-008-backpressure-filtering.md) |
+| F-SUB-002 | Notification Slot (Ring 0) | P0 | ✅ | [Link](phase-3/subscription/F-SUB-002-notification-slot.md) |
+| F-SUB-003 | Subscription Registry | P0 | ✅ | [Link](phase-3/subscription/F-SUB-003-subscription-registry.md) |
+| F-SUB-004 | Subscription Dispatcher (Ring 1) | P0 | ✅ | [Link](phase-3/subscription/F-SUB-004-subscription-dispatcher.md) |
+| F-SUB-005 | Push Subscription API | P0 | ✅ | [Link](phase-3/subscription/F-SUB-005-push-subscription-api.md) |
+| F-SUB-006 | Callback Subscriptions | P1 | ✅ | [Link](phase-3/subscription/F-SUB-006-callback-subscriptions.md) |
+| F-SUB-007 | Stream Subscriptions | P1 | ✅ | [Link](phase-3/subscription/F-SUB-007-stream-subscriptions.md) |
+| F-SUB-008 | Backpressure & Filtering | P1 | ✅ | [Link](phase-3/subscription/F-SUB-008-backpressure-filtering.md) |
 
 **Key Design Principles**:
 - Three-tier: Ring 0 atomic notification, Ring 1 broadcast dispatch, Ring 2 lifecycle
