@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 41 | 13 | 0 | 0 | 28 |
+| Phase 3 | 48 | 16 | 0 | 0 | 32 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **109** | **34** | **0** | **0** | **75** |
+| **Total** | **116** | **37** | **0** | **0** | **79** |
 
 ## Status Legend
 
@@ -315,7 +315,11 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 | F028 | MySQL CDC Source | P1 | 📝 | [Link](phase-3/F028-mysql-cdc.md) |
 | F029 | MongoDB CDC Source | P2 | 📝 | [Link](phase-3/F029-mongodb-cdc.md) |
 | F030 | Redis Lookup Table | P1 | 📝 | [Link](phase-3/F030-redis-lookup.md) |
-| F031 | Delta Lake Sink | P0 | 📝 | [Link](phase-3/F031-delta-lake-sink.md) |
+| F031 | Delta Lake Sink | P0 | ✅ | [Link](phase-3/F031-delta-lake-sink.md) |
+| F031A | Delta Lake I/O Integration | P0 | 📝 | [Link](phase-3/F031A-delta-lake-io.md) |
+| F031B | Delta Lake Recovery & Exactly-Once I/O | P0 | 📝 | [Link](phase-3/F031B-delta-lake-recovery.md) |
+| F031C | Delta Lake Compaction & Maintenance | P1 | 📝 | [Link](phase-3/F031C-delta-lake-compaction.md) |
+| F031D | Delta Lake Schema Evolution | P1 | 📝 | [Link](phase-3/F031D-delta-lake-schema-evolution.md) |
 | F032 | Iceberg Sink | P1 | 📝 | [Link](phase-3/F032-iceberg-sink.md) |
 | F033 | Parquet File Source | P2 | 📝 | [Link](phase-3/F033-parquet-source.md) |
 | F034 | Connector SDK | P1 | 📝 | [Link](phase-3/F034-connector-sdk.md) |
@@ -343,6 +347,23 @@ Ring 0: mmap + ChangelogBuffer (zero-alloc) ──▶ Ring 1: WAL + RocksDB ─�
 - Notification/data separation: lightweight sequence numbers in Ring 0, zero-copy data fetch in Ring 1
 - Three API styles: channel (F-SUB-005), callback (F-SUB-006), async Stream (F-SUB-007)
 - Latency budget: < 1us from Ring 0 notify to subscriber channel delivery
+
+### Cloud Storage Infrastructure
+
+> **NEW**: Shared cloud credential management, validation, and security for all lakehouse connectors.
+> See [Cloud Storage Index](phase-3/cloud/INDEX.md) for details.
+
+| ID | Feature | Priority | Status | Spec |
+|----|---------|----------|--------|------|
+| F-CLOUD-001 | Storage Credential Resolver | P0 | ✅ | [Link](phase-3/cloud/F-CLOUD-001-credential-resolver.md) |
+| F-CLOUD-002 | Cloud Config Validation | P0 | ✅ | [Link](phase-3/cloud/F-CLOUD-002-config-validation.md) |
+| F-CLOUD-003 | Secret Masking & Safe Logging | P1 | ✅ | [Link](phase-3/cloud/F-CLOUD-003-secret-masking.md) |
+
+**Key Design Principles**:
+- Credential resolution chain: explicit config > environment variables > instance metadata
+- Per-provider validation: URI scheme determines required fields
+- Secret masking by default: credentials never appear in logs or Debug output
+- Shared across Delta Lake (F031), Iceberg (F032), and Parquet Source (F033)
 
 ### Production Demo
 
@@ -535,6 +556,46 @@ F013 + F019 ──▶ F058 (Async State Access) ◀── Flink 2.0 Innovation
 F060 + F031/F032 ──▶ F061 (Historical Backfill) ◀── Live+Historical Unification
 F063 ──▶ F027/F028 (CDC Connectors need changelog format)
 F034 + F023 + F063 ──▶ F027B (PostgreSQL Sink: COPY BINARY + upsert + co-transactional exactly-once)
+
+Cloud Storage & Delta Lake I/O (Phase 3 - NEW):
+┌───────────────────────────────────────────────────────────────────────────┐
+│ F-CLOUD-001 (Credential Resolver)                                         │
+│      │  • StorageProvider detection (S3/Azure/GCS/Local)                  │
+│      │  • Env var fallback chain                                          │
+│      │  • Instance metadata support                                       │
+│      │                                                                    │
+│      ├──▶ F-CLOUD-002 (Config Validation) ──┬──▶ F031A (Delta I/O)       │
+│      │        • Per-provider required fields │                            │
+│      │        • Actionable error messages    ├──▶ F032 (Iceberg Sink)     │
+│      │                                       │                            │
+│      └──▶ F-CLOUD-003 (Secret Masking)       └──▶ F033 (Parquet Source)   │
+│               • Redacted Debug/Display                                    │
+│               • Safe logging                                              │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Delta Lake I/O Evolution (Phase 3 - NEW):
+┌───────────────────────────────────────────────────────────────────────────┐
+│ F031 (Delta Lake Sink) ✅ - Business Logic Complete                       │
+│      │  • Buffering, epochs, changelog splitting, metrics                 │
+│      │  • Blocked: deltalake crate ↔ DataFusion version alignment         │
+│      │                                                                    │
+│      ├──▶ F031A (I/O Integration) ──┬──▶ F031B (Recovery & Exactly-Once) │
+│      │        • Parquet writes       │        • txn action recovery       │
+│      │        • Delta log commits    │        • Conflict resolution       │
+│      │        • Table open/create    │                                    │
+│      │        • Cloud storage via    │                                    │
+│      │          F-CLOUD-001/002      │                                    │
+│      │                               │                                    │
+│      │                               ├──▶ F031C (Compaction)              │
+│      │                               │        • OPTIMIZE, Z-ORDER        │
+│      │                               │        • VACUUM, checkpoints      │
+│      │                               │                                    │
+│      │                               └──▶ F031D (Schema Evolution)        │
+│      │                                        • Additive columns         │
+│      │                                        • Type widening            │
+│      │                                                                    │
+│      └──▶ F061 (Historical Backfill) ◀── Reads FROM Delta tables         │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

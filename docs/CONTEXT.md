@@ -5,9 +5,40 @@
 
 ## Last Session
 
-**Date**: 2026-02-01
+**Date**: 2026-02-02
 
 ### What Was Accomplished
+- **F-CLOUD-001, F-CLOUD-002, F-CLOUD-003: Cloud Storage Infrastructure** - ALL 3 COMPLETE (82 new tests, 256 total connector base tests)
+  - `storage/provider.rs`: StorageProvider enum (AwsS3, AzureAdls, Gcs, Local), detect() from URI scheme, 18 tests
+  - `storage/resolver.rs`: StorageCredentialResolver with resolve() and resolve_with_env(), env var fallback for AWS (7 vars), Azure (6), GCS (2), 22 tests
+  - `storage/validation.rs`: CloudConfigValidator with per-provider rules — S3 requires region, Azure requires account_name, GCS warning-only, 20 tests
+  - `storage/masking.rs`: SecretMasker with is_secret_key(), redact_map(), display_map(), 8 secret patterns, 22 tests
+  - `storage/mod.rs`: Re-exports all primary types
+  - **Integration with Delta Lake Sink**: DeltaLakeSinkConfig.from_config() now auto-resolves env vars via StorageCredentialResolver, validate() checks cloud credentials via CloudConfigValidator, display_storage_options() redacts secrets
+  - `config.rs`: Added display_redacted() to ConnectorConfig
+  - `lakehouse/mod.rs`: Added 12 cloud-specific ConfigKeySpec entries for discoverability
+  - `lakehouse/delta_config.rs`: 10 new integration tests (S3/Azure/GCS path validation, secret redaction)
+  - All clippy clean with `-D warnings`, 2137 total tests pass across workspace
+
+Previous session (2026-02-02):
+- **Delta Lake Deferred Work Breakdown** - Created 7 new feature specs for cloud storage infrastructure and Delta Lake I/O completion
+  - `docs/features/phase-3/cloud/INDEX.md`: Cloud Storage Infrastructure sub-group
+  - `F031A`: Delta Lake I/O Integration (blocked by deltalake crate)
+  - `F031B`: Delta Lake Recovery & Exactly-Once I/O (blocked by F031A)
+  - `F031C`: Delta Lake Compaction & Maintenance (blocked by F031A)
+  - `F031D`: Delta Lake Schema Evolution (blocked by F031A)
+
+Previous session (2026-02-02):
+- **F031: Delta Lake Sink** - IMPLEMENTATION COMPLETE (73 new tests, 169 total connector base tests)
+  - `lakehouse/delta_config.rs`: DeltaLakeSinkConfig with DeltaWriteMode, DeliveryGuarantee, CompactionConfig enums, from_config() parsing, validation (20 tests)
+  - `lakehouse/delta_metrics.rs`: DeltaLakeSinkMetrics with 9 AtomicU64 counters, to_connector_metrics() (7 tests)
+  - `lakehouse/delta.rs`: DeltaLakeSink implementing SinkConnector — buffering with size/time/rows flush triggers, epoch management with exactly-once skip, Z-set changelog splitting, health checks, capabilities (42 tests)
+  - `lakehouse/mod.rs`: Re-exports, register_delta_lake_sink factory, 15 config key specs (4 tests)
+  - Not feature-gated (compiles without deltalake crate dependency); deltalake crate deferred until version compatible with workspace datafusion
+  - Follows PostgresSink pattern: all business logic without actual I/O
+  - All clippy clean with `-D warnings`, 2050 total tests pass
+
+Previous session (2026-02-01):
 - **F-SUB-001 to F-SUB-008: Reactive Subscription System** - ALL COMPLETE (8/8 features)
   - F-SUB-001: ChangeEvent types (EventType, ChangeEvent, ChangeEventBatch, NotificationRef)
   - F-SUB-002: Notification Slot (NotificationSlot 64-byte cache-aligned, NotificationRing SPSC, NotificationHub)
@@ -87,10 +118,10 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1240 core + 367 sql + 120 storage + 28 laminar-db + 96 connectors-base + 84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only = 2160
+**Total tests**: 1241 core + 401 sql + 115 storage + 120 laminar-db + 169 connectors-base + 84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only = 2355
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 27/37 features COMPLETE (73%)**
+**Phase 3 Connectors & Integration: 32/48 features COMPLETE (67%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -98,19 +129,23 @@ Previous session (2026-01-28):
 - Kafka Sink Connector complete (F026)
 - PostgreSQL CDC Source complete (F027) — 107 tests, full pgoutput decoder
 - PostgreSQL Sink complete (F027B) — 84 tests, COPY BINARY + upsert + exactly-once
+- Delta Lake Sink business logic complete (F031) — 73 tests, buffering + epoch management + changelog splitting
 - SQL & MV Integration complete (F-DAG-005) — 18 new tests, DAG from MvRegistry, watermarks, changelog
 - Connector Bridge complete (F-DAG-006) — 25 new tests, source/sink bridge + runtime orchestration
 - Performance Validation complete (F-DAG-007) — 16 benchmarks, performance audit + optimizations
-- **Reactive Subscription System complete (F-SUB-001 to F-SUB-008)** — 8 features, 10 new modules in laminar-core/src/subscription/
-- Next: F031 Delta Lake Sink or F028 MySQL CDC Source
+- Reactive Subscription System complete (F-SUB-001 to F-SUB-008) — 8 features, 10 new modules
+- **Cloud Storage Infrastructure complete (F-CLOUD-001/002/003)** — 82 tests, integrated with Delta Lake Sink
+- Delta Lake I/O extension specs created (F031A/B/C/D) — blocked by deltalake crate
+- Next: F028 MySQL CDC Source or F032 Iceberg Sink
 
 ### Immediate Next Steps
-1. F031: Delta Lake Sink
-2. F028: MySQL CDC Source
+1. F028: MySQL CDC Source
+2. F032: Iceberg Sink
 3. F034: Connector SDK
+4. F031A/B/C/D: Delta Lake I/O (when deltalake crate version aligns)
 
 ### Open Issues
-- ~~Performance audit R3 (medium): Consider wrapping Event.data in Arc<RecordBatch> to make multicast zero-allocation for wide schemas.~~ ✅ RESOLVED — Event.data is now `Arc<RecordBatch>`, multicast clone is O(1).
+- **deltalake crate version**: Incompatible with workspace DataFusion version. F031A/B/C/D blocked until resolved. Track [delta-rs releases](https://github.com/delta-io/delta-rs/releases).
 - None currently blocking.
 
 ---
@@ -261,6 +296,15 @@ laminar-connectors/src/
     changelog         # Z-set ChangeEvent, tuple_to_json, events_to_record_batch
     metrics           # CdcMetrics (11 atomic counters)
     source            # PostgresCdcSource (SourceConnector impl, transaction buffering)
+  lakehouse/          # F031: Delta Lake Sink (Lakehouse connectors)
+    delta             # DeltaLakeSink (SinkConnector impl, buffering + epoch + changelog)
+    delta_config      # DeltaLakeSinkConfig, DeltaWriteMode, DeliveryGuarantee, CompactionConfig
+    delta_metrics     # DeltaLakeSinkMetrics (9 AtomicU64 counters)
+  storage/            # F-CLOUD-001/002/003: Cloud Storage Infrastructure
+    provider          # StorageProvider enum (AwsS3, AzureAdls, Gcs, Local), detect() from URI
+    resolver          # StorageCredentialResolver, resolve() + resolve_with_env(), env var fallback
+    validation        # CloudConfigValidator, per-provider required fields, warnings vs errors
+    masking           # SecretMasker, is_secret_key(), redact_map(), display_map()
   bridge/             # F-DAG-006: Connector Bridge (DAG ↔ external connectors)
     source_bridge     # DagSourceBridge (SourceConnector → DagExecutor)
     sink_bridge       # DagSinkBridge (DagExecutor → SinkConnector)
