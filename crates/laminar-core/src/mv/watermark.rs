@@ -346,7 +346,8 @@ mod tests {
 
         let updates = vec![("trades".to_string(), 1000)];
         let new_watermarks = tracker.update_watermarks_batch(updates);
-        assert_eq!(new_watermarks.len(), 1);
+        // trades + ohlc_1s + ohlc_1m + ohlc_1h all propagated
+        assert_eq!(new_watermarks.len(), 4);
         assert_eq!(tracker.get_watermark("trades"), Some(1000));
         assert_eq!(tracker.get_watermark("ohlc_1s"), Some(1000));
     }

@@ -220,6 +220,7 @@ impl WriteAheadLog {
         let len = bytes.len() as u32;
 
         // Optimize: Coalesce writes into a single buffer to reduce syscalls/locking overhead
+        #[allow(clippy::cast_possible_truncation)] // RECORD_HEADER_SIZE is 8, always fits in usize
         let mut buffer = Vec::with_capacity(RECORD_HEADER_SIZE as usize + bytes.len());
         buffer.extend_from_slice(&len.to_le_bytes());
         buffer.extend_from_slice(&crc.to_le_bytes());
