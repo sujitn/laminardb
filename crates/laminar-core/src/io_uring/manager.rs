@@ -173,6 +173,7 @@ pub struct CoreRingManager {
     /// IOPOLL ring for storage (optional).
     iopoll_ring: Option<IoUringRing>,
     /// IOPOLL buffer pool (separate from main).
+    #[allow(dead_code)]
     iopoll_buffer_pool: Option<RegisteredBufferPool>,
     /// Pending operations tracking.
     pending: HashMap<u64, PendingOp>,

@@ -240,6 +240,7 @@ fn create_sqpoll_iopoll_ring(config: &IoUringConfig) -> Result<StandardIoUring, 
 }
 
 /// Probe kernel for supported io_uring features.
+#[allow(dead_code)]
 #[must_use]
 pub fn probe_features() -> SupportedFeatures {
     // Try to create a minimal ring to probe features
@@ -286,6 +287,7 @@ pub fn probe_features() -> SupportedFeatures {
 }
 
 /// Supported io_uring features on the current system.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupportedFeatures {
     /// io_uring is available.
@@ -304,6 +306,7 @@ pub struct SupportedFeatures {
 
 impl SupportedFeatures {
     /// Check if all advanced features are available.
+    #[allow(dead_code)]
     #[must_use]
     pub const fn has_advanced_features(&self) -> bool {
         self.sqpoll && self.iopoll && self.registered_buffers

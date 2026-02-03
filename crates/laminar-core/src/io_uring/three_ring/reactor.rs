@@ -64,6 +64,7 @@ pub struct ThreeRingReactor {
     stats: ThreeRingStats,
 
     /// Configuration.
+    #[allow(dead_code)]
     config: ThreeRingConfig,
 
     /// Whether the reactor is closed.

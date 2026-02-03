@@ -264,6 +264,7 @@ mod linux_impl {
 pub use linux_impl::IoUringSink;
 
 /// Check if `io_uring` sink is available on this platform.
+#[allow(dead_code)]
 #[must_use]
 pub fn is_sink_available() -> bool {
     cfg!(all(target_os = "linux", feature = "io-uring"))

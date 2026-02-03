@@ -185,6 +185,7 @@ impl RingHandler for SimpleRingHandler {
 /// Callback-based ring handler.
 ///
 /// Allows providing closures for handling completions.
+#[allow(dead_code)]
 pub struct CallbackRingHandler<L, M, P>
 where
     L: FnMut(RoutedCompletion),
@@ -204,6 +205,7 @@ where
     P: FnMut(RoutedCompletion),
 {
     /// Create a new callback handler.
+    #[allow(dead_code)]
     pub fn new(latency: L, main: M, poll: P) -> Self {
         Self {
             latency_callback: latency,
@@ -214,6 +216,7 @@ where
     }
 
     /// Request shutdown.
+    #[allow(dead_code)]
     pub fn request_shutdown(&mut self) {
         self.shutdown = true;
     }

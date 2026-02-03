@@ -26,27 +26,38 @@ pub struct ThreeRingStats {
     /// Submissions to poll ring.
     pub poll_submissions: u64,
 
-    /// Latency ring latency tracking.
+    /// Latency ring total latency in nanoseconds.
     pub latency_ring_total_ns: u64,
+    /// Number of latency ring samples.
     pub latency_ring_samples: u64,
+    /// Minimum latency ring latency in nanoseconds.
     pub latency_ring_min_ns: u64,
+    /// Maximum latency ring latency in nanoseconds.
     pub latency_ring_max_ns: u64,
 
-    /// Main ring latency tracking.
+    /// Main ring total latency in nanoseconds.
     pub main_ring_total_ns: u64,
+    /// Number of main ring samples.
     pub main_ring_samples: u64,
+    /// Minimum main ring latency in nanoseconds.
     pub main_ring_min_ns: u64,
+    /// Maximum main ring latency in nanoseconds.
     pub main_ring_max_ns: u64,
 
-    /// Poll ring latency tracking.
+    /// Poll ring total latency in nanoseconds.
     pub poll_ring_total_ns: u64,
+    /// Number of poll ring samples.
     pub poll_ring_samples: u64,
+    /// Minimum poll ring latency in nanoseconds.
     pub poll_ring_min_ns: u64,
+    /// Maximum poll ring latency in nanoseconds.
     pub poll_ring_max_ns: u64,
 
-    /// Errors encountered.
+    /// Errors on latency ring.
     pub latency_errors: u64,
+    /// Errors on main ring.
     pub main_errors: u64,
+    /// Errors on poll ring.
     pub poll_errors: u64,
 
     /// Poll fallbacks (poll ring ops that went to main ring).
