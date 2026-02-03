@@ -5,7 +5,7 @@
 //! 2. sysfs parsing on Linux (fallback)
 //! 3. Single-node fallback on other platforms
 
-#[cfg(feature = "hwloc")]
+#[cfg(any(feature = "hwloc", target_os = "linux"))]
 use super::NumaError;
 
 /// NUMA topology information for the system.
