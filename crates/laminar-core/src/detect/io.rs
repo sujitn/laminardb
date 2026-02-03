@@ -316,8 +316,6 @@ impl StorageInfo {
     /// Detect storage info on Linux.
     #[cfg(target_os = "linux")]
     fn detect_linux(path: &Path) -> Self {
-        use std::fs;
-
         let mut info = Self::default();
 
         // Get the device from the path

@@ -3,10 +3,9 @@
 //! Registers buffers once at startup to avoid per-operation buffer mapping overhead.
 //! Uses fixed-size buffers for predictable performance.
 
-use io_uring::types::{self, Fd};
+use io_uring::types::Fd;
 use io_uring::{opcode, IoUring};
 use std::collections::VecDeque;
-use std::io;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 

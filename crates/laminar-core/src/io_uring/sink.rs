@@ -20,7 +20,7 @@
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 mod linux_impl {
     use std::fs::{File, OpenOptions};
-    use std::io::{self, Write};
+    use std::io::Write;
     use std::os::unix::io::AsRawFd;
     use std::path::{Path, PathBuf};
 

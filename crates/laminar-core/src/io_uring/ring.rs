@@ -6,7 +6,6 @@
 //! - Combined: Maximum performance for NVMe storage
 
 use io_uring::IoUring;
-use std::io;
 
 use super::config::{IoUringConfig, RingMode};
 use super::error::IoUringError;

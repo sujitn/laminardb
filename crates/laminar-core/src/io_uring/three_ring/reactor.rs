@@ -9,9 +9,8 @@ use io_uring::squeue::Entry as SqEntry;
 use io_uring::types::{self, Fd};
 use io_uring::IoUring;
 use std::io;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use super::affinity::{OperationType, RingAffinity};
 use super::config::ThreeRingConfig;
