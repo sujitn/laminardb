@@ -1,12 +1,12 @@
 //! Derive macros for `LaminarDB`.
 //!
-//! Provides `#[derive(Record)]` and `#[derive(FromRecordBatch)]` to eliminate
-//! boilerplate when working with the streaming API.
+//! Provides `#[derive(Record)]`, `#[derive(FromRecordBatch)]`, and
+//! `#[derive(ConnectorConfig)]` to eliminate boilerplate.
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use laminar_derive::{Record, FromRecordBatch};
+//! use laminar_derive::{Record, FromRecordBatch, ConnectorConfig};
 //!
 //! #[derive(Record)]
 //! struct Trade {
@@ -24,6 +24,21 @@
 //!     low: f64,
 //!     close: f64,
 //! }
+//!
+//! #[derive(ConnectorConfig)]
+//! struct MySourceConfig {
+//!     #[config(key = "bootstrap.servers", required)]
+//!     bootstrap_servers: String,
+//!
+//!     #[config(key = "batch.size", default = "1000")]
+//!     batch_size: usize,
+//!
+//!     #[config(key = "timeout.ms", default = "30000", duration_ms)]
+//!     timeout: std::time::Duration,
+//!
+//!     #[config(key = "api.key", env = "MY_API_KEY")]
+//!     api_key: Option<String>,
+//! }
 //! ```
 
 extern crate proc_macro;
@@ -32,6 +47,7 @@ use proc_macro::TokenStream;
 
 use syn::{parse_macro_input, DeriveInput};
 
+mod connector_config;
 mod from_record_batch;
 mod record;
 
@@ -99,6 +115,51 @@ pub fn derive_from_record_batch(input: TokenStream) -> TokenStream {
 pub fn derive_from_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     from_record_batch::expand_from_row(input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// Derive configuration parsing for connector config structs.
+///
+/// Generates `from_config()`, `validate()`, and `config_keys()` methods
+/// to eliminate boilerplate in connector configuration parsing.
+///
+/// # Attributes
+///
+/// - `#[config(key = "...")]` — specifies the config key name
+/// - `#[config(required)]` — marks the field as required
+/// - `#[config(default = "...")]` — provides a default value
+/// - `#[config(env = "...")]` — reads from environment variable as fallback
+/// - `#[config(description = "...")]` — documentation for the key
+/// - `#[config(duration_ms)]` — parses the value as `Duration` from milliseconds
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(ConnectorConfig)]
+/// struct MyConfig {
+///     #[config(key = "bootstrap.servers", required, description = "Kafka brokers")]
+///     bootstrap_servers: String,
+///
+///     #[config(key = "batch.size", default = "1000")]
+///     batch_size: usize,
+///
+///     #[config(key = "timeout.ms", default = "30000", duration_ms)]
+///     timeout: std::time::Duration,
+///
+///     #[config(key = "api.key", env = "MY_API_KEY")]
+///     api_key: Option<String>,
+/// }
+///
+/// // Generated methods:
+/// // - MyConfig::from_config(&ConnectorConfig) -> Result<Self, ConnectorError>
+/// // - MyConfig::validate(&self) -> Result<(), ConnectorError>
+/// // - MyConfig::config_keys() -> Vec<ConfigKeySpec>
+/// ```
+#[proc_macro_derive(ConnectorConfig, attributes(config))]
+pub fn derive_connector_config(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    connector_config::expand_connector_config(input)
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

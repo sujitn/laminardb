@@ -85,3 +85,6 @@ pub mod lakehouse;
 
 /// Cloud storage infrastructure (credential resolution, validation, secret masking).
 pub mod storage;
+
+/// Connector SDK - developer tooling and operational resilience.
+pub mod sdk;
