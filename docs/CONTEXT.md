@@ -5,9 +5,86 @@
 
 ## Last Session
 
-**Date**: 2026-02-01
+**Date**: 2026-02-03
 
 ### What Was Accomplished
+- **F-STREAM-010: Broadcast Channel** - IMPLEMENTATION COMPLETE (42 new tests)
+  - `streaming/broadcast.rs`: BroadcastChannel<T> (shared ring buffer SPMC), BroadcastConfig, BroadcastConfigBuilder, SlowSubscriberPolicy (Block/DropSlow/SkipForSlow), SubscriberInfo, BroadcastError (31 tests)
+  - `planner/channel_derivation.rs`: DerivedChannelType (Spsc/Broadcast), derive_channel_types(), SourceDefinition, MvDefinition, analyze_mv_sources(), derive_channel_types_detailed() (11 tests)
+  - Key design: Users never specify broadcast mode - derived from query plan analysis when multiple MVs read from same source
+  - Features: per-subscriber cursors, lag tracking, configurable slow subscriber policies, dynamic subscribe/unsubscribe
+  - All clippy clean with `-D warnings`, 2350 total tests pass
+
+Previous session (2026-02-03):
+- **F034: Connector SDK** - IMPLEMENTATION COMPLETE (68 new tests, 427 total connector-base tests)
+  - `sdk/retry.rs`: RetryPolicy (exponential backoff, jitter), with_retry async helper, with_retry_and_handler, CircuitBreaker (Closed/Open/HalfOpen state machine), with_circuit_breaker helper (18 tests)
+  - `sdk/rate_limit.rs`: RateLimiter trait, TokenBucket (tokens/sec + burst), LeakyBucket (requests/sec + queue), NoopRateLimiter (13 tests)
+  - `sdk/harness.rs`: ConnectorTestHarness with test_source, test_sink, test_checkpoint_recovery, test_exactly_once methods; TestSourceConnector and TestSinkConnector with configurable batches/errors/delays (12 tests)
+  - `sdk/builder.rs`: SourceConnectorBuilder and SinkConnectorBuilder for fluent connector configuration with retry policies, rate limiters, and circuit breakers; ConfiguredSource and ConfiguredSink wrappers (8 tests)
+  - `sdk/defaults.rs`: register_all_connectors(), register_mock_connectors(), default_registry() with auto-registration of mock/delta-lake/iceberg/kafka/postgres/mysql connectors based on features (7 tests)
+  - `sdk/schema.rs`: SchemaDiscoveryHints (type_hints, nullable_fields, field_names, prefer_larger_types, empty_as_null), infer_schema_from_samples() for JSON/CSV formats (10 tests)
+  - `sdk/mod.rs`: Re-exports all SDK types
+  - `laminar-derive/connector_config.rs`: #[derive(ConnectorConfig)] macro generates from_config(), validate(), config_keys() from struct fields with #[config(key, required, default, env, description, duration_ms)] attributes
+  - All clippy clean with `-D warnings`, 2308 total tests pass
+
+Previous session (2026-02-03):
+- **F032: Apache Iceberg Sink** - IMPLEMENTATION COMPLETE (103 new tests, 359 total connector-base tests)
+  - `lakehouse/iceberg_config.rs`: IcebergSinkConfig with IcebergCatalogType (REST/Glue/Hive/Memory), IcebergWriteMode, IcebergPartitionField, IcebergTransform (Identity/Bucket/Truncate/Year/Month/Day/Hour), MaintenanceConfig, SortField, IcebergFileFormat enums, from_config() parsing with parentheses-aware partition spec splitting, validation (49 tests)
+  - `lakehouse/iceberg_metrics.rs`: IcebergSinkMetrics with 11 atomic counters (rows, bytes, flushes, commits, errors, rollbacks, data_files, delete_files, changelog_deletes, snapshot_id, table_version), MetricsSnapshot (9 tests)
+  - `lakehouse/iceberg.rs`: IcebergSink implementing SinkConnector — buffering with size/time/rows flush triggers, epoch management with exactly-once skip, Z-set changelog splitting with Iceberg v2 equality delete file support, upsert mode, health checks, capabilities (45 tests)
+  - `lakehouse/mod.rs`: Re-exports, register_iceberg_sink() and register_lakehouse_sinks() factories, 33 config key specs including catalog, partition, maintenance, and cloud storage options (6 tests)
+  - Follows Delta Lake Sink pattern: all business logic without actual iceberg-rust crate dependency
+  - Supports REST, Glue, Hive, and Memory catalogs
+  - Iceberg-native partition transforms: IDENTITY, BUCKET(n), TRUNCATE(w), YEAR, MONTH, DAY, HOUR
+  - All clippy clean with `-D warnings`, 2240 total tests pass
+
+Previous session (2026-02-03):
+- **F028: MySQL CDC Source** - IMPLEMENTATION COMPLETE (119 new tests, 359 total connector-base tests)
+  - `cdc/mysql/config.rs`: MySqlCdcConfig with SslMode, SnapshotMode enums, from_config() parsing, validation (15 tests)
+  - `cdc/mysql/gtid.rs`: Gtid, GtidRange, GtidSet types with parsing and ordering (21 tests)
+  - `cdc/mysql/types.rs`: MySqlColumn, mysql_type_to_arrow mapping for 20+ MySQL types (14 tests)
+  - `cdc/mysql/decoder.rs`: BinlogMessage enum, BinlogPosition, TableMapMessage, row event types (14 tests)
+  - `cdc/mysql/schema.rs`: TableInfo, TableCache for binlog TABLE_MAP events (12 tests)
+  - `cdc/mysql/changelog.rs`: CdcOperation, ChangeEvent, Z-set changelog format, events_to_record_batch (17 tests)
+  - `cdc/mysql/metrics.rs`: MySqlCdcMetrics with 11 AtomicU64 counters, MetricsSnapshot (12 tests)
+  - `cdc/mysql/source.rs`: MySqlCdcSource implementing SourceConnector — open/poll_batch/checkpoint/restore/health_check/close (14 tests)
+  - `cdc/mysql/mod.rs`: Re-exports, register_mysql_cdc_source factory, 19 config key specs (4 tests)
+  - Feature-gated behind `mysql-cdc` Cargo feature (business logic only, no mysql_async dependency)
+  - Follows Delta Lake pattern: all business logic without actual I/O (F028A will add binlog I/O)
+  - All clippy clean with `-D warnings`
+
+Previous session (2026-02-02):
+- **F-CLOUD-001, F-CLOUD-002, F-CLOUD-003: Cloud Storage Infrastructure** - ALL 3 COMPLETE (82 new tests, 256 total connector base tests)
+  - `storage/provider.rs`: StorageProvider enum (AwsS3, AzureAdls, Gcs, Local), detect() from URI scheme, 18 tests
+  - `storage/resolver.rs`: StorageCredentialResolver with resolve() and resolve_with_env(), env var fallback for AWS (7 vars), Azure (6), GCS (2), 22 tests
+  - `storage/validation.rs`: CloudConfigValidator with per-provider rules — S3 requires region, Azure requires account_name, GCS warning-only, 20 tests
+  - `storage/masking.rs`: SecretMasker with is_secret_key(), redact_map(), display_map(), 8 secret patterns, 22 tests
+  - `storage/mod.rs`: Re-exports all primary types
+  - **Integration with Delta Lake Sink**: DeltaLakeSinkConfig.from_config() now auto-resolves env vars via StorageCredentialResolver, validate() checks cloud credentials via CloudConfigValidator, display_storage_options() redacts secrets
+  - `config.rs`: Added display_redacted() to ConnectorConfig
+  - `lakehouse/mod.rs`: Added 12 cloud-specific ConfigKeySpec entries for discoverability
+  - `lakehouse/delta_config.rs`: 10 new integration tests (S3/Azure/GCS path validation, secret redaction)
+  - All clippy clean with `-D warnings`, 2137 total tests pass across workspace
+
+Previous session (2026-02-02):
+- **Delta Lake Deferred Work Breakdown** - Created 7 new feature specs for cloud storage infrastructure and Delta Lake I/O completion
+  - `docs/features/phase-3/cloud/INDEX.md`: Cloud Storage Infrastructure sub-group
+  - `F031A`: Delta Lake I/O Integration (blocked by deltalake crate)
+  - `F031B`: Delta Lake Recovery & Exactly-Once I/O (blocked by F031A)
+  - `F031C`: Delta Lake Compaction & Maintenance (blocked by F031A)
+  - `F031D`: Delta Lake Schema Evolution (blocked by F031A)
+
+Previous session (2026-02-02):
+- **F031: Delta Lake Sink** - IMPLEMENTATION COMPLETE (73 new tests, 169 total connector base tests)
+  - `lakehouse/delta_config.rs`: DeltaLakeSinkConfig with DeltaWriteMode, DeliveryGuarantee, CompactionConfig enums, from_config() parsing, validation (20 tests)
+  - `lakehouse/delta_metrics.rs`: DeltaLakeSinkMetrics with 9 AtomicU64 counters, to_connector_metrics() (7 tests)
+  - `lakehouse/delta.rs`: DeltaLakeSink implementing SinkConnector — buffering with size/time/rows flush triggers, epoch management with exactly-once skip, Z-set changelog splitting, health checks, capabilities (42 tests)
+  - `lakehouse/mod.rs`: Re-exports, register_delta_lake_sink factory, 15 config key specs (4 tests)
+  - Not feature-gated (compiles without deltalake crate dependency); deltalake crate deferred until version compatible with workspace datafusion
+  - Follows PostgresSink pattern: all business logic without actual I/O
+  - All clippy clean with `-D warnings`, 2050 total tests pass
+
+Previous session (2026-02-01):
 - **F-SUB-001 to F-SUB-008: Reactive Subscription System** - ALL COMPLETE (8/8 features)
   - F-SUB-001: ChangeEvent types (EventType, ChangeEvent, ChangeEventBatch, NotificationRef)
   - F-SUB-002: Notification Slot (NotificationSlot 64-byte cache-aligned, NotificationRing SPSC, NotificationHub)
@@ -87,10 +164,10 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1240 core + 367 sql + 120 storage + 28 laminar-db + 96 connectors-base + 84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only = 2160
+**Total tests**: 1272 core + 412 sql + 115 storage + 120 laminar-db + 427 connectors + 4 demo = 2350 (base), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only = 2659 (with feature flags)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 27/37 features COMPLETE (73%)**
+**Phase 3 Connectors & Integration: 36/48 features COMPLETE (75%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -98,19 +175,30 @@ Previous session (2026-01-28):
 - Kafka Sink Connector complete (F026)
 - PostgreSQL CDC Source complete (F027) — 107 tests, full pgoutput decoder
 - PostgreSQL Sink complete (F027B) — 84 tests, COPY BINARY + upsert + exactly-once
+- MySQL CDC Source complete (F028) — 119 tests, binlog decoder + GTID + Z-set changelog
+- Delta Lake Sink business logic complete (F031) — 73 tests, buffering + epoch management + changelog splitting
+- Apache Iceberg Sink business logic complete (F032) — 103 tests, REST/Glue/Hive catalogs + partition transforms + equality deletes
+- **Connector SDK complete (F034)** — 68 tests, retry/circuit breaker + rate limiting + test harness + builders + defaults + schema discovery
+- **Broadcast Channel complete (F-STREAM-010)** — 42 tests, shared ring buffer SPMC + query plan derivation + slow subscriber policies
 - SQL & MV Integration complete (F-DAG-005) — 18 new tests, DAG from MvRegistry, watermarks, changelog
 - Connector Bridge complete (F-DAG-006) — 25 new tests, source/sink bridge + runtime orchestration
 - Performance Validation complete (F-DAG-007) — 16 benchmarks, performance audit + optimizations
-- **Reactive Subscription System complete (F-SUB-001 to F-SUB-008)** — 8 features, 10 new modules in laminar-core/src/subscription/
-- Next: F031 Delta Lake Sink or F028 MySQL CDC Source
+- Reactive Subscription System complete (F-SUB-001 to F-SUB-008) — 8 features, 10 new modules
+- Cloud Storage Infrastructure complete (F-CLOUD-001/002/003) — 82 tests, integrated with Delta Lake Sink
+- Delta Lake I/O extension specs created (F031A/B/C/D) — blocked by deltalake crate
+- Next: F029 MongoDB CDC Source or F033 Parquet File Source
 
 ### Immediate Next Steps
-1. F031: Delta Lake Sink
-2. F028: MySQL CDC Source
-3. F034: Connector SDK
+1. F028A: MySQL CDC binlog I/O (mysql_async now ready with rustls)
+2. F029: MongoDB CDC Source
+3. F033: Parquet File Source
+4. F031A/B/C/D: Delta Lake I/O (when deltalake crate version aligns)
+5. F032A: Iceberg I/O (when iceberg-rust crate can be added)
 
 ### Open Issues
-- ~~Performance audit R3 (medium): Consider wrapping Event.data in Arc<RecordBatch> to make multicast zero-allocation for wide schemas.~~ ✅ RESOLVED — Event.data is now `Arc<RecordBatch>`, multicast clone is O(1).
+- **deltalake crate version**: Incompatible with workspace DataFusion version. F031A/B/C/D blocked until resolved. Track [delta-rs releases](https://github.com/delta-io/delta-rs/releases).
+- **mysql_async crate**: ✅ RESOLVED - Now using rustls TLS backend (no OpenSSL required). F028A ready for implementation.
+- **iceberg-rust crate**: Deferred until version compatible with workspace. Business logic complete in F032.
 - None currently blocking.
 
 ---
@@ -261,6 +349,27 @@ laminar-connectors/src/
     changelog         # Z-set ChangeEvent, tuple_to_json, events_to_record_batch
     metrics           # CdcMetrics (11 atomic counters)
     source            # PostgresCdcSource (SourceConnector impl, transaction buffering)
+  cdc/mysql/          # F028: MySQL CDC Source Connector
+    config            # MySqlCdcConfig, SslMode, SnapshotMode
+    gtid              # Gtid, GtidRange, GtidSet (GTID-based replication)
+    types             # MySqlColumn, mysql_type_to_arrow mapping (20+ types)
+    decoder           # BinlogMessage enum, BinlogPosition, row event types
+    schema            # TableInfo, TableCache (TABLE_MAP event handling)
+    changelog         # CdcOperation, ChangeEvent, Z-set format, events_to_record_batch
+    metrics           # MySqlCdcMetrics (11 atomic counters)
+    source            # MySqlCdcSource (SourceConnector impl)
+  lakehouse/          # F031, F032: Lakehouse connectors (Delta Lake, Iceberg)
+    delta             # DeltaLakeSink (SinkConnector impl, buffering + epoch + changelog)
+    delta_config      # DeltaLakeSinkConfig, DeltaWriteMode, DeliveryGuarantee, CompactionConfig
+    delta_metrics     # DeltaLakeSinkMetrics (9 AtomicU64 counters)
+    iceberg           # F032: IcebergSink (SinkConnector impl, buffering + epoch + equality deletes)
+    iceberg_config    # IcebergSinkConfig, IcebergCatalogType, IcebergWriteMode, IcebergTransform, IcebergPartitionField
+    iceberg_metrics   # IcebergSinkMetrics (11 AtomicU64 counters)
+  storage/            # F-CLOUD-001/002/003: Cloud Storage Infrastructure
+    provider          # StorageProvider enum (AwsS3, AzureAdls, Gcs, Local), detect() from URI
+    resolver          # StorageCredentialResolver, resolve() + resolve_with_env(), env var fallback
+    validation        # CloudConfigValidator, per-provider required fields, warnings vs errors
+    masking           # SecretMasker, is_secret_key(), redact_map(), display_map()
   bridge/             # F-DAG-006: Connector Bridge (DAG ↔ external connectors)
     source_bridge     # DagSourceBridge (SourceConnector → DagExecutor)
     sink_bridge       # DagSinkBridge (DagExecutor → SinkConnector)

@@ -22,3 +22,4 @@ arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 laminar-core = { path = "../laminar-core" }
+laminar-connectors = { path = "../laminar-connectors" }

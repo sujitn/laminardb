@@ -79,3 +79,12 @@ pub mod lookup;
 
 /// Connector bridge for DAG source/sink integration.
 pub mod bridge;
+
+/// Lakehouse connectors (Delta Lake, Iceberg).
+pub mod lakehouse;
+
+/// Cloud storage infrastructure (credential resolution, validation, secret masking).
+pub mod storage;
+
+/// Connector SDK - developer tooling and operational resilience.
+pub mod sdk;

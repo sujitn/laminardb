@@ -128,6 +128,16 @@ impl ConnectorConfig {
             .collect()
     }
 
+    /// Formats all properties for display with secrets redacted.
+    ///
+    /// Uses [`SecretMasker`](crate::storage::SecretMasker) to replace
+    /// values of secret keys (passwords, access keys, tokens) with `"***"`.
+    #[must_use]
+    pub fn display_redacted(&self) -> String {
+        use crate::storage::SecretMasker;
+        SecretMasker::display_map(&self.properties)
+    }
+
     /// Validates the configuration against a set of key specifications.
     ///
     /// # Errors
@@ -359,5 +369,25 @@ mod tests {
     fn test_connector_state_display() {
         assert_eq!(ConnectorState::Running.to_string(), "Running");
         assert_eq!(ConnectorState::Failed.to_string(), "Failed");
+    }
+
+    #[test]
+    fn test_display_redacted_masks_secrets() {
+        let mut config = ConnectorConfig::new("delta-lake");
+        config.set("aws_region", "us-east-1");
+        config.set("aws_secret_access_key", "TOP_SECRET");
+        config.set("aws_access_key_id", "AKID123");
+
+        let display = config.display_redacted();
+        assert!(display.contains("aws_region=us-east-1"));
+        assert!(display.contains("aws_secret_access_key=***"));
+        assert!(display.contains("aws_access_key_id=AKID123"));
+        assert!(!display.contains("TOP_SECRET"));
+    }
+
+    #[test]
+    fn test_display_redacted_empty() {
+        let config = ConnectorConfig::new("test");
+        assert!(config.display_redacted().is_empty());
     }
 }

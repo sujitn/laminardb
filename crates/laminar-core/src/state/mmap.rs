@@ -33,6 +33,7 @@ use bytes::Bytes;
 use memmap2::MmapMut;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::ops::{Bound, Range};
 use std::path::{Path, PathBuf};
 
@@ -427,6 +428,11 @@ impl MmapStateStore {
     ///
     /// This writes the `BTreeMap` index to a separate `.idx` file.
     /// Format: `[magic: 8B][version: 4B][last_write_pos: 8B][next_version: 8B][rkyv data]`
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::Io` if the file cannot be created or written.
+    /// Returns `StateError::Serialization` if the index cannot be serialized.
     pub fn save_index(&self) -> Result<(), StateError> {
         let path = match self.path() {
             Some(p) => p.with_extension(INDEX_EXTENSION),
@@ -441,7 +447,6 @@ impl MmapStateStore {
             .map_err(|e| StateError::Serialization(e.to_string()))?;
 
         // Write header
-        use std::io::Write;
         writer.write_all(&MMAP_MAGIC.to_le_bytes())?;
         writer.write_all(&MMAP_VERSION.to_le_bytes())?;
         writer.write_all(&[0u8; 4])?; // Padding for 8-byte alignment (32 bytes total)
@@ -458,6 +463,7 @@ impl MmapStateStore {
     }
 
     /// Load index from disk.
+    #[allow(clippy::type_complexity)]
     fn load_index(
         state_path: &Path,
     ) -> Result<(BTreeMap<Vec<u8>, ValueEntry>, usize, u64), StateError> {

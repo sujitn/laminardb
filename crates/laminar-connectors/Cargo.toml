@@ -22,7 +22,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Database drivers for CDC and sinks
 tokio-postgres = { version = "0.7", optional = true }
 postgres-types = { version = "0.2", optional = true }
-mysql_async = { version = "0.34", optional = true }
+# MySQL async driver with rustls (no OpenSSL required)
+mysql_async = { version = "0.34", optional = true, default-features = false, features = ["rustls-tls", "binlog", "minimal-rust"] }
+
+# Delta Lake (deltalake crate added when version compatible with workspace datafusion)
+uuid = { workspace = true }
 
 # Common
 tokio = { workspace = true }
@@ -44,7 +48,13 @@ default = []
 kafka = ["dep:rdkafka", "dep:arrow-avro", "dep:reqwest"]
 postgres-cdc = ["dep:tokio-postgres"]
 postgres-sink = ["dep:tokio-postgres", "dep:postgres-types"]
+# mysql-cdc: Business logic + mysql_async driver with rustls (no OpenSSL required)
 mysql-cdc = ["dep:mysql_async"]
+# delta-lake feature flags (placeholder until deltalake crate version is compatible)
+# delta-lake = ["dep:deltalake"]
+# delta-lake-s3 = ["delta-lake", "deltalake/s3"]
+# delta-lake-azure = ["delta-lake", "deltalake/azure"]
+# delta-lake-gcs = ["delta-lake", "deltalake/gcs"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
