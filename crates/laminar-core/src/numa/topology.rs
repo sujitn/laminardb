@@ -75,9 +75,9 @@ impl NumaTopology {
             ));
         }
 
-        let num_nodes = numa_nodes.len();
-        let mut cpus_per_node = vec![Vec::new(); num_nodes];
-        let mut memory_per_node = vec![0u64; num_nodes];
+        let node_count = numa_nodes.len();
+        let mut cpus_per_node = vec![Vec::new(); node_count];
+        let mut memory_per_node = vec![0u64; node_count];
 
         // Get total CPUs
         let num_cpus = hwloc_topo

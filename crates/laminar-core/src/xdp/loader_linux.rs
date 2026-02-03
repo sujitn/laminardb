@@ -209,7 +209,6 @@ impl XdpLoader {
     pub fn stats(&self) -> XdpStats {
         if self.is_active() {
             self.read_bpf_stats()
-                .unwrap_or_else(|_| self.stats.snapshot())
         } else {
             self.stats.snapshot()
         }
@@ -217,21 +216,25 @@ impl XdpLoader {
 
     /// Reads statistics from BPF maps.
     #[cfg(feature = "xdp")]
-    fn read_bpf_stats(&self) -> Result<XdpStats, XdpError> {
+    fn read_bpf_stats(&self) -> XdpStats {
         // In a real implementation, this would read from the BPF stats map
         // For now, return the local stats
-        Ok(self.stats.snapshot())
+        self.stats.snapshot()
     }
 
     #[cfg(not(feature = "xdp"))]
-    fn read_bpf_stats(&self) -> Result<XdpStats, XdpError> {
-        Ok(self.stats.snapshot())
+    fn read_bpf_stats(&self) -> XdpStats {
+        self.stats.snapshot()
     }
 
     /// Updates CPU steering for a partition.
     ///
     /// This allows runtime reconfiguration of which CPU handles
     /// packets for a given partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns `XdpError::InvalidConfig` if the CPU index is out of range.
     pub fn update_cpu_steering(&self, partition: u32, cpu: u32) -> Result<(), XdpError> {
         if !self.is_active() {
             return Ok(());
@@ -250,12 +253,17 @@ impl XdpLoader {
     }
 
     /// Detaches the XDP program from the interface.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible, but may return errors in future implementations
+    /// when actual XDP detachment is performed.
     pub fn detach(&self) -> Result<(), XdpError> {
         if !self.is_active() {
             return Ok(());
         }
 
-        self.do_detach()?;
+        self.do_detach();
         self.active.store(false, Ordering::Release);
 
         tracing::info!("XDP program detached from interface {}", self.interface);
@@ -263,17 +271,18 @@ impl XdpLoader {
     }
 
     #[cfg(feature = "xdp")]
-    fn do_detach(&self) -> Result<(), XdpError> {
+    #[allow(clippy::unused_self)]
+    fn do_detach(&self) {
         // Detach XDP program by setting empty flags (removes the program)
         // In newer libbpf-rs, detach is handled by dropping the link
         // For now, we just log that detach was requested
         // The actual detach happens when the XdpLink is dropped
-        Ok(())
     }
 
     #[cfg(not(feature = "xdp"))]
-    fn do_detach(&self) -> Result<(), XdpError> {
-        Ok(())
+    #[allow(clippy::unused_self)]
+    fn do_detach(&self) {
+        // No-op when xdp feature is disabled
     }
 
     /// Returns the interface name.
