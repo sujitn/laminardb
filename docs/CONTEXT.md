@@ -189,15 +189,15 @@ Previous session (2026-01-28):
 - Next: F029 MongoDB CDC Source or F033 Parquet File Source
 
 ### Immediate Next Steps
-1. F029: MongoDB CDC Source
-2. F033: Parquet File Source
-3. F028A: MySQL CDC binlog I/O (when mysql_async can be added without OpenSSL issues)
+1. F028A: MySQL CDC binlog I/O (mysql_async now ready with rustls)
+2. F029: MongoDB CDC Source
+3. F033: Parquet File Source
 4. F031A/B/C/D: Delta Lake I/O (when deltalake crate version aligns)
 5. F032A: Iceberg I/O (when iceberg-rust crate can be added)
 
 ### Open Issues
 - **deltalake crate version**: Incompatible with workspace DataFusion version. F031A/B/C/D blocked until resolved. Track [delta-rs releases](https://github.com/delta-io/delta-rs/releases).
-- **mysql_async crate**: Requires OpenSSL on Windows. F028A (binlog I/O) deferred until dependency resolved. Business logic complete in F028.
+- **mysql_async crate**: ✅ RESOLVED - Now using rustls TLS backend (no OpenSSL required). F028A ready for implementation.
 - **iceberg-rust crate**: Deferred until version compatible with workspace. Business logic complete in F032.
 - None currently blocking.
 

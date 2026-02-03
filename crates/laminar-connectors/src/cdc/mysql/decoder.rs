@@ -219,10 +219,15 @@ impl ColumnValue {
             ColumnValue::UnsignedInt(v) => v.to_string(),
             ColumnValue::Float(v) => v.to_string(),
             ColumnValue::Double(v) => v.to_string(),
-            ColumnValue::String(s) => s.clone(),
+            ColumnValue::String(s) | ColumnValue::Json(s) => s.clone(),
             ColumnValue::Bytes(b) => {
                 // Hex-encode binary data
-                b.iter().map(|byte| format!("{byte:02x}")).collect()
+                use std::fmt::Write;
+                let mut hex = String::with_capacity(b.len() * 2);
+                for byte in b {
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                hex
             }
             ColumnValue::Date(y, m, d) => format!("{y:04}-{m:02}-{d:02}"),
             ColumnValue::Time(h, m, s, us) => {
@@ -242,10 +247,11 @@ impl ColumnValue {
             ColumnValue::Timestamp(us) => {
                 // Convert microseconds to ISO format
                 let secs = us / 1_000_000;
+                // us % 1_000_000 is always in [0, 999_999] so u32 cast is safe
+                #[allow(clippy::cast_sign_loss)]
                 let micros = (us % 1_000_000) as u32;
                 format!("{secs}.{micros:06}")
             }
-            ColumnValue::Json(s) => s.clone(),
         }
     }
 }

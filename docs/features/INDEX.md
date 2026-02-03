@@ -240,8 +240,7 @@ Remaining work for Phase 3:
 | Gap | Feature | Priority | Notes |
 |-----|---------|----------|-------|
 | Delta Lake I/O | F031A-D | P0/P1 | Blocked by deltalake crate version |
-| MySQL CDC I/O | F028A | P1 | Business logic done; I/O blocked by mysql_async/OpenSSL |
+| MySQL CDC I/O | F028A | P1 | Ready - mysql_async now using rustls (no OpenSSL) |
 | Iceberg I/O | F032A | P1 | Business logic done; iceberg-rust crate deferred |
-| Connector SDK | F034 | P1 | Developer tooling |
 
 For historical gap analysis, see the [research documents](../research/).

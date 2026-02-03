@@ -259,13 +259,13 @@ pub fn events_to_record_batch(
         let values: Vec<Option<String>> = events
             .iter()
             .map(|e| {
-                e.row.columns.get(col_idx).map(|v| {
+                e.row.columns.get(col_idx).and_then(|v| {
                     if v.is_null() {
                         None
                     } else {
                         Some(v.to_text())
                     }
-                }).flatten()
+                })
             })
             .collect();
 

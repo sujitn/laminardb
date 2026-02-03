@@ -166,9 +166,9 @@ impl GtidSet {
     /// Returns true if the set contains the given GTID.
     #[must_use]
     pub fn contains(&self, gtid: &Gtid) -> bool {
-        self.sets.get(&gtid.source_id).map_or(false, |ranges| {
-            ranges.iter().any(|r| r.contains(gtid.transaction_id))
-        })
+        self.sets
+            .get(&gtid.source_id)
+            .is_some_and(|ranges| ranges.iter().any(|r| r.contains(gtid.transaction_id)))
     }
 
     /// Returns true if the set is empty.
@@ -251,6 +251,7 @@ impl FromStr for GtidSet {
 
 /// Errors from parsing GTID strings.
 #[derive(Debug, Clone, thiserror::Error)]
+#[allow(clippy::enum_variant_names)] // "Invalid" prefix is descriptive for parse errors
 pub enum GtidParseError {
     /// Invalid GTID format.
     #[error("invalid GTID format: {0}")]

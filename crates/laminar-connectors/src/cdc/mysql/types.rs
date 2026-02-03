@@ -2,6 +2,11 @@
 //!
 //! Maps MySQL column types to Arrow `DataType` for CDC record conversion.
 
+// Using wildcard import for local mysql_type constants is cleaner for this domain-specific code.
+#![allow(clippy::wildcard_imports)]
+// Multiple match arms returning the same type (e.g., TIMESTAMP | TIMESTAMP2 -> same) is intentional.
+#![allow(clippy::match_same_arms)]
+
 use arrow_schema::DataType;
 
 /// MySQL column type constants.

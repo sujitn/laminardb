@@ -1,5 +1,13 @@
 //! MySQL binlog replication CDC source connector (F028).
 //!
+// Note: Many functions are not yet used because actual I/O (F028A) is not implemented.
+// These allows will be removed when F028A adds the binlog reader.
+#![allow(dead_code)]
+// MySQL CDC docs reference many MySQL-specific terms that clippy wants backticks for.
+// This is a domain-specific module where MySQL terminology is ubiquitous.
+#![allow(clippy::doc_markdown)]
+
+//!
 //! This module implements a MySQL CDC source that reads change events from
 //! MySQL binary log (binlog) replication stream. It supports:
 //!
@@ -116,10 +124,11 @@ pub fn register_mysql_cdc_source(registry: &ConnectorRegistry) {
     );
 }
 
-/// Returns the configuration key specifications for MySQL CDC source.
+/// Returns the configuration key specifications for `MySQL` CDC source.
 ///
 /// This is used for configuration discovery and validation.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn config_key_specs() -> Vec<ConfigKeySpec> {
     vec![
         // Connection settings

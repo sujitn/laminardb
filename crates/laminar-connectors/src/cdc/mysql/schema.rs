@@ -131,7 +131,7 @@ impl TableCache {
     /// Returns all cached table names.
     #[must_use]
     pub fn table_names(&self) -> Vec<String> {
-        self.by_id.values().map(|t| t.full_name()).collect()
+        self.by_id.values().map(TableInfo::full_name).collect()
     }
 }
 
