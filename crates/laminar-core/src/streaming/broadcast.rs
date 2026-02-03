@@ -2,11 +2,14 @@
 //!
 //! [`BroadcastChannel<T>`] implements a shared ring buffer with per-subscriber cursors
 //! for single-producer, multiple-consumer (SPMC) broadcast. Designed for Ring 0 hot path:
-//! zero allocations after construction.
+//! zero allocations after construction, lock-free reads and writes.
 //!
 //! # Design
 //!
 //! - Pre-allocated ring buffer with power-of-2 capacity and bitmask indexing
+//! - **Lock-free hot path**: `broadcast()`, `read()`, `slowest_cursor()` use only atomics
+//! - Fixed-size cursor array with O(1) direct indexing by subscriber ID
+//! - Cache-padded cursor slots (64-byte aligned) to prevent false sharing
 //! - Single producer via [`broadcast()`](BroadcastChannel::broadcast)
 //! - Dynamic subscribers via [`subscribe()`](BroadcastChannel::subscribe) and
 //!   [`unsubscribe()`](BroadcastChannel::unsubscribe)
@@ -31,7 +34,7 @@
 //! |-----------|--------|
 //! | `broadcast()` | < 100ns (2 subscribers) |
 //! | `read()` | < 50ns |
-//! | `subscribe()` | O(1), takes write lock (Ring 2 only) |
+//! | `subscribe()` | O(1), CAS on slot (Ring 2 only) |
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -223,28 +226,57 @@ pub enum BroadcastError {
     Closed,
 }
 
-/// Per-subscriber cursor state.
+/// Cache-padded cursor slot for lock-free hot path access.
 ///
-/// Each subscriber has its own read position, allowing independent progress
-/// through the shared buffer.
-struct SubscriberCursor {
-    /// Unique subscriber ID.
-    id: usize,
+/// Each slot is 64-byte aligned to prevent false sharing between cores.
+/// Hot path methods (`broadcast`, `read`, `slowest_cursor`) only touch
+/// the atomic fields, achieving lock-free operation.
+///
+/// # Memory Layout
+///
+/// ```text
+/// Offset  Field       Size
+/// 0       active      1 byte (AtomicBool)
+/// 1-7     (padding)   7 bytes
+/// 8       read_seq    8 bytes (AtomicU64)
+/// 16-63   _pad        48 bytes
+/// Total: 64 bytes (one cache line)
+/// ```
+#[repr(C, align(64))]
+struct CursorSlot {
+    /// Whether this slot has an active subscriber.
+    active: AtomicBool,
     /// Read position (monotonically increasing).
     read_seq: AtomicU64,
-    /// Whether this cursor is active.
-    active: AtomicBool,
-    /// Subscriber name (for debugging/metrics).
-    name: String,
+    /// Padding to fill cache line (prevents false sharing).
+    _pad: [u8; 48],
 }
 
-impl SubscriberCursor {
-    fn new(id: usize, name: String, start_seq: u64) -> Self {
+impl CursorSlot {
+    /// Creates an empty (inactive) cursor slot.
+    const fn empty() -> Self {
         Self {
-            id,
-            read_seq: AtomicU64::new(start_seq),
-            active: AtomicBool::new(true),
-            name,
+            active: AtomicBool::new(false),
+            read_seq: AtomicU64::new(0),
+            _pad: [0; 48],
+        }
+    }
+
+    /// Tries to claim this slot atomically.
+    ///
+    /// Returns `true` if successfully claimed, `false` if already active.
+    #[inline]
+    fn try_claim(&self, start_seq: u64) -> bool {
+        // CAS: only claim if currently inactive
+        if self
+            .active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.read_seq.store(start_seq, Ordering::Release);
+            true
+        } else {
+            false
         }
     }
 
@@ -264,10 +296,23 @@ impl SubscriberCursor {
     }
 }
 
+impl Default for CursorSlot {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 /// Broadcast channel for multi-consumer scenarios.
 ///
 /// Uses a shared ring buffer with per-subscriber cursors for memory efficiency.
 /// Slowest consumer determines retention. Supports dynamic subscribe/unsubscribe.
+///
+/// # Lock-Free Hot Path
+///
+/// The hot path methods (`broadcast`, `read`, `slowest_cursor`) are completely
+/// lock-free, using only atomic operations on the pre-allocated cursor slots.
+/// This achieves consistent sub-100ns latency without the 5-50μs spikes that
+/// `RwLock` can cause.
 ///
 /// # Type Parameters
 ///
@@ -308,13 +353,23 @@ pub struct BroadcastChannel<T> {
     /// Cache-padded to prevent false sharing with read cursors.
     write_seq: CachePadded<AtomicU64>,
 
-    /// Per-subscriber cursors (`RwLock` for dynamic management).
-    /// Write lock: subscribe/unsubscribe (Ring 2, setup time)
-    /// Read lock: find slowest cursor (hot path, fast)
-    cursors: RwLock<Vec<SubscriberCursor>>,
+    /// Pre-allocated cursor slots (lock-free hot path access).
+    /// Indexed directly by `subscriber_id` for O(1) lookup.
+    /// Each slot is 64-byte cache-line aligned.
+    cursor_slots: Box<[CursorSlot]>,
 
-    /// Next subscriber ID.
-    next_id: AtomicUsize,
+    /// Subscriber names (only accessed during setup/debug, not hot path).
+    /// Indexed by `subscriber_id`. Protected by `RwLock` since names are
+    /// only read during `subscribe()`, `subscriber_info()`, `list_subscribers()`.
+    cursor_names: RwLock<Vec<String>>,
+
+    /// Number of active subscribers (atomically maintained).
+    /// Used for quick `subscriber_count()` without scanning.
+    active_count: AtomicUsize,
+
+    /// Hint for next slot to try during `subscribe()`.
+    /// Not critical for correctness - just optimization.
+    next_slot_hint: AtomicUsize,
 
     /// Configuration.
     config: BroadcastConfig,
@@ -342,6 +397,8 @@ unsafe impl<T: Send> Sync for BroadcastChannel<T> {}
 impl<T> BroadcastChannel<T> {
     /// Creates a new broadcast channel with the given configuration.
     ///
+    /// Pre-allocates all cursor slots for lock-free hot path operation.
+    ///
     /// # Arguments
     ///
     /// * `config` - Channel configuration
@@ -355,15 +412,24 @@ impl<T> BroadcastChannel<T> {
     pub fn new(config: BroadcastConfig) -> Self {
         let capacity = config.effective_capacity();
         let mask = capacity - 1;
+        let max_subscribers = config.max_subscribers;
 
         let buffer: Vec<UnsafeCell<Option<T>>> =
             (0..capacity).map(|_| UnsafeCell::new(None)).collect();
 
+        // Pre-allocate cursor slots (64-byte aligned each)
+        let cursor_slots: Vec<CursorSlot> = (0..max_subscribers).map(|_| CursorSlot::empty()).collect();
+
+        // Pre-allocate name storage
+        let cursor_names: Vec<String> = (0..max_subscribers).map(|_| String::new()).collect();
+
         Self {
             buffer: buffer.into_boxed_slice(),
             write_seq: CachePadded::new(AtomicU64::new(0)),
-            cursors: RwLock::new(Vec::with_capacity(config.max_subscribers)),
-            next_id: AtomicUsize::new(0),
+            cursor_slots: cursor_slots.into_boxed_slice(),
+            cursor_names: RwLock::new(cursor_names),
+            active_count: AtomicUsize::new(0),
+            next_slot_hint: AtomicUsize::new(0),
             config,
             capacity,
             mask,
@@ -373,53 +439,53 @@ impl<T> BroadcastChannel<T> {
 
     /// Returns the slowest cursor position among active subscribers.
     ///
+    /// **Lock-free**: Only uses atomic loads, no locks.
+    ///
     /// Returns `u64::MAX` if there are no active subscribers.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned (should not happen in normal use).
     #[must_use]
     pub fn slowest_cursor(&self) -> u64 {
-        let cursors = self.cursors.read().unwrap();
-        cursors
-            .iter()
-            .filter(|c| c.is_active())
-            .map(SubscriberCursor::read_position)
-            .min()
-            .unwrap_or(u64::MAX)
+        let mut min_pos = u64::MAX;
+        for slot in &*self.cursor_slots {
+            if slot.is_active() {
+                let pos = slot.read_position();
+                if pos < min_pos {
+                    min_pos = pos;
+                }
+            }
+        }
+        min_pos
     }
 
     /// Returns the lag (unread messages) for a subscriber.
     ///
-    /// Returns 0 if the subscriber is not found or inactive.
+    /// **Lock-free**: Only uses atomic loads, no locks.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned (should not happen in normal use).
+    /// Returns 0 if the subscriber ID is out of bounds or inactive.
     #[must_use]
     pub fn subscriber_lag(&self, subscriber_id: usize) -> u64 {
-        let cursors = self.cursors.read().unwrap();
-        if let Some(cursor) = cursors.iter().find(|c| c.id == subscriber_id && c.is_active()) {
-            let write_pos = self.write_seq.load(Ordering::Acquire);
-            let read_pos = cursor.read_position();
-            write_pos.saturating_sub(read_pos)
-        } else {
-            0
+        if subscriber_id >= self.cursor_slots.len() {
+            return 0;
         }
+        let slot = &self.cursor_slots[subscriber_id];
+        if !slot.is_active() {
+            return 0;
+        }
+        let write_pos = self.write_seq.load(Ordering::Acquire);
+        let read_pos = slot.read_position();
+        write_pos.saturating_sub(read_pos)
     }
 
     /// Returns the number of active subscribers.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned (should not happen in normal use).
+    /// **Lock-free**: Returns the atomically-maintained count.
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
-        let cursors = self.cursors.read().unwrap();
-        cursors.iter().filter(|c| c.is_active()).count()
+        self.active_count.load(Ordering::Acquire)
     }
 
     /// Returns true if the subscriber is lagging beyond the warning threshold.
+    ///
+    /// **Lock-free**: Only uses atomic loads.
     #[must_use]
     pub fn is_lagging(&self, subscriber_id: usize) -> bool {
         self.subscriber_lag(subscriber_id) >= self.config.lag_warning_threshold
@@ -459,42 +525,57 @@ impl<T> BroadcastChannel<T> {
 
     /// Returns subscriber information for debugging.
     ///
+    /// # Note
+    ///
+    /// Takes a read lock to access the name. Not intended for hot path use.
+    ///
     /// # Panics
     ///
     /// Panics if the internal lock is poisoned (should not happen in normal use).
     #[must_use]
     pub fn subscriber_info(&self, subscriber_id: usize) -> Option<SubscriberInfo> {
-        let cursors = self.cursors.read().unwrap();
-        cursors.iter().find(|c| c.id == subscriber_id).map(|c| {
-            let write_pos = self.write_seq.load(Ordering::Acquire);
-            let read_pos = c.read_position();
-            SubscriberInfo {
-                id: c.id,
-                name: c.name.clone(),
-                active: c.is_active(),
-                read_position: read_pos,
-                lag: write_pos.saturating_sub(read_pos),
-            }
+        if subscriber_id >= self.cursor_slots.len() {
+            return None;
+        }
+        let slot = &self.cursor_slots[subscriber_id];
+        let names = self.cursor_names.read().unwrap();
+        let write_pos = self.write_seq.load(Ordering::Acquire);
+        let read_pos = slot.read_position();
+        let active = slot.is_active();
+
+        // Return info even for inactive slots (for debugging)
+        Some(SubscriberInfo {
+            id: subscriber_id,
+            name: names[subscriber_id].clone(),
+            active,
+            read_position: read_pos,
+            lag: write_pos.saturating_sub(read_pos),
         })
     }
 
     /// Lists all active subscribers.
+    ///
+    /// # Note
+    ///
+    /// Takes a read lock to access names. Not intended for hot path use.
     ///
     /// # Panics
     ///
     /// Panics if the internal lock is poisoned (should not happen in normal use).
     #[must_use]
     pub fn list_subscribers(&self) -> Vec<SubscriberInfo> {
-        let cursors = self.cursors.read().unwrap();
+        let names = self.cursor_names.read().unwrap();
         let write_pos = self.write_seq.load(Ordering::Acquire);
-        cursors
+
+        self.cursor_slots
             .iter()
-            .filter(|c| c.is_active())
-            .map(|c| {
-                let read_pos = c.read_position();
+            .enumerate()
+            .filter(|(_, slot)| slot.is_active())
+            .map(|(id, slot)| {
+                let read_pos = slot.read_position();
                 SubscriberInfo {
-                    id: c.id,
-                    name: c.name.clone(),
+                    id,
+                    name: names[id].clone(),
                     active: true,
                     read_position: read_pos,
                     lag: write_pos.saturating_sub(read_pos),
@@ -514,27 +595,26 @@ impl<T> BroadcastChannel<T> {
 
     /// Unsubscribes a subscriber.
     ///
-    /// The subscriber's cursor is deactivated but not removed (to avoid
-    /// reordering issues). Subsequent reads with this ID will return `None`.
+    /// **Lock-free**: Only uses atomic store on the slot.
     ///
-    /// # Performance
-    ///
-    /// Takes a read lock (fast). Cursor is deactivated atomically.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned (should not happen in normal use).
+    /// The subscriber's cursor is deactivated but the slot remains allocated
+    /// (can be reused by future subscribers). Subsequent reads with this ID
+    /// will return `None`.
     pub fn unsubscribe(&self, subscriber_id: usize) {
-        let cursors = self.cursors.read().unwrap();
-        if let Some(cursor) = cursors.iter().find(|c| c.id == subscriber_id) {
-            cursor.deactivate();
+        if subscriber_id < self.cursor_slots.len() {
+            let slot = &self.cursor_slots[subscriber_id];
+            if slot.is_active() {
+                slot.deactivate();
+                self.active_count.fetch_sub(1, Ordering::Release);
+            }
         }
     }
 }
 
 impl<T: Clone> BroadcastChannel<T> {
-
     /// Broadcasts a value to all subscribers.
+    ///
+    /// **Lock-free**: Only uses atomic operations, no locks on hot path.
     ///
     /// Writes the value into the next available slot. All active subscribers
     /// will be able to read this value via [`read()`](Self::read).
@@ -557,7 +637,7 @@ impl<T: Clone> BroadcastChannel<T> {
         let write_pos = self.write_seq.load(Ordering::Relaxed);
         let slot_idx = self.slot_index(write_pos);
 
-        // Check if we need to wait for slow subscribers
+        // Check if we need to wait for slow subscribers (lock-free)
         let min_read = self.slowest_cursor();
         if min_read == u64::MAX {
             return Err(BroadcastError::NoSubscribers);
@@ -582,84 +662,103 @@ impl<T: Clone> BroadcastChannel<T> {
     /// Registers a new subscriber.
     ///
     /// Returns the subscriber ID which can be used with [`read()`](Self::read).
+    /// The subscriber ID is the slot index for O(1) direct access on the hot path.
+    ///
     /// New subscribers start reading from the current write position (they don't
     /// see historical data).
     ///
     /// # Errors
     ///
-    /// Returns [`BroadcastError::MaxSubscribersReached`] if the maximum
-    /// subscriber limit is reached.
+    /// Returns [`BroadcastError::MaxSubscribersReached`] if all slots are occupied.
     ///
     /// # Performance
     ///
-    /// Takes a write lock. Should only be called during setup, not on hot path.
+    /// Uses CAS to claim a slot, then takes write lock for name storage.
+    /// Should only be called during setup, not on hot path.
     ///
     /// # Panics
     ///
     /// Panics if the internal lock is poisoned (should not happen in normal use).
     pub fn subscribe(&self, name: impl Into<String>) -> Result<usize, BroadcastError> {
-        let mut cursors = self.cursors.write().unwrap();
+        let start_seq = self.write_seq.load(Ordering::Acquire);
+        let max_slots = self.cursor_slots.len();
 
-        // Check subscriber limit
-        let active_count = cursors.iter().filter(|c| c.is_active()).count();
-        if active_count >= self.config.max_subscribers {
-            return Err(BroadcastError::MaxSubscribersReached(
-                self.config.max_subscribers,
-            ));
+        // Start from hint and scan for an available slot
+        let hint = self.next_slot_hint.load(Ordering::Relaxed) % max_slots;
+
+        // Try to claim a slot using CAS (lock-free)
+        for offset in 0..max_slots {
+            let slot_id = (hint + offset) % max_slots;
+            let slot = &self.cursor_slots[slot_id];
+
+            if slot.try_claim(start_seq) {
+                // Successfully claimed slot - now store the name
+                {
+                    let mut names = self.cursor_names.write().unwrap();
+                    names[slot_id] = name.into();
+                }
+
+                // Update hint for next subscribe
+                self.next_slot_hint
+                    .store((slot_id + 1) % max_slots, Ordering::Relaxed);
+
+                // Increment active count
+                self.active_count.fetch_add(1, Ordering::Release);
+
+                return Ok(slot_id);
+            }
         }
 
-        // Allocate new subscriber ID
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-
-        // New subscribers start at current write position
-        let start_seq = self.write_seq.load(Ordering::Acquire);
-
-        cursors.push(SubscriberCursor::new(id, name.into(), start_seq));
-
-        Ok(id)
+        // All slots occupied
+        Err(BroadcastError::MaxSubscribersReached(max_slots))
     }
 
     /// Reads the next value for a subscriber.
     ///
+    /// **Lock-free**: Uses direct O(1) array indexing, no locks.
+    ///
     /// Returns `Some(value)` if data is available, or `None` if the subscriber
-    /// is caught up with the producer or has been unsubscribed.
+    /// is caught up with the producer, has been unsubscribed, or the ID is invalid.
     ///
     /// # Arguments
     ///
     /// * `subscriber_id` - The subscriber's ID from [`subscribe()`](Self::subscribe)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned (should not happen in normal use).
+    #[inline]
     pub fn read(&self, subscriber_id: usize) -> Option<T> {
-        let cursors = self.cursors.read().unwrap();
-        let cursor = cursors.iter().find(|c| c.id == subscriber_id)?;
-
-        if !cursor.is_active() {
+        // O(1) direct indexing - no lock, no linear scan
+        if subscriber_id >= self.cursor_slots.len() {
             return None;
         }
 
-        let read_pos = cursor.read_seq.load(Ordering::Relaxed);
+        let slot = &self.cursor_slots[subscriber_id];
+
+        if !slot.is_active() {
+            return None;
+        }
+
+        let read_pos = slot.read_seq.load(Ordering::Relaxed);
         let write_pos = self.write_seq.load(Ordering::Acquire);
 
         if read_pos >= write_pos {
             return None; // No data available
         }
 
-        let slot_idx = self.slot_index(read_pos);
+        let buffer_idx = self.slot_index(read_pos);
 
         // SAFETY: write_pos > read_pos guarantees this slot contains valid data.
         // The Acquire load of write_seq above synchronizes-with the Release store
         // in broadcast(), ensuring the slot value is visible.
-        let value = unsafe { (*self.buffer[slot_idx].get()).as_ref()?.clone() };
+        let value = unsafe { (*self.buffer[buffer_idx].get()).as_ref()?.clone() };
 
         // Advance read position
-        cursor.read_seq.store(read_pos + 1, Ordering::Release);
+        slot.read_seq.store(read_pos + 1, Ordering::Release);
 
         Some(value)
     }
 
     /// Tries to read without blocking.
+    ///
+    /// **Lock-free**: Inlined logic, no double-locking.
     ///
     /// Returns `Ok(Some(value))` if data is available, `Ok(None)` if caught up,
     /// or `Err` if the subscriber is invalid or unsubscribed.
@@ -668,23 +767,37 @@ impl<T: Clone> BroadcastChannel<T> {
     ///
     /// Returns [`BroadcastError::SubscriberNotFound`] if the subscriber ID is invalid
     /// or the subscriber has been unsubscribed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned (should not happen in normal use).
+    #[inline]
     pub fn try_read(&self, subscriber_id: usize) -> Result<Option<T>, BroadcastError> {
-        let cursors = self.cursors.read().unwrap();
-        let cursor = cursors
-            .iter()
-            .find(|c| c.id == subscriber_id)
-            .ok_or(BroadcastError::SubscriberNotFound(subscriber_id))?;
-
-        if !cursor.is_active() {
+        // O(1) direct indexing - no lock, no linear scan
+        if subscriber_id >= self.cursor_slots.len() {
             return Err(BroadcastError::SubscriberNotFound(subscriber_id));
         }
 
-        drop(cursors); // Release lock before cloning
-        Ok(self.read(subscriber_id))
+        let slot = &self.cursor_slots[subscriber_id];
+
+        if !slot.is_active() {
+            return Err(BroadcastError::SubscriberNotFound(subscriber_id));
+        }
+
+        let read_pos = slot.read_seq.load(Ordering::Relaxed);
+        let write_pos = self.write_seq.load(Ordering::Acquire);
+
+        if read_pos >= write_pos {
+            return Ok(None); // Caught up
+        }
+
+        let buffer_idx = self.slot_index(read_pos);
+
+        // SAFETY: write_pos > read_pos guarantees this slot contains valid data.
+        let value = unsafe { (*self.buffer[buffer_idx].get()).clone() };
+
+        if value.is_some() {
+            // Advance read position
+            slot.read_seq.store(read_pos + 1, Ordering::Release);
+        }
+
+        Ok(value)
     }
 
     /// Handles slow subscriber based on policy.
@@ -729,17 +842,26 @@ impl<T: Clone> BroadcastChannel<T> {
     }
 
     /// Drops the slowest subscriber (`DropSlow` policy).
+    ///
+    /// **Lock-free**: Scans slots atomically without locks.
     fn drop_slowest_subscriber(&self) {
-        let cursors = self.cursors.read().unwrap();
+        // Find the slowest active subscriber (lock-free scan)
+        let mut slowest_id: Option<usize> = None;
+        let mut slowest_pos = u64::MAX;
 
-        // Find the slowest active subscriber
-        let slowest = cursors
-            .iter()
-            .filter(|c| c.is_active())
-            .min_by_key(|c| c.read_position());
+        for (id, slot) in self.cursor_slots.iter().enumerate() {
+            if slot.is_active() {
+                let pos = slot.read_position();
+                if pos < slowest_pos {
+                    slowest_pos = pos;
+                    slowest_id = Some(id);
+                }
+            }
+        }
 
-        if let Some(cursor) = slowest {
-            cursor.deactivate();
+        if let Some(id) = slowest_id {
+            self.cursor_slots[id].deactivate();
+            self.active_count.fetch_sub(1, Ordering::Release);
         }
     }
 }

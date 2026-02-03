@@ -223,7 +223,11 @@ assert_eq!(types["trades"], DerivedChannelType::Broadcast { consumer_count: 2 })
 
 **Clone Semantics**: In broadcast mode, values are cloned for each subscriber. For `Arc<RecordBatch>`, this is cheap (~2ns atomic increment).
 
-**Cache Alignment**: Write sequence uses `CachePadded` to avoid false sharing.
+**Lock-Free Hot Path**: The hot path methods (`broadcast()`, `read()`, `slowest_cursor()`) are completely lock-free, using only atomic operations on pre-allocated cursor slots. This eliminates 5-50μs latency spikes that `RwLock` can cause.
+
+**Cache Alignment**: Both write sequence and cursor slots use 64-byte cache-line alignment (`CachePadded`, `#[repr(align(64))]`) to prevent false sharing between cores.
+
+**O(1) Subscriber Access**: Subscriber ID is the direct array index into the cursor slot array, enabling O(1) lookup instead of O(n) linear scan.
 
 ## References
 
