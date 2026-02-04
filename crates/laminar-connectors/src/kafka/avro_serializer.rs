@@ -1,7 +1,7 @@
 //! Avro serialization using `arrow-avro` with Confluent Schema Registry.
 //!
-//! [`AvroSerializer`] implements [`RecordSerializer`] by wrapping the
-//! `arrow-avro` [`Writer`] with SOE format, producing per-record payloads
+//! `AvroSerializer` implements `RecordSerializer` by wrapping the
+//! `arrow-avro` `Writer` with SOE format, producing per-record payloads
 //! with the Confluent wire format prefix (`0x00` + 4-byte BE schema ID
 //! + Avro body).
 
@@ -53,7 +53,7 @@ impl AvroSerializer {
     /// Creates a new Avro serializer with Schema Registry integration.
     ///
     /// The schema ID is obtained from the registry. Call
-    /// [`register_schema`](Self::register_schema) before serializing.
+    /// `set_schema_id` after registering the schema.
     #[must_use]
     pub fn with_schema_registry(
         schema: SchemaRef,

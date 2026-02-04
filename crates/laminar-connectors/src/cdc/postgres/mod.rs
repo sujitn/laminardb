@@ -14,14 +14,14 @@
 //!
 //! # Module Structure
 //!
-//! - [`config`] - Connection and replication configuration
-//! - [`lsn`] - Log Sequence Number type
-//! - [`types`] - PostgreSQL OID to Arrow type mapping
-//! - [`decoder`] - pgoutput binary protocol parser
-//! - [`schema`] - Relation (table) schema cache
-//! - [`changelog`] - Z-set change event conversion
-//! - [`metrics`] - Lock-free atomic CDC metrics
-//! - [`source`] - `PostgresCdcSource` implementing `SourceConnector`
+//! - `config` - Connection and replication configuration
+//! - `lsn` - Log Sequence Number type
+//! - `types` - PostgreSQL OID to Arrow type mapping
+//! - `decoder` - pgoutput binary protocol parser
+//! - `schema` - Relation (table) schema cache
+//! - `changelog` - Z-set change event conversion
+//! - `metrics` - Lock-free atomic CDC metrics
+//! - `source` - `PostgresCdcSource` implementing `SourceConnector`
 //!
 //! # Usage
 //!

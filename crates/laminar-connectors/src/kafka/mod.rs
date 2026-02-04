@@ -1,8 +1,8 @@
 //! Kafka source and sink connectors for LaminarDB.
 //!
-//! Provides a [`KafkaSource`] that consumes from Kafka topics and
+//! Provides a `KafkaSource` that consumes from Kafka topics and
 //! produces Arrow `RecordBatch` data through the [`SourceConnector`]
-//! trait, and a [`KafkaSink`] that writes Arrow `RecordBatch` data
+//! trait, and a `KafkaSink` that writes Arrow `RecordBatch` data
 //! to Kafka topics through the [`SinkConnector`] trait.
 //!
 //! Both connectors support JSON, CSV, Raw, Debezium, and Avro

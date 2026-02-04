@@ -17,10 +17,10 @@
 //!
 //! # Module Structure
 //!
-//! - [`sink_config`] - Configuration and enums
-//! - [`sink`] - `PostgresSink` implementing `SinkConnector`
-//! - [`sink_metrics`] - Lock-free atomic metrics
-//! - [`types`] - Arrow → `PostgreSQL` type mapping
+//! - `sink_config` - Configuration and enums
+//! - `sink` - `PostgresSink` implementing `SinkConnector`
+//! - `sink_metrics` - Lock-free atomic metrics
+//! - `types` - Arrow → `PostgreSQL` type mapping
 //!
 //! # Usage
 //!
