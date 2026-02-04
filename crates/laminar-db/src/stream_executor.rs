@@ -157,6 +157,7 @@ impl StreamExecutor {
 }
 
 #[cfg(test)]
+#[allow(clippy::redundant_closure_for_method_calls)]
 mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};

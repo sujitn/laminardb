@@ -449,6 +449,7 @@ impl ConnectorBridgeRuntime {
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_pass_by_value)]
 mod tests {
     use std::sync::Arc;
 

@@ -155,7 +155,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_with_options() {
         let db = LaminarDbBuilder::new()
-            .buffer_size(131072)
+            .buffer_size(131_072)
             .build()
             .await
             .unwrap();

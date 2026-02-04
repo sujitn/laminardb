@@ -626,6 +626,9 @@ fn filter_batch_by_indices(
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use arrow_array::{Float64Array, Int64Array, StringArray};
