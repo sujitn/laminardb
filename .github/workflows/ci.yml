@@ -45,10 +45,10 @@ jobs:
         run: cargo clippy --workspace --no-default-features -- -D warnings
 
   # ============================================
-  # Tests (Multi-Platform)
+  # Build & Test (Multi-Platform)
   # ============================================
-  test:
-    name: Test (${{ matrix.os }})
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -62,7 +62,7 @@ jobs:
           key: ${{ matrix.os }}
       - uses: taiki-e/install-action@nextest
 
-      - name: Install hwloc (Linux)
+      - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libhwloc-dev libelf-dev zlib1g-dev libcurl4-openssl-dev cmake pkg-config libsasl2-dev libudev-dev
 
@@ -70,16 +70,26 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install hwloc
 
+      # Build release binaries (includes test binaries)
+      - name: Build release (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: cargo build --workspace --release --all-features --all-targets
+
+      - name: Build release (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --workspace --release --all-targets
+
+      # Run tests using the release build
       - name: Run tests (Linux/macOS)
         if: runner.os != 'Windows'
-        run: cargo nextest run --workspace --all-features
+        run: cargo nextest run --workspace --all-features --release
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --release
 
       - name: Run doc tests
-        run: cargo test --doc --workspace
+        run: cargo test --doc --workspace --release
 
   # ============================================
   # Feature Combinations
@@ -209,44 +219,11 @@ jobs:
         continue-on-error: true
 
   # ============================================
-  # Build Release Artifacts
-  # ============================================
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.os }}-release
-
-      - name: Install hwloc (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libhwloc-dev libelf-dev zlib1g-dev libcurl4-openssl-dev cmake pkg-config libsasl2-dev libudev-dev
-
-      - name: Install hwloc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install hwloc
-
-      - name: Build release (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: cargo build --workspace --release --all-features
-
-      - name: Build release (Windows)
-        if: runner.os == 'Windows'
-        run: cargo build --workspace --release
-
-  # ============================================
   # CI Success Gate
   # ============================================
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, test, features, msrv, docs, build]
+    needs: [fmt, clippy, build-and-test, features, msrv, docs]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -254,11 +231,10 @@ jobs:
         run: |
           if [[ "${{ needs.fmt.result }}" != "success" ]] || \
              [[ "${{ needs.clippy.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
+             [[ "${{ needs.build-and-test.result }}" != "success" ]] || \
              [[ "${{ needs.features.result }}" != "success" ]] || \
              [[ "${{ needs.msrv.result }}" != "success" ]] || \
-             [[ "${{ needs.docs.result }}" != "success" ]] || \
-             [[ "${{ needs.build.result }}" != "success" ]]; then
+             [[ "${{ needs.docs.result }}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
           fi
