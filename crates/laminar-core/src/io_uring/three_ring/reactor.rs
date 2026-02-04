@@ -762,6 +762,11 @@ impl std::fmt::Debug for ThreeRingReactor {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::manual_let_else,
+    clippy::single_match_else,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
     use crate::io_uring::three_ring::handler::SimpleRingHandler;

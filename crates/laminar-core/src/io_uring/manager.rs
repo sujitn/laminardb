@@ -734,6 +734,11 @@ impl RingMetrics {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::manual_let_else,
+    clippy::single_match_else,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
@@ -799,7 +804,7 @@ mod tests {
             completions_failed: 5,
             bytes_read: 40960,
             bytes_written: 81920,
-            total_latency_ns: 100000,
+            total_latency_ns: 100_000,
             latency_samples: 10,
         };
 

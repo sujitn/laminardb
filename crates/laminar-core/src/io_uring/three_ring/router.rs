@@ -400,7 +400,7 @@ mod tests {
         router.track_simple(30, RingAffinity::Poll);
 
         let mut ids = router.pending_ids();
-        ids.sort();
+        ids.sort_unstable();
         assert_eq!(ids, vec![10, 20, 30]);
     }
 

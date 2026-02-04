@@ -311,6 +311,11 @@ impl SupportedFeatures {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::manual_let_else,
+    clippy::single_match_else,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
 
@@ -319,7 +324,7 @@ mod tests {
         let features = probe_features();
         // On Linux with io_uring, this should be true
         // On other platforms or containers, may be false
-        println!("io_uring features: {:?}", features);
+        println!("io_uring features: {features:?}");
     }
 
     #[test]

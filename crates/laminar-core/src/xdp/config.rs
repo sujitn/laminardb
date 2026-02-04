@@ -319,5 +319,8 @@ mod tests {
         {
             assert!(!available);
         }
+
+        // Suppress warning when feature is enabled
+        let _ = available;
     }
 }

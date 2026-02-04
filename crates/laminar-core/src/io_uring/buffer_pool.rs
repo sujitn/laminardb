@@ -361,6 +361,11 @@ impl std::fmt::Display for BufferPoolStats {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::manual_let_else,
+    clippy::single_match_else,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
@@ -496,6 +501,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)
             .unwrap();
 

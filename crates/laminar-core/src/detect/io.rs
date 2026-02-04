@@ -665,15 +665,18 @@ mod tests {
     #[test]
     fn test_io_uring_capabilities_advanced() {
         let kv = KernelVersion::new(6, 0, 0);
-        let _caps = IoUringCapabilities::from_kernel_version(Some(&kv));
+        let caps = IoUringCapabilities::from_kernel_version(Some(&kv));
 
         #[cfg(all(target_os = "linux", feature = "io-uring"))]
         {
-            assert!(_caps.sqpoll_supported);
-            assert!(_caps.iopoll_supported);
-            assert!(_caps.coop_taskrun);
-            assert!(_caps.single_issuer);
+            assert!(caps.sqpoll_supported);
+            assert!(caps.iopoll_supported);
+            assert!(caps.coop_taskrun);
+            assert!(caps.single_issuer);
         }
+
+        // Suppress warning when feature is disabled
+        let _ = caps;
     }
 
     #[test]
@@ -694,15 +697,18 @@ mod tests {
     #[test]
     fn test_xdp_capabilities_from_kernel() {
         let kv = KernelVersion::new(5, 3, 0);
-        let _caps = XdpCapabilities::from_kernel_version(Some(&kv));
+        let caps = XdpCapabilities::from_kernel_version(Some(&kv));
 
         #[cfg(all(target_os = "linux", feature = "xdp"))]
         {
-            assert!(_caps.available);
-            assert!(_caps.generic_supported);
-            assert!(_caps.native_supported);
-            assert!(_caps.cpumap_supported);
+            assert!(caps.available);
+            assert!(caps.generic_supported);
+            assert!(caps.native_supported);
+            assert!(caps.cpumap_supported);
         }
+
+        // Suppress warning when feature is disabled
+        let _ = caps;
     }
 
     #[test]
