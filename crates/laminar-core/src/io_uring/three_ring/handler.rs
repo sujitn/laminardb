@@ -12,7 +12,7 @@ use super::router::RoutedCompletion;
 ///
 /// # Ring 0/1/2 Integration
 ///
-/// The three-ring I/O pattern maps to the LaminarDB ring architecture:
+/// The three-ring I/O pattern maps to the `LaminarDB` ring architecture:
 ///
 /// - **Ring 0 (Hot Path)**: Latency ring completions trigger event processing
 /// - **Ring 1 (Background)**: Main ring completions for WAL/checkpoints
@@ -81,6 +81,7 @@ pub trait RingHandler {
 /// This handler collects completions into vectors and provides
 /// basic Ring 0/1/2 scaffolding.
 #[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SimpleRingHandler {
     /// Latency completions received.
     pub latency_completions: Vec<RoutedCompletion>,

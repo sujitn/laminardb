@@ -1,6 +1,6 @@
-//! Per-core io_uring manager for thread-per-core architecture.
+//! Per-core `io_uring` manager for thread-per-core architecture.
 //!
-//! Provides a unified interface for managing io_uring operations on a single core,
+//! Provides a unified interface for managing `io_uring` operations on a single core,
 //! including ring management, buffer pools, and pending operation tracking.
 
 use io_uring::opcode;
@@ -84,7 +84,7 @@ impl PendingOp {
     }
 }
 
-/// Completion result from an io_uring operation.
+/// Completion result from an `io_uring` operation.
 #[derive(Debug)]
 pub struct Completion {
     /// User data identifying the operation.
@@ -118,6 +118,7 @@ impl Completion {
 
     /// Get the number of bytes transferred (for read/write operations).
     #[must_use]
+    #[allow(clippy::cast_sign_loss)]
     pub const fn bytes_transferred(&self) -> Option<usize> {
         if self.result >= 0 {
             Some(self.result as usize)
@@ -159,9 +160,9 @@ impl Completion {
     }
 }
 
-/// Per-core io_uring manager.
+/// Per-core `io_uring` manager.
 ///
-/// Manages a single core's io_uring instance, buffer pool, and pending operations.
+/// Manages a single core's `io_uring` instance, buffer pool, and pending operations.
 /// Designed for integration with the thread-per-core architecture (F013).
 pub struct CoreRingManager {
     /// Core ID.
@@ -177,7 +178,7 @@ pub struct CoreRingManager {
     iopoll_buffer_pool: Option<RegisteredBufferPool>,
     /// Pending operations tracking.
     pending: HashMap<u64, PendingOp>,
-    /// Next user_data ID.
+    /// Next `user_data` ID.
     next_id: AtomicU64,
     /// Metrics.
     metrics: RingMetrics,
@@ -191,7 +192,7 @@ impl CoreRingManager {
     /// # Arguments
     ///
     /// * `core_id` - The core ID this manager is for
-    /// * `config` - io_uring configuration
+    /// * `config` - `io_uring` configuration
     ///
     /// # Errors
     ///
@@ -543,9 +544,9 @@ impl CoreRingManager {
                 self.main_ring.ring_mut()
             };
 
-            let mut cq = ring.completion();
+            let cq = ring.completion();
             let mut data = Vec::new();
-            while let Some(cqe) = cq.next() {
+            for cqe in cq {
                 data.push((cqe.user_data(), cqe.result(), cqe.flags()));
             }
             data
@@ -559,6 +560,7 @@ impl CoreRingManager {
     }
 
     /// Process completion data from a CQE.
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn process_completion_data(&mut self, user_data: u64, result: i32, flags: u32) -> Completion {
         let op = self.pending.remove(&user_data);
         let latency = op.as_ref().map(|o| o.submitted_at().elapsed());
@@ -631,7 +633,7 @@ impl CoreRingManager {
     /// Get buffer pool statistics.
     #[must_use]
     pub fn buffer_pool_stats(&self) -> Option<BufferPoolStats> {
-        self.buffer_pool.as_ref().map(|p| p.stats())
+        self.buffer_pool.as_ref().map(RegisteredBufferPool::stats)
     }
 
     /// Get ring metrics.
@@ -646,7 +648,7 @@ impl CoreRingManager {
         self.pending.clear();
     }
 
-    /// Generate the next user_data ID.
+    /// Generate the next `user_data` ID.
     fn next_user_data(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -720,6 +722,7 @@ impl RingMetrics {
 
     /// Get success rate (0.0 to 1.0).
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn success_rate(&self) -> f64 {
         let total = self.total_completions();
         if total > 0 {

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::error::IoUringError;
 
-/// A pre-registered buffer pool for io_uring operations.
+/// A pre-registered buffer pool for `io_uring` operations.
 ///
 /// Buffers are registered with the kernel once at creation time, eliminating
 /// the per-operation buffer mapping overhead that would otherwise occur.
@@ -40,7 +40,7 @@ pub struct RegisteredBufferPool {
     buffer_size: usize,
     /// Free buffer indices.
     free_list: VecDeque<u16>,
-    /// Next user_data ID for tracking operations.
+    /// Next `user_data` ID for tracking operations.
     next_id: AtomicU64,
     /// Total buffers in pool.
     total_count: usize,
@@ -53,7 +53,7 @@ impl RegisteredBufferPool {
     ///
     /// # Arguments
     ///
-    /// * `ring` - The io_uring instance to register buffers with
+    /// * `ring` - The `io_uring` instance to register buffers with
     /// * `buffer_size` - Size of each buffer in bytes
     /// * `buffer_count` - Number of buffers to allocate
     ///
@@ -77,9 +77,7 @@ impl RegisteredBufferPool {
         let buffers: Vec<Vec<u8>> = (0..buffer_count)
             .map(|_| {
                 // Allocate with page alignment for O_DIRECT compatibility
-                let mut buf = Vec::with_capacity(buffer_size);
-                buf.resize(buffer_size, 0);
-                buf
+                vec![0; buffer_size]
             })
             .collect();
 
@@ -101,6 +99,7 @@ impl RegisteredBufferPool {
                 .map_err(IoUringError::BufferRegistration)?;
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let free_list = (0..buffer_count as u16).collect();
 
         Ok(Self {
@@ -185,7 +184,7 @@ impl RegisteredBufferPool {
     ///
     /// # Arguments
     ///
-    /// * `ring` - The io_uring instance
+    /// * `ring` - The `io_uring` instance
     /// * `fd` - File descriptor to read from
     /// * `buf_index` - Index of the registered buffer
     /// * `offset` - File offset to read from
@@ -193,7 +192,7 @@ impl RegisteredBufferPool {
     ///
     /// # Returns
     ///
-    /// The user_data value that will identify this operation in completions.
+    /// The `user_data` value that will identify this operation in completions.
     ///
     /// # Errors
     ///
@@ -235,7 +234,7 @@ impl RegisteredBufferPool {
     ///
     /// # Arguments
     ///
-    /// * `ring` - The io_uring instance
+    /// * `ring` - The `io_uring` instance
     /// * `fd` - File descriptor to write to
     /// * `buf_index` - Index of the registered buffer
     /// * `offset` - File offset to write to
@@ -243,7 +242,7 @@ impl RegisteredBufferPool {
     ///
     /// # Returns
     ///
-    /// The user_data value that will identify this operation in completions.
+    /// The `user_data` value that will identify this operation in completions.
     ///
     /// # Errors
     ///
@@ -308,7 +307,7 @@ impl RegisteredBufferPool {
         self.free_list.is_empty()
     }
 
-    /// Generate the next user_data ID.
+    /// Generate the next `user_data` ID.
     fn next_user_data(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }

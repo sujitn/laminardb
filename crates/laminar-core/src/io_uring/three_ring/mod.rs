@@ -5,7 +5,7 @@
 //!
 //! - **Latency Ring**: Always polled, never blocks. For network receives and urgent ops.
 //! - **Main Ring**: Can block when idle. For WAL writes and normal I/O.
-//! - **Poll Ring**: IOPOLL for NVMe storage (optional).
+//! - **Poll Ring**: IOPOLL for `NVMe` storage (optional).
 //!
 //! ## Key Insight
 //!

@@ -1,9 +1,9 @@
-//! io_uring ring creation and configuration.
+//! `io_uring` ring creation and configuration.
 //!
-//! Provides functions to create optimized io_uring instances with various modes:
+//! Provides functions to create optimized `io_uring` instances with various modes:
 //! - SQPOLL: Kernel polling thread eliminates syscalls
-//! - IOPOLL: Poll completions from NVMe device queue
-//! - Combined: Maximum performance for NVMe storage
+//! - IOPOLL: Poll completions from `NVMe` device queue
+//! - Combined: Maximum performance for `NVMe` storage
 
 use io_uring::squeue::Entry;
 use io_uring::IoUring;
@@ -11,10 +11,10 @@ use io_uring::IoUring;
 use super::config::{IoUringConfig, RingMode};
 use super::error::IoUringError;
 
-/// Type alias for standard IoUring with default entry types.
+/// Type alias for standard `IoUring` with default entry types.
 pub type StandardIoUring = IoUring<Entry, io_uring::cqueue::Entry>;
 
-/// Wrapper around io_uring with mode information.
+/// Wrapper around `io_uring` with mode information.
 pub struct IoUringRing {
     ring: StandardIoUring,
     mode: RingMode,
@@ -53,13 +53,13 @@ impl IoUringRing {
         })
     }
 
-    /// Get a reference to the underlying io_uring.
+    /// Get a reference to the underlying `io_uring`.
     #[must_use]
     pub fn ring(&self) -> &StandardIoUring {
         &self.ring
     }
 
-    /// Get a mutable reference to the underlying io_uring.
+    /// Get a mutable reference to the underlying `io_uring`.
     #[must_use]
     pub fn ring_mut(&mut self) -> &mut StandardIoUring {
         &mut self.ring
@@ -90,7 +90,7 @@ impl IoUringRing {
     }
 }
 
-/// Create a standard io_uring ring.
+/// Create a standard `io_uring` ring.
 fn create_standard_ring(config: &IoUringConfig) -> Result<StandardIoUring, IoUringError> {
     let mut builder = IoUring::builder();
 
@@ -107,7 +107,7 @@ fn create_standard_ring(config: &IoUringConfig) -> Result<StandardIoUring, IoUri
         .map_err(IoUringError::RingCreation)
 }
 
-/// Create an io_uring ring with SQPOLL mode.
+/// Create an `io_uring` ring with SQPOLL mode.
 ///
 /// SQPOLL eliminates syscalls by using a dedicated kernel polling thread
 /// that continuously polls the submission queue. The kernel thread is
@@ -121,7 +121,7 @@ fn create_standard_ring(config: &IoUringConfig) -> Result<StandardIoUring, IoUri
 ///
 /// # Returns
 ///
-/// An optimized io_uring instance configured for SQPOLL mode.
+/// An optimized `io_uring` instance configured for SQPOLL mode.
 ///
 /// # Errors
 ///
@@ -166,9 +166,9 @@ fn create_sqpoll_ring(config: &IoUringConfig) -> Result<StandardIoUring, IoUring
         .map_err(IoUringError::RingCreation)
 }
 
-/// Create an io_uring ring with IOPOLL mode for NVMe storage.
+/// Create an `io_uring` ring with IOPOLL mode for `NVMe` storage.
 ///
-/// IOPOLL polls completions directly from the NVMe device queue instead of
+/// IOPOLL polls completions directly from the `NVMe` device queue instead of
 /// using interrupts. This provides lower latency for storage operations.
 ///
 /// **Note**: IOPOLL rings cannot be used with socket operations. Use a
@@ -180,7 +180,7 @@ fn create_sqpoll_ring(config: &IoUringConfig) -> Result<StandardIoUring, IoUring
 ///
 /// # Returns
 ///
-/// An io_uring instance configured for IOPOLL mode.
+/// An `io_uring` instance configured for IOPOLL mode.
 ///
 /// # Errors
 ///
@@ -239,24 +239,21 @@ fn create_sqpoll_iopoll_ring(config: &IoUringConfig) -> Result<StandardIoUring, 
         .map_err(IoUringError::RingCreation)
 }
 
-/// Probe kernel for supported io_uring features.
+/// Probe kernel for supported `io_uring` features.
 #[allow(dead_code)]
 #[must_use]
 pub fn probe_features() -> SupportedFeatures {
     // Try to create a minimal ring to probe features
     let ring: Result<StandardIoUring, _> = IoUring::builder().build(8);
-    let ring = match ring {
-        Ok(r) => r,
-        Err(_) => {
-            return SupportedFeatures {
-                available: false,
-                sqpoll: false,
-                iopoll: false,
-                registered_buffers: false,
-                registered_files: false,
-                direct_descriptors: false,
-            }
-        }
+    let Ok(ring) = ring else {
+        return SupportedFeatures {
+            available: false,
+            sqpoll: false,
+            iopoll: false,
+            registered_buffers: false,
+            registered_files: false,
+            direct_descriptors: false,
+        };
     };
 
     // Check for SQPOLL support
@@ -286,11 +283,11 @@ pub fn probe_features() -> SupportedFeatures {
     }
 }
 
-/// Supported io_uring features on the current system.
-#[allow(dead_code)]
+/// Supported `io_uring` features on the current system.
+#[allow(dead_code, clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupportedFeatures {
-    /// io_uring is available.
+    /// `io_uring` is available.
     pub available: bool,
     /// SQPOLL mode is supported.
     pub sqpoll: bool,
@@ -306,7 +303,7 @@ pub struct SupportedFeatures {
 
 impl SupportedFeatures {
     /// Check if all advanced features are available.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::trivially_copy_pass_by_ref)]
     #[must_use]
     pub const fn has_advanced_features(&self) -> bool {
         self.sqpoll && self.iopoll && self.registered_buffers

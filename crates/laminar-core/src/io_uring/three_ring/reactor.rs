@@ -1,6 +1,6 @@
 //! Three-ring reactor implementation.
 //!
-//! The `ThreeRingReactor` manages three io_uring instances for optimal
+//! The `ThreeRingReactor` manages three `io_uring` instances for optimal
 //! latency/throughput balance in a thread-per-core architecture.
 
 use io_uring::opcode;
@@ -27,7 +27,7 @@ use crate::io_uring::IoUringError;
 ///
 /// - **Latency Ring**: Always polled first, never blocks. For network and urgent ops.
 /// - **Main Ring**: Can block when idle. For WAL writes and normal I/O.
-/// - **Poll Ring**: IOPOLL for NVMe storage (optional).
+/// - **Poll Ring**: IOPOLL for `NVMe` storage (optional).
 ///
 /// # Wake-Up Mechanism
 ///
@@ -43,7 +43,7 @@ pub struct ThreeRingReactor {
     /// Can block when waiting for work.
     main_ring: IoUring,
 
-    /// Storage polling (optional, for NVMe passthrough).
+    /// Storage polling (optional, for `NVMe` passthrough).
     /// Uses IOPOLL, cannot have sockets.
     poll_ring: Option<IoUring>,
 
@@ -57,7 +57,7 @@ pub struct ThreeRingReactor {
     /// Completion router for tracking operations.
     router: CompletionRouter,
 
-    /// Next user_data ID.
+    /// Next `user_data` ID.
     next_id: AtomicU64,
 
     /// Statistics for monitoring.
@@ -176,11 +176,11 @@ impl ThreeRingReactor {
             .map_err(IoUringError::RingCreation)
     }
 
-    /// Create the poll ring with IOPOLL for NVMe.
+    /// Create the poll ring with IOPOLL for `NVMe`.
     fn create_poll_ring(config: &ThreeRingConfig) -> Result<IoUring, IoUringError> {
         let mut builder = IoUring::builder();
 
-        // Enable IOPOLL for NVMe
+        // Enable IOPOLL for `NVMe`
         builder.setup_iopoll();
 
         // Can also use SQPOLL with IOPOLL
@@ -241,7 +241,7 @@ impl ThreeRingReactor {
         &mut self.router
     }
 
-    /// Generate the next user_data ID.
+    /// Generate the next `user_data` ID.
     pub fn next_user_data(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -251,6 +251,7 @@ impl ThreeRingReactor {
     /// # Errors
     ///
     /// Returns an error if the ring is closed or submission fails.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn submit_to_latency(&mut self, entry: SqEntry) -> Result<u64, IoUringError> {
         if self.closed {
             return Err(IoUringError::RingClosed);
@@ -275,6 +276,7 @@ impl ThreeRingReactor {
     /// # Errors
     ///
     /// Returns an error if the ring is closed or submission fails.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn submit_to_main(&mut self, entry: SqEntry) -> Result<u64, IoUringError> {
         if self.closed {
             return Err(IoUringError::RingClosed);
@@ -404,9 +406,9 @@ impl ThreeRingReactor {
     fn poll_latency_ring(&mut self, completions: &mut Vec<RoutedCompletion>) {
         // Collect CQE data first to avoid borrow conflict
         let cqe_data: Vec<(u64, i32, u32)> = {
-            let mut cq = self.latency_ring.completion();
+            let cq = self.latency_ring.completion();
             let mut data = Vec::new();
-            while let Some(cqe) = cq.next() {
+            for cqe in cq {
                 data.push((cqe.user_data(), cqe.result(), cqe.flags()));
             }
             data
@@ -424,9 +426,9 @@ impl ThreeRingReactor {
     fn poll_main_ring(&mut self, completions: &mut Vec<RoutedCompletion>) {
         // Collect CQE data first to avoid borrow conflict
         let cqe_data: Vec<(u64, i32, u32)> = {
-            let mut cq = self.main_ring.completion();
+            let cq = self.main_ring.completion();
             let mut data = Vec::new();
-            while let Some(cqe) = cq.next() {
+            for cqe in cq {
                 data.push((cqe.user_data(), cqe.result(), cqe.flags()));
             }
             data
@@ -447,9 +449,9 @@ impl ThreeRingReactor {
             let Some(ref mut ring) = self.poll_ring else {
                 return;
             };
-            let mut cq = ring.completion();
+            let cq = ring.completion();
             let mut data = Vec::new();
-            while let Some(cqe) = cq.next() {
+            for cqe in cq {
                 data.push((cqe.user_data(), cqe.result(), cqe.flags()));
             }
             data

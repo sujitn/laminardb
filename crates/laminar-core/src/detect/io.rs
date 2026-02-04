@@ -319,9 +319,8 @@ impl StorageInfo {
         let mut info = Self::default();
 
         // Get the device from the path
-        let device = match Self::get_device_for_path(path) {
-            Some(d) => d,
-            None => return info,
+        let Some(device) = Self::get_device_for_path(path) else {
+            return info;
         };
 
         info.device_name = Some(device.clone());
@@ -463,7 +462,7 @@ impl StorageInfo {
         None
     }
 
-    /// Check if O_DIRECT is supported.
+    /// Check if `O_DIRECT` is supported.
     #[cfg(target_os = "linux")]
     fn check_direct_io_support(path: &Path) -> bool {
         use std::fs::OpenOptions;
@@ -474,8 +473,7 @@ impl StorageInfo {
             path.join(".laminardb_direct_test")
         } else {
             path.parent()
-                .map(|p| p.join(".laminardb_direct_test"))
-                .unwrap_or_else(|| path.to_path_buf())
+                .map_or_else(|| path.to_path_buf(), |p| p.join(".laminardb_direct_test"))
         };
 
         let result = OpenOptions::new()
@@ -560,7 +558,9 @@ impl MemoryInfo {
                     match parts[0].trim_end_matches(':') {
                         "MemTotal" => info.total_memory = value * 1024,
                         "MemAvailable" => info.available_memory = value * 1024,
+                        #[allow(clippy::cast_possible_truncation)]
                         "Hugepagesize" => info.huge_page_size = (value * 1024) as usize,
+                        #[allow(clippy::cast_possible_truncation)]
                         "HugePages_Free" => info.huge_pages_free = value as usize,
                         _ => {}
                     }

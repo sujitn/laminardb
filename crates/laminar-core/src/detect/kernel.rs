@@ -92,7 +92,7 @@ impl KernelVersion {
         // SAFETY: uname is a safe syscall that fills a buffer
         unsafe {
             let mut info: libc::utsname = std::mem::zeroed();
-            if libc::uname(&mut info) != 0 {
+            if libc::uname(&raw mut info) != 0 {
                 return None;
             }
 
