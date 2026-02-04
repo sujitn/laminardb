@@ -103,7 +103,7 @@ impl NumaTopology {
         }
 
         Ok(Self {
-            num_nodes,
+            num_nodes: node_count,
             cpus_per_node,
             memory_per_node,
             num_cpus,

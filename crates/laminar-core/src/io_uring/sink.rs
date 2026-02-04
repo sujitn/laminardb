@@ -97,10 +97,7 @@ mod linux_impl {
                 .open(&path)
                 .map_err(IoUringError::RingCreation)?;
 
-            let position = file
-                .metadata()
-                .map_err(IoUringError::RingCreation)?
-                .len();
+            let position = file.metadata().map_err(IoUringError::RingCreation)?.len();
 
             let ring_manager = CoreRingManager::new(0, &config)?;
             let max_pending = config.buffer_count.min(32) as usize;
