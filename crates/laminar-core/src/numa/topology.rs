@@ -148,7 +148,7 @@ impl NumaTopology {
         let num_nodes = node_dirs.iter().max().map_or(1, |m| m + 1);
 
         // Get CPU count
-        let num_cpus = Self::get_cpu_count()?;
+        let num_cpus = Self::get_cpu_count();
 
         let mut cpus_per_node = vec![Vec::new(); num_nodes];
         let mut memory_per_node = vec![0u64; num_nodes];
@@ -187,7 +187,7 @@ impl NumaTopology {
 
     /// Get CPU count from sysfs.
     #[cfg(target_os = "linux")]
-    fn get_cpu_count() -> Result<usize, NumaError> {
+    fn get_cpu_count() -> usize {
         use std::fs;
 
         // Try reading from /sys/devices/system/cpu/online
@@ -195,12 +195,12 @@ impl NumaTopology {
         if let Ok(online) = fs::read_to_string(online_path) {
             let cpus = Self::parse_cpulist(online.trim());
             if let Some(max) = cpus.iter().max() {
-                return Ok(max + 1);
+                return max + 1;
             }
         }
 
         // Fallback to num_cpus crate
-        Ok(num_cpus::get())
+        num_cpus::get()
     }
 
     /// Parse a CPU list string like "0-7,16-23".
