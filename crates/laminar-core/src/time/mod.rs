@@ -67,16 +67,18 @@
 //! // Register a Kafka source with 4 partitions
 //! tracker.register_source(0, 4);
 //!
-//! // Update individual partitions
+//! // Update ALL partitions (all must have valid watermarks)
 //! tracker.update_partition(PartitionId::new(0, 0), 5000);
 //! tracker.update_partition(PartitionId::new(0, 1), 3000);
+//! tracker.update_partition(PartitionId::new(0, 2), 4000);
+//! tracker.update_partition(PartitionId::new(0, 3), 4500);
 //!
 //! // Combined watermark is minimum across active partitions
 //! assert_eq!(tracker.current_watermark(), Some(Watermark::new(3000)));
 //!
 //! // Mark slow partition as idle to allow progress
 //! tracker.mark_partition_idle(PartitionId::new(0, 1));
-//! assert_eq!(tracker.current_watermark(), Some(Watermark::new(5000)));
+//! assert_eq!(tracker.current_watermark(), Some(Watermark::new(4000)));
 //! ```
 //!
 //! ## Per-Key Watermark Tracking (F065)
