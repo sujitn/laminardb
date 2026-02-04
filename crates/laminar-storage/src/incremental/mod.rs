@@ -38,7 +38,7 @@
 //!
 //! ```rust,no_run
 //! use laminar_storage::incremental::{
-//!     IncrementalCheckpointManager, CheckpointConfig, RecoveryManager,
+//!     IncrementalCheckpointManager, CheckpointConfig, RecoveryConfig, RecoveryManager,
 //! };
 //! use std::path::Path;
 //! use std::time::Duration;
