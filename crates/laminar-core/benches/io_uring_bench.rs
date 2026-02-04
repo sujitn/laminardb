@@ -72,6 +72,7 @@ mod linux_benchmarks {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&path)
                 .unwrap();
             file.write_all(&vec![0u8; 64 * 1024 * 256]).unwrap();
@@ -127,6 +128,7 @@ mod linux_benchmarks {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&path)
                 .unwrap();
             file.write_all(&vec![0u8; 64 * 1024 * 256]).unwrap();
