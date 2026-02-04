@@ -18,20 +18,19 @@
 mod linux_impl {
     use std::collections::VecDeque;
     use std::fs::{File, OpenOptions};
-    use std::io::{self, Write};
+    use std::io;
     use std::os::unix::io::{AsRawFd, RawFd};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use laminar_core::io_uring::{
-        Completion, CoreRingManager, IoUringConfig, IoUringError, RingMode,
-    };
+    use laminar_core::io_uring::{Completion, CoreRingManager, IoUringConfig, RingMode};
     use rkyv::rancor::Error as RkyvError;
     use rkyv::util::AlignedVec;
 
     use crate::wal::{WalEntry, WalError};
 
     /// Pending write operation for group commit.
+    #[allow(dead_code)]
     struct PendingWrite {
         /// User data for tracking completion.
         user_data: u64,
