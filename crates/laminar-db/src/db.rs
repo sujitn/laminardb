@@ -921,7 +921,7 @@ impl LaminarDB {
     /// Build the pipeline topology graph from registered sources, streams,
     /// and sinks.
     ///
-    /// Returns a [`PipelineTopology`] with nodes for every source, stream,
+    /// Returns a `PipelineTopology` with nodes for every source, stream,
     /// and sink, plus edges derived from stream SQL `FROM` references and
     /// sink `input` fields.
     pub fn pipeline_topology(&self) -> crate::handle::PipelineTopology {
@@ -1272,7 +1272,7 @@ impl LaminarDB {
 
     /// Build and start the connector pipeline with external sources/sinks.
     ///
-    /// Uses the [`ConnectorRegistry`] for generic dispatch — no
+    /// Uses the `ConnectorRegistry` for generic dispatch — no
     /// connector-specific code in the pipeline setup or processing loop.
     #[allow(clippy::too_many_lines)]
     async fn start_connector_pipeline(

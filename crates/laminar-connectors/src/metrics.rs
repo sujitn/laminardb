@@ -1,8 +1,8 @@
 //! Connector metrics types.
 //!
 //! Provides metrics reporting for connectors:
-//! - [`ConnectorMetrics`]: Metrics reported by a connector implementation
-//! - [`RuntimeMetrics`]: Metrics tracked by the connector runtime
+//! - `ConnectorMetrics`: Metrics reported by a connector implementation
+//! - `RuntimeMetrics`: Metrics tracked by the connector runtime
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

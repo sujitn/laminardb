@@ -21,11 +21,11 @@
 //!
 //! # Modules
 //!
-//! - [`source_bridge`] — Polls a source connector and feeds events into the DAG.
-//! - [`sink_bridge`] — Drains DAG sink outputs and writes them to a sink connector.
-//! - [`runtime`] — Orchestrates the full source → DAG → sink pipeline.
-//! - [`metrics`] — Atomic counters for bridge monitoring.
-//! - [`config`] — Runtime configuration.
+//! - `source_bridge` — Polls a source connector and feeds events into the DAG.
+//! - `sink_bridge` — Drains DAG sink outputs and writes them to a sink connector.
+//! - `runtime` — Orchestrates the full source → DAG → sink pipeline.
+//! - `metrics` — Atomic counters for bridge monitoring.
+//! - `config` — Runtime configuration.
 
 pub mod config;
 pub mod metrics;

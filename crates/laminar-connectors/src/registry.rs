@@ -1,6 +1,6 @@
 //! Connector registry with factory pattern.
 //!
-//! The [`ConnectorRegistry`] maintains a catalog of available connector
+//! The `ConnectorRegistry` maintains a catalog of available connector
 //! implementations and provides factory methods to instantiate them.
 
 use std::collections::HashMap;

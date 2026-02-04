@@ -1,8 +1,8 @@
 //! Connector SDK error types.
 //!
 //! Provides a unified error hierarchy for all connector operations:
-//! - [`ConnectorError`]: Top-level error for source/sink connector operations
-//! - [`SerdeError`]: Serialization/deserialization errors
+//! - `ConnectorError`: Top-level error for source/sink connector operations
+//! - `SerdeError`: Serialization/deserialization errors
 
 use thiserror::Error;
 

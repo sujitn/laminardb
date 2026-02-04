@@ -113,7 +113,7 @@ impl PushSubscription {
     /// # Errors
     ///
     /// - [`PushSubscriptionError::Cancelled`] if the subscription was cancelled.
-    /// - [`PushSubscriptionError::Lagged(n)`] if `n` events were missed due to
+    /// - [`PushSubscriptionError::Lagged`] if `n` events were missed due to
     ///   slow consumption. The receiver skips ahead and subsequent `recv()`
     ///   calls return newer events.
     /// - [`PushSubscriptionError::Closed`] if all senders have been dropped.

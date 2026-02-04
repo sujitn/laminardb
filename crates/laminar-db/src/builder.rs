@@ -75,7 +75,7 @@ impl LaminarDbBuilder {
         self
     }
 
-    /// Register custom connectors with the [`ConnectorRegistry`].
+    /// Register custom connectors with the `ConnectorRegistry`.
     ///
     /// The callback is invoked after the database is created and built-in
     /// connectors are registered. Use it to add user-defined source/sink

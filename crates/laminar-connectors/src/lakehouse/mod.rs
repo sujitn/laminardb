@@ -14,14 +14,14 @@
 //! # Module Structure
 //!
 //! ## Delta Lake
-//! - [`delta`] - `DeltaLakeSink` implementing `SinkConnector`
-//! - [`delta_config`] - Configuration and enums
-//! - [`delta_metrics`] - Lock-free atomic metrics
+//! - `delta` - `DeltaLakeSink` implementing `SinkConnector`
+//! - `delta_config` - Configuration and enums
+//! - `delta_metrics` - Lock-free atomic metrics
 //!
 //! ## Apache Iceberg
-//! - [`iceberg`] - `IcebergSink` implementing `SinkConnector`
-//! - [`iceberg_config`] - Configuration, catalog types, partition transforms
-//! - [`iceberg_metrics`] - Lock-free atomic metrics
+//! - `iceberg` - `IcebergSink` implementing `SinkConnector`
+//! - `iceberg_config` - Configuration, catalog types, partition transforms
+//! - `iceberg_metrics` - Lock-free atomic metrics
 //!
 //! # Usage
 //!

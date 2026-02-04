@@ -275,10 +275,10 @@ impl NotificationRing {
 ///
 /// Provides the end-to-end path from Ring 0 event emission to Ring 1 dispatch:
 ///
-/// 1. **Registration** (Ring 2): [`register_source`] allocates a slot.
-/// 2. **Notification** (Ring 0): [`notify_source`] increments the slot sequence
+/// 1. **Registration** (Ring 2): [`Self::register_source`] allocates a slot.
+/// 2. **Notification** (Ring 0): [`Self::notify_source`] increments the slot sequence
 ///    and pushes a [`NotificationRef`] into the SPSC ring.
-/// 3. **Drain** (Ring 1): [`drain_notifications`] pops all pending notifications.
+/// 3. **Drain** (Ring 1): [`Self::drain_notifications`] pops all pending notifications.
 pub struct NotificationHub {
     /// Notification slots indexed by `source_id`.
     slots: Vec<NotificationSlot>,
@@ -323,7 +323,7 @@ impl NotificationHub {
 
     /// Marks the given source as inactive.
     ///
-    /// Inactive sources are skipped by [`notify_source`]. The slot is not
+    /// Inactive sources are skipped by [`Self::notify_source`]. The slot is not
     /// deallocated — use [`NotificationSlot::reactivate`] to re-enable.
     pub fn deactivate_source(&self, source_id: u32) {
         if let Some(slot) = self.slots.get(source_id as usize) {

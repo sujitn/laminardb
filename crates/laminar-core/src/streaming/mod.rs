@@ -67,7 +67,7 @@
 //! - [`config`]: Configuration types for channels, sources, and sinks
 //! - [`error`]: Error types for streaming operations
 //! - [`ring_buffer`]: Lock-free ring buffer implementation
-//! - [`channel`]: SPSC/MPSC channel with automatic upgrade
+//! - [`channel()`]: SPSC/MPSC channel with automatic upgrade
 //! - [`source`]: Source API and Record trait
 //! - [`sink`]: Sink API with subscription support
 //! - [`subscription`]: Subscription API for consuming records

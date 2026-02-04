@@ -10,7 +10,7 @@
 //! - [`DagCheckpointConfig`] — tuning knobs (interval, timeout, retention)
 //!
 //! Barriers do NOT flow through event queues — they are handled by a separate
-//! orchestration path, keeping the hot-path [`Event`](crate::operator::Event)
+//! orchestration path, keeping the hot-path [`Event`]
 //! type unchanged.
 
 use std::collections::VecDeque;

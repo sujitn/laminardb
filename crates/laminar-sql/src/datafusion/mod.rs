@@ -61,7 +61,11 @@
 //! let df = ctx.sql("SELECT * FROM events WHERE value > 100").await?;
 //! ```
 
-/// F075: DataFusion aggregate bridge for streaming aggregation
+/// F075: DataFusion aggregate bridge for streaming aggregation.
+///
+/// Bridges DataFusion's `Accumulator` trait with `laminar-core`'s
+/// `DynAccumulator` / `DynAggregatorFactory` traits. This avoids
+/// duplicating aggregation logic.
 pub mod aggregate_bridge;
 mod bridge;
 mod channel_source;

@@ -1,6 +1,6 @@
 //! Connector runtime for managing source and sink lifecycle.
 //!
-//! The [`ConnectorRuntime`] orchestrates the lifecycle of source and sink
+//! The `ConnectorRuntime` orchestrates the lifecycle of source and sink
 //! connectors, bridging them with the streaming API:
 //!
 //! - **Sources**: Poll external systems and push data via `Source<ArrowRecord>::push_arrow()`

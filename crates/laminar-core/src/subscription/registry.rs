@@ -219,7 +219,7 @@ impl SubscriptionRegistry {
     /// # Arguments
     ///
     /// * `source_name` — Name of the MV or streaming query.
-    /// * `source_id` — Ring 0 source identifier (from [`NotificationHub`]).
+    /// * `source_id` — Ring 0 source identifier (from `NotificationHub`).
     /// * `config` — Subscription configuration (buffer size, backpressure, etc.).
     pub fn create(
         &self,

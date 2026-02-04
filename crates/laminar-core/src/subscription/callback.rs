@@ -97,7 +97,7 @@ impl<F: Fn(ChangeEvent) + Send + Sync + 'static> SubscriptionCallback for FnCall
 /// Handle for a callback-based subscription.
 ///
 /// Provides lifecycle management (pause/resume/cancel) for the callback task.
-/// The handle and the callback task share the same [`SubscriptionEntry`] in
+/// The handle and the callback task share the same `SubscriptionEntry` in
 /// the registry (via [`SubscriptionId`]), so `pause()` / `cancel()` on the
 /// handle directly affects the task's event delivery.
 ///

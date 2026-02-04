@@ -1,8 +1,8 @@
 //! Core connector traits.
 //!
 //! Defines the async traits that all source and sink connectors implement:
-//! - [`SourceConnector`]: Reads data from external systems
-//! - [`SinkConnector`]: Writes data to external systems
+//! - `SourceConnector`: Reads data from external systems
+//! - `SinkConnector`: Writes data to external systems
 //!
 //! These traits operate in Ring 1 (background) and communicate with Ring 0
 //! through the streaming API (`Source<T>::push_arrow()` and subscriptions).

@@ -1,6 +1,6 @@
 //! # External Lookup Tables for Enrichment Joins
 //!
-//! This module provides the [`TableLoader`] trait for loading data from external
+//! This module provides the `TableLoader` trait for loading data from external
 //! reference tables (dimension tables) to enrich streaming events.
 //!
 //! ## Architecture
@@ -30,7 +30,7 @@
 //!
 //! ## Implementations
 //!
-//! - [`InMemoryTableLoader`] - For testing and static reference data
+//! - `InMemoryTableLoader` - For testing and static reference data
 //! - (Phase 3) Redis, PostgreSQL, HTTP loaders
 //!
 //! ## Example
@@ -122,7 +122,7 @@ impl LookupResult {
 ///   should be efficient
 /// - Consider batch lookups ([`TableLoader::lookup_batch`]) for better
 ///   throughput when multiple keys need to be looked up
-/// - The [`LookupJoinOperator`](crate::operator::lookup_join::LookupJoinOperator)
+/// - The `LookupJoinOperator` (in `laminar-core`)
 ///   caches results, so implementations don't need their own cache
 #[async_trait]
 pub trait TableLoader: Send + Sync {

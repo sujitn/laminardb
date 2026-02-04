@@ -1,7 +1,7 @@
 //! F075: DataFusion Aggregate Bridge
 //!
 //! Bridges DataFusion's 50+ built-in aggregate functions into LaminarDB's
-//! [`DynAccumulator`] / [`DynAggregatorFactory`] traits. This avoids
+//! `DynAccumulator` / `DynAggregatorFactory` traits. This avoids
 //! reimplementing statistical functions (STDDEV, VARIANCE, PERCENTILE, etc.)
 //! that DataFusion already provides.
 //!

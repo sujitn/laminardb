@@ -1,10 +1,10 @@
 //! Connector configuration types.
 //!
 //! Provides a generic configuration model for connectors:
-//! - [`ConnectorConfig`]: Key-value configuration with validation
-//! - [`ConfigKeySpec`]: Specification for a configuration key
-//! - [`ConnectorInfo`]: Metadata about a connector implementation
-//! - [`ConnectorState`]: Lifecycle state of a running connector
+//! - `ConnectorConfig`: Key-value configuration with validation
+//! - `ConfigKeySpec`: Specification for a configuration key
+//! - `ConnectorInfo`: Metadata about a connector implementation
+//! - `ConnectorState`: Lifecycle state of a running connector
 
 use std::collections::HashMap;
 use std::fmt;

@@ -3,16 +3,16 @@
 //! Provides traits and implementations for converting between external
 //! data formats and Arrow `RecordBatch`:
 //!
-//! - [`RecordDeserializer`]: Converts raw bytes to `RecordBatch`
-//! - [`RecordSerializer`]: Converts `RecordBatch` to raw bytes
-//! - [`Format`]: Enum of supported serialization formats
+//! - `RecordDeserializer`: Converts raw bytes to `RecordBatch`
+//! - `RecordSerializer`: Converts `RecordBatch` to raw bytes
+//! - `Format`: Enum of supported serialization formats
 //!
 //! ## Implementations
 //!
-//! - [`json`]: JSON format using `serde_json`
-//! - [`csv`]: CSV format
-//! - [`raw`]: Raw bytes pass-through
-//! - [`debezium`]: Debezium CDC envelope format
+//! - `json`: JSON format using `serde_json`
+//! - `csv`: CSV format
+//! - `raw`: Raw bytes pass-through
+//! - `debezium`: Debezium CDC envelope format
 
 pub mod csv;
 pub mod debezium;

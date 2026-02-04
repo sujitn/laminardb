@@ -18,11 +18,11 @@ use super::ParseError;
 pub enum JoinType {
     /// INNER JOIN
     Inner,
-    /// LEFT [OUTER] JOIN
+    /// LEFT \[OUTER\] JOIN
     Left,
-    /// RIGHT [OUTER] JOIN
+    /// RIGHT \[OUTER\] JOIN
     Right,
-    /// FULL [OUTER] JOIN
+    /// FULL \[OUTER\] JOIN
     Full,
     /// ASOF JOIN
     AsOf,

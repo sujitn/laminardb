@@ -367,7 +367,7 @@ pub enum SyncLookupResult {
 /// keys that need to be looked up, and [`LookupJoinOperator::provide_lookup`]
 /// to provide the results.
 ///
-/// For simple synchronous use cases, use [`LookupJoinOperator::with_sync_lookup`]
+/// For simple synchronous use cases, use `LookupJoinOperator::process_with_lookup`
 /// which accepts a closure for lookups.
 pub struct LookupJoinOperator {
     /// Configuration.
