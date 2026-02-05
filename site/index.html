@@ -66,7 +66,7 @@
         <a href="#performance">Performance</a>
         <a href="#code">Code</a>
         <a href="#architecture">Architecture</a>
-        <a href="#use-cases">Use Cases</a>
+        <a href="#dataflow">Data Flow</a>
         <a href="#features">Features</a>
       </nav>
 
@@ -88,7 +88,7 @@
         <a href="#performance">Performance</a>
         <a href="#code">Code Examples</a>
         <a href="#architecture">Architecture</a>
-        <a href="#use-cases">Use Cases</a>
+        <a href="#dataflow">Data Flow</a>
         <a href="#features">Features</a>
         <a href="#comparison">Comparison</a>
         <a href="https://github.com/laminardb/laminardb" class="btn btn-secondary" target="_blank" rel="noopener">GitHub</a>
@@ -529,76 +529,86 @@ CREATE SINK lake TO DELTA_LAKE (
         </div>
       </div>
 
-      <!-- Additional Architecture Diagrams -->
-      <div class="container" style="margin-top: 4rem;">
-        <div class="arch-details-grid">
-          <!-- DAG Pipeline -->
-          <div class="arch-detail-card reveal">
-            <h3>DAG Pipeline</h3>
-            <pre class="arch-ascii">
-┌─────────┐    ┌─────────┐    ┌─────────┐
-│ Source  │───▶│Operator │───▶│  Sink   │
-└─────────┘    └────┬────┘    └─────────┘
-                    │ fan-out
-              ┌─────┴─────┐
-              ▼           ▼
-         ┌────────┐  ┌────────┐
-         │  MV 1  │  │  MV 2  │
-         └────────┘  └────────┘</pre>
-            <ul class="arch-detail-list">
-              <li><strong>RoutingTable</strong> &mdash; O(1) cache-line aligned dispatch</li>
-              <li><strong>MulticastBuffer</strong> &mdash; Zero-copy SPMC fan-out</li>
-              <li><strong>Topological execution</strong> &mdash; Deterministic ordering</li>
-            </ul>
-          </div>
+    </section>
 
-          <!-- Per-Core WAL -->
-          <div class="arch-detail-card reveal">
-            <h3>Per-Core WAL</h3>
-            <pre class="arch-ascii">
-Core 0        Core 1        Core 2
-wal-0.log     wal-1.log     wal-2.log
-┌────────┐    ┌────────┐    ┌────────┐
-│epoch=1 │    │epoch=1 │    │epoch=2 │
-│put(k,v)│    │put(k,v)│    │put(k,v)│
-└───┬────┘    └───┬────┘    └───┬────┘
-    └─────────────┼─────────────┘
-                  ▼
-         Merge by (epoch, ts)
-                  ▼
-            Checkpoint</pre>
-            <ul class="arch-detail-list">
-              <li><strong>Lock-free writes</strong> &mdash; Each core owns its WAL</li>
-              <li><strong>CRC32C + fdatasync</strong> &mdash; Corruption detection</li>
-              <li><strong>Epoch ordering</strong> &mdash; Deterministic recovery</li>
-            </ul>
+    <!-- ======== Data Flow Section ======== -->
+    <section class="dataflow" id="dataflow">
+      <div class="container text-center">
+        <h2 class="section-heading reveal">End-to-End <span class="gradient-text">Data Flow</span></h2>
+        <p class="section-subheading reveal">From Kafka to lakehouse with exactly-once guarantees.</p>
+      </div>
+      <div class="container">
+        <div class="flow-diagram reveal">
+          <div class="flow-stage flow-source">
+            <div class="flow-stage-label">Sources</div>
+            <div class="flow-nodes">
+              <div class="flow-node"><span class="flow-icon">K</span>Kafka</div>
+              <div class="flow-node"><span class="flow-icon">P</span>PostgreSQL CDC</div>
+              <div class="flow-node"><span class="flow-icon">M</span>MySQL CDC</div>
+            </div>
           </div>
+          <div class="flow-arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            <span>Deserialize</span>
+          </div>
+          <div class="flow-stage flow-processing">
+            <div class="flow-stage-label">Ring 0 Processing</div>
+            <div class="flow-pipeline">
+              <div class="flow-node">DagExecutor</div>
+              <div class="flow-connector"></div>
+              <div class="flow-node">Operators</div>
+              <div class="flow-connector"></div>
+              <div class="flow-node">State Store</div>
+            </div>
+            <div class="flow-substage">
+              <span>Windows</span>
+              <span>Joins</span>
+              <span>Aggregations</span>
+              <span>Watermarks</span>
+            </div>
+          </div>
+          <div class="flow-arrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            <span>Checkpoint</span>
+          </div>
+          <div class="flow-stage flow-sink">
+            <div class="flow-stage-label">Sinks</div>
+            <div class="flow-nodes">
+              <div class="flow-node"><span class="flow-icon">K</span>Kafka</div>
+              <div class="flow-node"><span class="flow-icon">D</span>Delta Lake</div>
+              <div class="flow-node"><span class="flow-icon">I</span>Iceberg</div>
+            </div>
+          </div>
+        </div>
 
-          <!-- Kafka Integration -->
-          <div class="arch-detail-card reveal">
-            <h3>Kafka Integration</h3>
-            <pre class="arch-ascii">
-┌──────────────┐     ┌──────────────┐
-│ Kafka Source │     │  Kafka Sink  │
-│  (Ring 1)    │     │  (Ring 1)    │
-└──────┬───────┘     └──────▲───────┘
-       │                    │
-       ▼                    │
-┌──────────────────────────────────┐
-│         DAG Pipeline (Ring 0)    │
-│  Source → Operators → Sink Node  │
-└──────────────────────────────────┘
-       │                    ▲
-       ▼                    │
-┌──────────────────────────────────┐
-│   Checkpoint Coordinator         │
-│   (epoch, offsets, watermarks)   │
-└──────────────────────────────────┘</pre>
-            <ul class="arch-detail-list">
-              <li><strong>Exactly-once</strong> &mdash; Kafka transactions + epoch tracking</li>
-              <li><strong>Schema Registry</strong> &mdash; Avro/Protobuf with caching</li>
-              <li><strong>Backpressure</strong> &mdash; High/low watermark flow control</li>
-            </ul>
+        <!-- Architecture highlights -->
+        <div class="arch-highlights reveal">
+          <div class="arch-highlight">
+            <div class="arch-highlight-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            </div>
+            <div class="arch-highlight-content">
+              <h4>Per-Core WAL</h4>
+              <p>Lock-free writes with epoch ordering. Each CPU core owns its own WAL segment for zero contention.</p>
+            </div>
+          </div>
+          <div class="arch-highlight">
+            <div class="arch-highlight-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </div>
+            <div class="arch-highlight-content">
+              <h4>Exactly-Once Delivery</h4>
+              <p>Kafka transactions + epoch tracking. Checkpoint coordinator ensures no duplicates across failures.</p>
+            </div>
+          </div>
+          <div class="arch-highlight">
+            <div class="arch-highlight-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            </div>
+            <div class="arch-highlight-content">
+              <h4>Zero-Copy Multicast</h4>
+              <p>Arc&lt;RecordBatch&gt; fan-out to multiple consumers. O(1) routing via cache-line aligned dispatch table.</p>
+            </div>
           </div>
         </div>
       </div>
