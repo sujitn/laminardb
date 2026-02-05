@@ -113,6 +113,7 @@ impl RoutedCompletion {
 
     /// Get the number of bytes transferred.
     #[must_use]
+    #[allow(clippy::cast_sign_loss)]
     pub const fn bytes_transferred(&self) -> Option<usize> {
         if self.result >= 0 {
             Some(self.result as usize)
@@ -134,9 +135,9 @@ impl RoutedCompletion {
 /// with full metadata when completions arrive.
 #[derive(Debug, Default)]
 pub struct CompletionRouter {
-    /// Pending operations by user_data.
+    /// Pending operations by `user_data`.
     pending: HashMap<u64, PendingOperation>,
-    /// Next user_data ID for operations without explicit IDs.
+    /// Next `user_data` ID for operations without explicit IDs.
     next_id: u64,
 }
 
@@ -150,7 +151,7 @@ impl CompletionRouter {
         }
     }
 
-    /// Generate the next user_data ID.
+    /// Generate the next `user_data` ID.
     pub fn next_user_data(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -162,9 +163,10 @@ impl CompletionRouter {
         self.pending.insert(op.user_data, op);
     }
 
-    /// Track a simple operation with just user_data and affinity.
+    /// Track a simple operation with just `user_data` and affinity.
     pub fn track_simple(&mut self, user_data: u64, affinity: RingAffinity) {
-        self.pending.insert(user_data, PendingOperation::new(user_data, affinity));
+        self.pending
+            .insert(user_data, PendingOperation::new(user_data, affinity));
     }
 
     /// Route a completion to produce a `RoutedCompletion`.
@@ -194,7 +196,7 @@ impl CompletionRouter {
         }
     }
 
-    /// Get a pending operation by user_data.
+    /// Get a pending operation by `user_data`.
     #[must_use]
     pub fn get(&self, user_data: u64) -> Option<&PendingOperation> {
         self.pending.get(&user_data)
@@ -220,7 +222,10 @@ impl CompletionRouter {
     /// Get the number of pending operations by affinity.
     #[must_use]
     pub fn pending_by_affinity(&self, affinity: RingAffinity) -> usize {
-        self.pending.values().filter(|op| op.affinity == affinity).count()
+        self.pending
+            .values()
+            .filter(|op| op.affinity == affinity)
+            .count()
     }
 
     /// Clear all pending operations.
@@ -228,7 +233,7 @@ impl CompletionRouter {
         self.pending.clear();
     }
 
-    /// Get all pending user_data values.
+    /// Get all pending `user_data` values.
     #[must_use]
     pub fn pending_ids(&self) -> Vec<u64> {
         self.pending.keys().copied().collect()
@@ -395,7 +400,7 @@ mod tests {
         router.track_simple(30, RingAffinity::Poll);
 
         let mut ids = router.pending_ids();
-        ids.sort();
+        ids.sort_unstable();
         assert_eq!(ids, vec![10, 20, 30]);
     }
 

@@ -28,6 +28,25 @@
 #![deny(missing_docs)]
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+// Common test patterns that are acceptable
+#![cfg_attr(
+    test,
+    allow(
+        clippy::field_reassign_with_default,
+        clippy::float_cmp,
+        clippy::manual_let_else,
+        clippy::needless_return,
+        clippy::unreadable_literal,
+        clippy::approx_constant,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::unchecked_time_subtraction,
+        clippy::no_effect_underscore_binding,
+        unused_mut
+    )
+)]
 
 // ── Connector SDK ──
 

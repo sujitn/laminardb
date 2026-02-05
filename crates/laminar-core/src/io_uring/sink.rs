@@ -20,7 +20,6 @@
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 mod linux_impl {
     use std::fs::{File, OpenOptions};
-    use std::io::{self, Write};
     use std::os::unix::io::AsRawFd;
     use std::path::{Path, PathBuf};
 
@@ -57,7 +56,7 @@ mod linux_impl {
         /// # Errors
         ///
         /// Returns an error if the file cannot be created or `io_uring` initialization fails.
-        pub fn new<P: AsRef<Path>>(path: P, config: IoUringConfig) -> Result<Self, IoUringError> {
+        pub fn new<P: AsRef<Path>>(path: P, config: &IoUringConfig) -> Result<Self, IoUringError> {
             let path = path.as_ref().to_path_buf();
 
             let file = OpenOptions::new()
@@ -65,11 +64,11 @@ mod linux_impl {
                 .write(true)
                 .truncate(true)
                 .open(&path)
-                .map_err(|e| IoUringError::RingCreation(e.to_string()))?;
+                .map_err(IoUringError::RingCreation)?;
 
             let position = 0;
-            let ring_manager = CoreRingManager::new(0, &config)?;
-            let max_pending = config.buffer_count.min(32) as usize;
+            let ring_manager = CoreRingManager::new(0, config)?;
+            let max_pending = config.buffer_count.min(32);
 
             Ok(Self {
                 path,
@@ -86,22 +85,22 @@ mod linux_impl {
         /// # Errors
         ///
         /// Returns an error if the file cannot be opened or `io_uring` initialization fails.
-        pub fn append<P: AsRef<Path>>(path: P, config: IoUringConfig) -> Result<Self, IoUringError> {
+        pub fn append<P: AsRef<Path>>(
+            path: P,
+            config: &IoUringConfig,
+        ) -> Result<Self, IoUringError> {
             let path = path.as_ref().to_path_buf();
 
             let file = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
-                .map_err(|e| IoUringError::RingCreation(e.to_string()))?;
+                .map_err(IoUringError::RingCreation)?;
 
-            let position = file
-                .metadata()
-                .map_err(|e| IoUringError::RingCreation(e.to_string()))?
-                .len();
+            let position = file.metadata().map_err(IoUringError::RingCreation)?.len();
 
-            let ring_manager = CoreRingManager::new(0, &config)?;
-            let max_pending = config.buffer_count.min(32) as usize;
+            let ring_manager = CoreRingManager::new(0, config)?;
+            let max_pending = config.buffer_count.min(32);
 
             Ok(Self {
                 path,
@@ -153,24 +152,39 @@ mod linux_impl {
         }
 
         /// Writes a single output using `io_uring`.
+        #[allow(clippy::cast_possible_truncation)]
         fn write_output(&mut self, output: &Output) -> Result<(), SinkError> {
             // Serialize the output to bytes
             let bytes = match output {
                 Output::Event(event) => {
                     // For events, we serialize a simple representation
-                    format!("EVENT ts={} rows={}\n", event.timestamp, event.data.num_rows())
-                        .into_bytes()
+                    format!(
+                        "EVENT ts={} rows={}\n",
+                        event.timestamp,
+                        event.data.num_rows()
+                    )
+                    .into_bytes()
                 }
                 Output::Watermark(ts) => format!("WATERMARK ts={ts}\n").into_bytes(),
-                Output::LateEvent { event, .. } => {
+                Output::LateEvent(event) => {
                     format!("LATE_EVENT ts={}\n", event.timestamp).into_bytes()
+                }
+                Output::SideOutput { name, event } => {
+                    format!("SIDE_OUTPUT name={} ts={}\n", name, event.timestamp).into_bytes()
+                }
+                Output::Changelog(record) => {
+                    format!("CHANGELOG op={:?}\n", record.operation).into_bytes()
+                }
+                Output::CheckpointComplete { checkpoint_id, .. } => {
+                    format!("CHECKPOINT_COMPLETE id={checkpoint_id}\n").into_bytes()
                 }
             };
 
             // Acquire a buffer
-            let (buf_index, buf) = self.ring_manager.acquire_buffer().map_err(|e| {
-                SinkError::WriteFailed(format!("Failed to acquire buffer: {e}"))
-            })?;
+            let (buf_index, buf) = self
+                .ring_manager
+                .acquire_buffer()
+                .map_err(|e| SinkError::WriteFailed(format!("Failed to acquire buffer: {e}")))?;
 
             // Copy data to buffer
             let len = bytes.len().min(buf.len());
@@ -248,6 +262,7 @@ mod linux_impl {
 pub use linux_impl::IoUringSink;
 
 /// Check if `io_uring` sink is available on this platform.
+#[allow(dead_code)]
 #[must_use]
 pub fn is_sink_available() -> bool {
     cfg!(all(target_os = "linux", feature = "io-uring"))

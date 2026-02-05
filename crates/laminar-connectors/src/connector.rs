@@ -1,8 +1,8 @@
 //! Core connector traits.
 //!
 //! Defines the async traits that all source and sink connectors implement:
-//! - [`SourceConnector`]: Reads data from external systems
-//! - [`SinkConnector`]: Writes data to external systems
+//! - `SourceConnector`: Reads data from external systems
+//! - `SinkConnector`: Writes data to external systems
 //!
 //! These traits operate in Ring 1 (background) and communicate with Ring 0
 //! through the streaming API (`Source<T>::push_arrow()` and subscriptions).
@@ -377,6 +377,7 @@ pub trait SinkConnector: Send {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use super::*;
     use arrow_array::Int64Array;
@@ -388,6 +389,7 @@ mod tests {
     }
 
     fn test_batch(n: usize) -> RecordBatch {
+        #[allow(clippy::cast_possible_wrap)]
         let ids: Vec<i64> = (0..n as i64).collect();
         RecordBatch::try_new(test_schema(), vec![Arc::new(Int64Array::from(ids))]).unwrap()
     }

@@ -3,16 +3,15 @@
 //! Registers buffers once at startup to avoid per-operation buffer mapping overhead.
 //! Uses fixed-size buffers for predictable performance.
 
-use io_uring::types::{self, Fd};
+use io_uring::types::Fd;
 use io_uring::{opcode, IoUring};
 use std::collections::VecDeque;
-use std::io;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::error::IoUringError;
 
-/// A pre-registered buffer pool for io_uring operations.
+/// A pre-registered buffer pool for `io_uring` operations.
 ///
 /// Buffers are registered with the kernel once at creation time, eliminating
 /// the per-operation buffer mapping overhead that would otherwise occur.
@@ -41,7 +40,7 @@ pub struct RegisteredBufferPool {
     buffer_size: usize,
     /// Free buffer indices.
     free_list: VecDeque<u16>,
-    /// Next user_data ID for tracking operations.
+    /// Next `user_data` ID for tracking operations.
     next_id: AtomicU64,
     /// Total buffers in pool.
     total_count: usize,
@@ -54,7 +53,7 @@ impl RegisteredBufferPool {
     ///
     /// # Arguments
     ///
-    /// * `ring` - The io_uring instance to register buffers with
+    /// * `ring` - The `io_uring` instance to register buffers with
     /// * `buffer_size` - Size of each buffer in bytes
     /// * `buffer_count` - Number of buffers to allocate
     ///
@@ -78,9 +77,7 @@ impl RegisteredBufferPool {
         let buffers: Vec<Vec<u8>> = (0..buffer_count)
             .map(|_| {
                 // Allocate with page alignment for O_DIRECT compatibility
-                let mut buf = Vec::with_capacity(buffer_size);
-                buf.resize(buffer_size, 0);
-                buf
+                vec![0; buffer_size]
             })
             .collect();
 
@@ -102,6 +99,7 @@ impl RegisteredBufferPool {
                 .map_err(IoUringError::BufferRegistration)?;
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let free_list = (0..buffer_count as u16).collect();
 
         Ok(Self {
@@ -186,7 +184,7 @@ impl RegisteredBufferPool {
     ///
     /// # Arguments
     ///
-    /// * `ring` - The io_uring instance
+    /// * `ring` - The `io_uring` instance
     /// * `fd` - File descriptor to read from
     /// * `buf_index` - Index of the registered buffer
     /// * `offset` - File offset to read from
@@ -194,7 +192,7 @@ impl RegisteredBufferPool {
     ///
     /// # Returns
     ///
-    /// The user_data value that will identify this operation in completions.
+    /// The `user_data` value that will identify this operation in completions.
     ///
     /// # Errors
     ///
@@ -207,12 +205,13 @@ impl RegisteredBufferPool {
         offset: u64,
         len: u32,
     ) -> Result<u64, IoUringError> {
+        // Get user_data first to avoid borrow conflict
+        let user_data = self.next_user_data();
+
         let buf = self
             .buffers
             .get_mut(buf_index as usize)
             .ok_or(IoUringError::InvalidBufferIndex(buf_index))?;
-
-        let user_data = self.next_user_data();
 
         let entry = opcode::ReadFixed::new(Fd(fd), buf.as_mut_ptr(), len, buf_index)
             .offset(offset)
@@ -235,7 +234,7 @@ impl RegisteredBufferPool {
     ///
     /// # Arguments
     ///
-    /// * `ring` - The io_uring instance
+    /// * `ring` - The `io_uring` instance
     /// * `fd` - File descriptor to write to
     /// * `buf_index` - Index of the registered buffer
     /// * `offset` - File offset to write to
@@ -243,7 +242,7 @@ impl RegisteredBufferPool {
     ///
     /// # Returns
     ///
-    /// The user_data value that will identify this operation in completions.
+    /// The `user_data` value that will identify this operation in completions.
     ///
     /// # Errors
     ///
@@ -308,7 +307,7 @@ impl RegisteredBufferPool {
         self.free_list.is_empty()
     }
 
-    /// Generate the next user_data ID.
+    /// Generate the next `user_data` ID.
     fn next_user_data(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -362,6 +361,11 @@ impl std::fmt::Display for BufferPoolStats {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::manual_let_else,
+    clippy::single_match_else,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
@@ -497,6 +501,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)
             .unwrap();
 

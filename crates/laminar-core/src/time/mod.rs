@@ -67,16 +67,18 @@
 //! // Register a Kafka source with 4 partitions
 //! tracker.register_source(0, 4);
 //!
-//! // Update individual partitions
+//! // Update ALL partitions (all must have valid watermarks)
 //! tracker.update_partition(PartitionId::new(0, 0), 5000);
 //! tracker.update_partition(PartitionId::new(0, 1), 3000);
+//! tracker.update_partition(PartitionId::new(0, 2), 4000);
+//! tracker.update_partition(PartitionId::new(0, 3), 4500);
 //!
 //! // Combined watermark is minimum across active partitions
 //! assert_eq!(tracker.current_watermark(), Some(Watermark::new(3000)));
 //!
 //! // Mark slow partition as idle to allow progress
 //! tracker.mark_partition_idle(PartitionId::new(0, 1));
-//! assert_eq!(tracker.current_watermark(), Some(Watermark::new(5000)));
+//! assert_eq!(tracker.current_watermark(), Some(Watermark::new(4000)));
 //! ```
 //!
 //! ## Per-Key Watermark Tracking (F065)
@@ -347,12 +349,21 @@ impl TimerService {
     /// * `timestamp` - The event time at which the timer should fire
     /// * `key` - Optional key for keyed operators
     /// * `operator_index` - Optional index of the operator registering the timer(must match the index in the reactor)
-    pub fn register_timer(&mut self, timestamp: i64, key: Option<TimerKey>, operator_index: Option<usize>) -> u64 {
+    pub fn register_timer(
+        &mut self,
+        timestamp: i64,
+        key: Option<TimerKey>,
+        operator_index: Option<usize>,
+    ) -> u64 {
         let id = self.next_timer_id;
         self.next_timer_id += 1;
 
-        self.timers
-            .push(TimerRegistration { id, timestamp, key, operator_index });
+        self.timers.push(TimerRegistration {
+            id,
+            timestamp,
+            key,
+            operator_index,
+        });
 
         id
     }
@@ -440,7 +451,6 @@ pub enum TimeError {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_watermark_creation() {
         let watermark = Watermark::new(1000);
@@ -488,7 +498,6 @@ mod tests {
         let wm = Watermark::default();
         assert_eq!(wm.timestamp(), i64::MIN);
     }
-
 
     #[test]
     fn test_timer_service_creation() {
@@ -594,7 +603,6 @@ mod tests {
         assert_eq!(service.next_timer_timestamp(), None);
     }
 
-
     #[test]
     fn test_bounded_watermark_generator() {
         let mut generator = BoundedOutOfOrdernessGenerator::new(100);
@@ -626,7 +634,6 @@ mod tests {
         let wm3 = generator.on_event(1500);
         assert_eq!(wm3, None);
     }
-
 
     #[test]
     fn test_watermark_tracker_basic() {

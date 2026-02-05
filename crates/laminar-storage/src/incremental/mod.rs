@@ -38,7 +38,7 @@
 //!
 //! ```rust,no_run
 //! use laminar_storage::incremental::{
-//!     IncrementalCheckpointManager, CheckpointConfig, RecoveryManager,
+//!     IncrementalCheckpointManager, CheckpointConfig, RecoveryConfig, RecoveryManager,
 //! };
 //! use std::path::Path;
 //! use std::time::Duration;
@@ -71,4 +71,6 @@ mod recovery;
 pub use changelog::{ChangelogEntryBuilder, StateChangelogBuffer, StateChangelogEntry, StateOp};
 pub use error::IncrementalCheckpointError;
 pub use manager::{CheckpointConfig, IncrementalCheckpointManager, IncrementalCheckpointMetadata};
-pub use recovery::{validate_checkpoint, wal_size, RecoveredState, RecoveryConfig, RecoveryManager};
+pub use recovery::{
+    validate_checkpoint, wal_size, RecoveredState, RecoveryConfig, RecoveryManager,
+};

@@ -17,11 +17,11 @@ pub struct ThreeRingConfig {
     /// Default: 1024
     pub main_entries: u32,
 
-    /// Number of entries for the poll ring (NVMe storage).
+    /// Number of entries for the poll ring (`NVMe` storage).
     /// Default: 256
     pub poll_entries: u32,
 
-    /// Enable the poll ring (requires NVMe).
+    /// Enable the poll ring (requires `NVMe`).
     /// Default: false
     pub enable_poll_ring: bool,
 
@@ -179,7 +179,7 @@ impl ThreeRingConfigBuilder {
         self
     }
 
-    /// Enable the poll ring for NVMe storage.
+    /// Enable the poll ring for `NVMe` storage.
     #[must_use]
     pub const fn enable_poll_ring(mut self, enable: bool) -> Self {
         self.config.enable_poll_ring = enable;

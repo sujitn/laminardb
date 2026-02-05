@@ -14,14 +14,14 @@
 //!
 //! # Module Structure
 //!
-//! - [`config`] - Connection and replication configuration
-//! - [`lsn`] - Log Sequence Number type
-//! - [`types`] - PostgreSQL OID to Arrow type mapping
-//! - [`decoder`] - pgoutput binary protocol parser
-//! - [`schema`] - Relation (table) schema cache
-//! - [`changelog`] - Z-set change event conversion
-//! - [`metrics`] - Lock-free atomic CDC metrics
-//! - [`source`] - `PostgresCdcSource` implementing `SourceConnector`
+//! - `config` - Connection and replication configuration
+//! - `lsn` - Log Sequence Number type
+//! - `types` - PostgreSQL OID to Arrow type mapping
+//! - `decoder` - pgoutput binary protocol parser
+//! - `schema` - Relation (table) schema cache
+//! - `changelog` - Z-set change event conversion
+//! - `metrics` - Lock-free atomic CDC metrics
+//! - `source` - `PostgresCdcSource` implementing `SourceConnector`
 //!
 //! # Usage
 //!
@@ -65,9 +65,7 @@ pub fn register_postgres_cdc(registry: &ConnectorRegistry) {
     registry.register_source(
         "postgres-cdc",
         info,
-        Arc::new(|| {
-            Box::new(PostgresCdcSource::new(PostgresCdcConfig::default()))
-        }),
+        Arc::new(|| Box::new(PostgresCdcSource::new(PostgresCdcConfig::default()))),
     );
 }
 

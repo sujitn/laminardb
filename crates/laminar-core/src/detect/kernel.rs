@@ -18,6 +18,9 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use libc;
+
 /// Linux kernel version.
 ///
 /// Parsed from `/proc/version` or `uname -r`.
@@ -35,7 +38,11 @@ impl KernelVersion {
     /// Creates a new kernel version.
     #[must_use]
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Detects the current kernel version.
@@ -85,7 +92,7 @@ impl KernelVersion {
         // SAFETY: uname is a safe syscall that fills a buffer
         unsafe {
             let mut info: libc::utsname = std::mem::zeroed();
-            if libc::uname(&mut info) != 0 {
+            if libc::uname(&raw mut info) != 0 {
                 return None;
             }
 
@@ -126,7 +133,11 @@ impl KernelVersion {
         let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         let patch: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
-        Some(Self { major, minor, patch })
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
     }
 
     // ===== io_uring Feature Checks =====

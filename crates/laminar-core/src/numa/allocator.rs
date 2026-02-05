@@ -185,11 +185,7 @@ impl NumaAllocator {
     /// # Errors
     ///
     /// Returns error if allocation fails.
-    pub fn alloc_layout_on_node(
-        &self,
-        layout: Layout,
-        node: usize,
-    ) -> Result<*mut u8, NumaError> {
+    pub fn alloc_layout_on_node(&self, layout: Layout, node: usize) -> Result<*mut u8, NumaError> {
         self.alloc_on_node(node, layout.size(), layout.align())
     }
 
@@ -230,7 +226,9 @@ impl NumaAllocator {
         #[cfg(not(target_os = "linux"))]
         {
             // On non-Linux, we used std alloc with matching alignment
-            if let Ok(layout) = Layout::from_size_align(size, align.max(std::mem::align_of::<usize>())) {
+            if let Ok(layout) =
+                Layout::from_size_align(size, align.max(std::mem::align_of::<usize>()))
+            {
                 std::alloc::dealloc(ptr, layout);
             }
         }
@@ -296,17 +294,22 @@ impl NumaAllocator {
 
     /// Bind memory to a specific NUMA node using mbind syscall.
     #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        clippy::items_after_statements
+    )]
     fn bind_to_node(&self, ptr: *mut u8, size: usize, node: usize) -> Result<(), NumaError> {
+        // MPOL_BIND = 2 - strictly bind to the specified nodes
+        const MPOL_BIND: i32 = 2;
+        // MPOL_MF_MOVE = 2 - move pages to the node if they're already faulted
+        const MPOL_MF_MOVE: u32 = 2;
+
         // Build nodemask - a bitmask where bit N is set if node N should be used
         let mut nodemask: u64 = 0;
         if node < 64 {
             nodemask = 1u64 << node;
         }
-
-        // MPOL_BIND = 2 - strictly bind to the specified nodes
-        const MPOL_BIND: i32 = 2;
-        // MPOL_MF_MOVE = 2 - move pages to the node if they're already faulted
-        const MPOL_MF_MOVE: u32 = 2;
 
         // SAFETY: mbind is a valid syscall when called with proper arguments
         let result = unsafe {
@@ -315,7 +318,7 @@ impl NumaAllocator {
                 ptr,
                 size,
                 MPOL_BIND,
-                &nodemask as *const u64,
+                &raw const nodemask,
                 64usize, // maxnode
                 MPOL_MF_MOVE,
             )
@@ -325,11 +328,7 @@ impl NumaAllocator {
             // mbind failure is non-fatal on single-node systems
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() != Some(libc::ENOSYS) {
-                tracing::warn!(
-                    "mbind to node {} failed (non-fatal): {}",
-                    node,
-                    err
-                );
+                tracing::warn!("mbind to node {} failed (non-fatal): {}", node, err);
             }
         }
 
@@ -338,15 +337,16 @@ impl NumaAllocator {
 
     /// Bind memory interleaved across all nodes using mbind syscall.
     #[cfg(target_os = "linux")]
+    #[allow(clippy::unnecessary_wraps, clippy::items_after_statements)]
     fn bind_interleaved(&self, ptr: *mut u8, size: usize) -> Result<(), NumaError> {
+        // MPOL_INTERLEAVE = 3 - interleave pages across nodes
+        const MPOL_INTERLEAVE: i32 = 3;
+
         // Build nodemask with all nodes enabled
         let mut nodemask: u64 = 0;
         for node in 0..self.topology.num_nodes().min(64) {
             nodemask |= 1u64 << node;
         }
-
-        // MPOL_INTERLEAVE = 3 - interleave pages across nodes
-        const MPOL_INTERLEAVE: i32 = 3;
 
         // SAFETY: mbind is a valid syscall when called with proper arguments
         let result = unsafe {
@@ -355,7 +355,7 @@ impl NumaAllocator {
                 ptr,
                 size,
                 MPOL_INTERLEAVE,
-                &nodemask as *const u64,
+                &raw const nodemask,
                 64usize, // maxnode
                 0u32,    // flags
             )
@@ -390,13 +390,14 @@ impl NumaAllocator {
                 libc::SYS_move_pages,
                 0i32, // self
                 1usize,
-                &page_ptr as *const *mut libc::c_void,
+                &raw const page_ptr,
                 ptr::null::<i32>(), // NULL = query only
-                &mut status as *mut i32,
+                &raw mut status,
                 0i32, // flags
             )
         };
 
+        #[allow(clippy::cast_sign_loss)]
         if result == 0 && status >= 0 {
             Some(status as usize)
         } else {
@@ -449,7 +450,12 @@ impl NumaBuffer {
     pub fn new(allocator: &NumaAllocator, node: usize, size: usize) -> Result<Self, NumaError> {
         let align = Self::DEFAULT_ALIGN;
         let ptr = allocator.alloc_on_node(node, size, align)?;
-        Ok(Self { ptr, size, align, node })
+        Ok(Self {
+            ptr,
+            size,
+            align,
+            node,
+        })
     }
 
     /// Allocate a buffer local to the current CPU's NUMA node.
@@ -569,8 +575,8 @@ impl<T> NumaVec<T> {
             return Ok(Self::new());
         }
 
-        let layout = Layout::array::<T>(capacity)
-            .map_err(|e| NumaError::AllocationFailed(e.to_string()))?;
+        let layout =
+            Layout::array::<T>(capacity).map_err(|e| NumaError::AllocationFailed(e.to_string()))?;
 
         let ptr = allocator.alloc_on_node(node, layout.size(), layout.align())?;
 
@@ -828,8 +834,7 @@ mod tests {
         let topo = NumaTopology::detect();
         let allocator = NumaAllocator::new(&topo);
 
-        let mut vec: NumaVec<i32> =
-            NumaVec::with_capacity_on_node(&allocator, 100, 0).unwrap();
+        let mut vec: NumaVec<i32> = NumaVec::with_capacity_on_node(&allocator, 100, 0).unwrap();
 
         assert!(vec.is_empty());
         assert_eq!(vec.capacity(), 100);
@@ -855,8 +860,7 @@ mod tests {
         let topo = NumaTopology::detect();
         let allocator = NumaAllocator::new(&topo);
 
-        let mut vec: NumaVec<i32> =
-            NumaVec::with_capacity_on_node(&allocator, 10, 0).unwrap();
+        let mut vec: NumaVec<i32> = NumaVec::with_capacity_on_node(&allocator, 10, 0).unwrap();
 
         vec.push(10);
         vec.push(20);

@@ -5,7 +5,7 @@
 //! 2. sysfs parsing on Linux (fallback)
 //! 3. Single-node fallback on other platforms
 
-#[cfg(feature = "hwloc")]
+#[cfg(any(feature = "hwloc", target_os = "linux"))]
 use super::NumaError;
 
 /// NUMA topology information for the system.
@@ -75,9 +75,9 @@ impl NumaTopology {
             ));
         }
 
-        let num_nodes = numa_nodes.len();
-        let mut cpus_per_node = vec![Vec::new(); num_nodes];
-        let mut memory_per_node = vec![0u64; num_nodes];
+        let node_count = numa_nodes.len();
+        let mut cpus_per_node = vec![Vec::new(); node_count];
+        let mut memory_per_node = vec![0u64; node_count];
 
         // Get total CPUs
         let num_cpus = hwloc_topo
@@ -87,15 +87,13 @@ impl NumaTopology {
         let mut cpu_to_node = vec![0usize; num_cpus];
 
         for (node_idx, numa_node) in numa_nodes.iter().enumerate() {
-            // Get memory for this node
-            if let Some(memory) = numa_node.total_memory() {
-                memory_per_node[node_idx] = memory;
-            }
+            // Get memory for this node (total_memory returns u64 directly)
+            memory_per_node[node_idx] = numa_node.total_memory();
 
             // Get CPUs for this node
             if let Some(cpuset) = numa_node.cpuset() {
                 for cpu in cpuset.iter_set() {
-                    let cpu_idx = cpu as usize;
+                    let cpu_idx = usize::from(cpu);
                     if cpu_idx < num_cpus {
                         cpus_per_node[node_idx].push(cpu_idx);
                         cpu_to_node[cpu_idx] = node_idx;
@@ -105,7 +103,7 @@ impl NumaTopology {
         }
 
         Ok(Self {
-            num_nodes,
+            num_nodes: node_count,
             cpus_per_node,
             memory_per_node,
             num_cpus,
@@ -135,8 +133,8 @@ impl NumaTopology {
                 .map_err(|e| NumaError::TopologyError(format!("Failed to read entry: {e}")))?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("node") {
-                if let Ok(node_id) = name_str[4..].parse::<usize>() {
+            if let Some(suffix) = name_str.strip_prefix("node") {
+                if let Ok(node_id) = suffix.parse::<usize>() {
                     node_dirs.push(node_id);
                 }
             }
@@ -150,7 +148,7 @@ impl NumaTopology {
         let num_nodes = node_dirs.iter().max().map_or(1, |m| m + 1);
 
         // Get CPU count
-        let num_cpus = Self::get_cpu_count()?;
+        let num_cpus = Self::get_cpu_count();
 
         let mut cpus_per_node = vec![Vec::new(); num_nodes];
         let mut memory_per_node = vec![0u64; num_nodes];
@@ -189,7 +187,7 @@ impl NumaTopology {
 
     /// Get CPU count from sysfs.
     #[cfg(target_os = "linux")]
-    fn get_cpu_count() -> Result<usize, NumaError> {
+    fn get_cpu_count() -> usize {
         use std::fs;
 
         // Try reading from /sys/devices/system/cpu/online
@@ -197,12 +195,12 @@ impl NumaTopology {
         if let Ok(online) = fs::read_to_string(online_path) {
             let cpus = Self::parse_cpulist(online.trim());
             if let Some(max) = cpus.iter().max() {
-                return Ok(max + 1);
+                return max + 1;
             }
         }
 
         // Fallback to num_cpus crate
-        Ok(num_cpus::get())
+        num_cpus::get()
     }
 
     /// Parse a CPU list string like "0-7,16-23".
@@ -239,7 +237,7 @@ impl NumaTopology {
                 for (i, part) in parts.iter().enumerate() {
                     if let Ok(val) = part.parse::<u64>() {
                         // Check if next part is "kB"
-                        if parts.get(i + 1).map_or(false, |&u| u == "kB") {
+                        if parts.get(i + 1).is_some_and(|&u| u == "kB") {
                             return val * 1024;
                         }
                         return val;
@@ -336,6 +334,7 @@ impl NumaTopology {
             // SAFETY: sched_getcpu is a simple syscall that returns the current CPU
             let cpu = unsafe { libc::sched_getcpu() };
             if cpu >= 0 {
+                #[allow(clippy::cast_sign_loss)]
                 return cpu as usize;
             }
         }
@@ -352,7 +351,11 @@ impl NumaTopology {
 
     /// Log the detected topology for debugging.
     pub fn log_topology(&self) {
-        tracing::info!("NUMA Topology: {} nodes, {} CPUs", self.num_nodes, self.num_cpus);
+        tracing::info!(
+            "NUMA Topology: {} nodes, {} CPUs",
+            self.num_nodes,
+            self.num_cpus
+        );
         for node in 0..self.num_nodes {
             let cpus = self.cpus_for_node(node);
             let memory_gb = self.memory_for_node(node) / (1024 * 1024 * 1024);
@@ -371,10 +374,7 @@ impl NumaTopology {
     pub fn summary(&self) -> String {
         use std::fmt::Write;
 
-        let mut s = format!(
-            "NUMA: {} nodes, {} CPUs",
-            self.num_nodes, self.num_cpus
-        );
+        let mut s = format!("NUMA: {} nodes, {} CPUs", self.num_nodes, self.num_cpus);
         for node in 0..self.num_nodes {
             let cpus = self.cpus_for_node(node);
             let memory_gb = self.memory_for_node(node) / (1024 * 1024 * 1024);

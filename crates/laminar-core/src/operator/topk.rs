@@ -19,10 +19,10 @@
 //! - Sort keys use `Vec<u8>` memcomparable encoding for zero-branch comparison
 //! - Sorted Vec with binary search: O(log K) search + O(K) shift
 
+use super::window::ChangelogRecord;
 use super::{
     Event, Operator, OperatorContext, OperatorError, OperatorState, Output, OutputVec, Timer,
 };
-use super::window::ChangelogRecord;
 use arrow_array::{Array, Float64Array, Int64Array, StringArray, TimestampMicrosecondArray};
 use arrow_schema::DataType;
 
@@ -507,9 +507,10 @@ pub fn encode_utf8(val: &str, descending: bool, key: &mut Vec<u8>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
-    use super::*;
     use super::super::window::CdcOperation;
+    use super::*;
     use crate::state::InMemoryStore;
     use crate::time::{BoundedOutOfOrdernessGenerator, TimerService};
     use arrow_array::{Float64Array, Int64Array, RecordBatch, StringArray};
@@ -522,11 +523,8 @@ mod tests {
             DataType::Float64,
             false,
         )]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Float64Array::from(vec![price]))],
-        )
-        .unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(vec![price]))]).unwrap();
         Event::new(timestamp, batch)
     }
 
@@ -536,25 +534,15 @@ mod tests {
             DataType::Int64,
             false,
         )]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int64Array::from(vec![value]))],
-        )
-        .unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![value]))]).unwrap();
         Event::new(timestamp, batch)
     }
 
     fn make_event_str(timestamp: i64, name: &str) -> Event {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "name",
-            DataType::Utf8,
-            false,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(StringArray::from(vec![name]))],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec![name]))]).unwrap();
         Event::new(timestamp, batch)
     }
 
@@ -668,9 +656,9 @@ mod tests {
         )]));
         let batch = RecordBatch::try_new(
             schema,
-            vec![Arc::new(
-                arrow_array::TimestampMicrosecondArray::from(vec![1000]),
-            )],
+            vec![Arc::new(arrow_array::TimestampMicrosecondArray::from(
+                vec![1000],
+            ))],
         )
         .unwrap();
         let event = Event::new(1, batch);
@@ -895,8 +883,7 @@ mod tests {
             true,
         )]));
         let null_array = Int64Array::new_null(1);
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(null_array)]).unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(null_array)]).unwrap();
         let null_event = Event::new(1, batch);
 
         let val_event = make_event_i64(2, 100);
@@ -927,8 +914,7 @@ mod tests {
             true,
         )]));
         let null_array = Int64Array::new_null(1);
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(null_array)]).unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(null_array)]).unwrap();
         let null_event = Event::new(1, batch);
 
         let val_event = make_event_i64(2, 100);
@@ -1046,7 +1032,7 @@ mod tests {
                     CdcOperation::Insert => has_insert = true,
                     CdcOperation::UpdateBefore => has_update_before = true,
                     CdcOperation::UpdateAfter => has_update_after = true,
-                    _ => {}
+                    CdcOperation::Delete => {}
                 }
             }
         }

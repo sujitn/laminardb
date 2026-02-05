@@ -1,7 +1,7 @@
 //! Avro serialization using `arrow-avro` with Confluent Schema Registry.
 //!
-//! [`AvroSerializer`] implements [`RecordSerializer`] by wrapping the
-//! `arrow-avro` [`Writer`] with SOE format, producing per-record payloads
+//! `AvroSerializer` implements `RecordSerializer` by wrapping the
+//! `arrow-avro` `Writer` with SOE format, producing per-record payloads
 //! with the Confluent wire format prefix (`0x00` + 4-byte BE schema ID
 //! + Avro body).
 
@@ -53,7 +53,7 @@ impl AvroSerializer {
     /// Creates a new Avro serializer with Schema Registry integration.
     ///
     /// The schema ID is obtained from the registry. Call
-    /// [`register_schema`](Self::register_schema) before serializing.
+    /// `set_schema_id` after registering the schema.
     #[must_use]
     pub fn with_schema_registry(
         schema: SchemaRef,
@@ -103,17 +103,15 @@ impl AvroSerializer {
         let mut writer = WriterBuilder::new(arrow_schema)
             .with_fingerprint_strategy(FingerprintStrategy::Id(self.schema_id))
             .build::<_, AvroSoeFormat>(&mut buf)
-            .map_err(|e| {
-                SerdeError::MalformedInput(format!("failed to build Avro writer: {e}"))
-            })?;
+            .map_err(|e| SerdeError::MalformedInput(format!("failed to build Avro writer: {e}")))?;
 
-        writer.write(batch).map_err(|e| {
-            SerdeError::MalformedInput(format!("Avro encode error: {e}"))
-        })?;
+        writer
+            .write(batch)
+            .map_err(|e| SerdeError::MalformedInput(format!("Avro encode error: {e}")))?;
 
-        writer.finish().map_err(|e| {
-            SerdeError::MalformedInput(format!("Avro flush error: {e}"))
-        })?;
+        writer
+            .finish()
+            .map_err(|e| SerdeError::MalformedInput(format!("Avro flush error: {e}")))?;
 
         // Split the buffer into per-record payloads.
         // Each record starts with CONFLUENT_MAGIC (0x00) + 4-byte schema ID.
@@ -137,17 +135,15 @@ impl RecordSerializer for AvroSerializer {
         let mut writer = WriterBuilder::new(arrow_schema)
             .with_fingerprint_strategy(FingerprintStrategy::Id(self.schema_id))
             .build::<_, AvroSoeFormat>(&mut buf)
-            .map_err(|e| {
-                SerdeError::MalformedInput(format!("failed to build Avro writer: {e}"))
-            })?;
+            .map_err(|e| SerdeError::MalformedInput(format!("failed to build Avro writer: {e}")))?;
 
-        writer.write(batch).map_err(|e| {
-            SerdeError::MalformedInput(format!("Avro encode error: {e}"))
-        })?;
+        writer
+            .write(batch)
+            .map_err(|e| SerdeError::MalformedInput(format!("Avro encode error: {e}")))?;
 
-        writer.finish().map_err(|e| {
-            SerdeError::MalformedInput(format!("Avro flush error: {e}"))
-        })?;
+        writer
+            .finish()
+            .map_err(|e| SerdeError::MalformedInput(format!("Avro flush error: {e}")))?;
 
         Ok(buf)
     }
@@ -170,10 +166,7 @@ impl std::fmt::Debug for AvroSerializer {
 /// individual per-record payloads.
 ///
 /// Each record starts with `0x00` + 4-byte BE schema ID + Avro body.
-fn split_confluent_records(
-    buf: &[u8],
-    expected_rows: usize,
-) -> Result<Vec<Vec<u8>>, SerdeError> {
+fn split_confluent_records(buf: &[u8], expected_rows: usize) -> Result<Vec<Vec<u8>>, SerdeError> {
     let mut records = Vec::with_capacity(expected_rows);
     let mut offset = 0;
 
@@ -217,7 +210,9 @@ fn split_confluent_records(
 fn find_next_record(buf: &[u8], schema_id_bytes: &[u8]) -> Option<usize> {
     let mut pos = 0;
     while pos + CONFLUENT_HEADER_SIZE <= buf.len() {
-        if buf[pos] == CONFLUENT_MAGIC && buf[pos + 1..pos + CONFLUENT_HEADER_SIZE] == *schema_id_bytes {
+        if buf[pos] == CONFLUENT_MAGIC
+            && buf[pos + 1..pos + CONFLUENT_HEADER_SIZE] == *schema_id_bytes
+        {
             return Some(pos);
         }
         pos += 1;

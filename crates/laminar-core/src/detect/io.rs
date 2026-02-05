@@ -316,14 +316,11 @@ impl StorageInfo {
     /// Detect storage info on Linux.
     #[cfg(target_os = "linux")]
     fn detect_linux(path: &Path) -> Self {
-        use std::fs;
-
         let mut info = Self::default();
 
         // Get the device from the path
-        let device = match Self::get_device_for_path(path) {
-            Some(d) => d,
-            None => return info,
+        let Some(device) = Self::get_device_for_path(path) else {
+            return info;
         };
 
         info.device_name = Some(device.clone());
@@ -355,7 +352,7 @@ impl StorageInfo {
         let minor = dev & 0xFF;
 
         // Read /proc/diskstats or /sys/dev/block to find the device name
-        let block_path = format!("/sys/dev/block/{major}:{minor}/device/../");
+        let _block_path = format!("/sys/dev/block/{major}:{minor}/device/../");
 
         if let Ok(entries) = fs::read_dir("/sys/block") {
             for entry in entries.flatten() {
@@ -465,7 +462,7 @@ impl StorageInfo {
         None
     }
 
-    /// Check if O_DIRECT is supported.
+    /// Check if `O_DIRECT` is supported.
     #[cfg(target_os = "linux")]
     fn check_direct_io_support(path: &Path) -> bool {
         use std::fs::OpenOptions;
@@ -476,8 +473,7 @@ impl StorageInfo {
             path.join(".laminardb_direct_test")
         } else {
             path.parent()
-                .map(|p| p.join(".laminardb_direct_test"))
-                .unwrap_or_else(|| path.to_path_buf())
+                .map_or_else(|| path.to_path_buf(), |p| p.join(".laminardb_direct_test"))
         };
 
         let result = OpenOptions::new()
@@ -562,7 +558,9 @@ impl MemoryInfo {
                     match parts[0].trim_end_matches(':') {
                         "MemTotal" => info.total_memory = value * 1024,
                         "MemAvailable" => info.available_memory = value * 1024,
+                        #[allow(clippy::cast_possible_truncation)]
                         "Hugepagesize" => info.huge_page_size = (value * 1024) as usize,
+                        #[allow(clippy::cast_possible_truncation)]
                         "HugePages_Free" => info.huge_pages_free = value as usize,
                         _ => {}
                     }
@@ -574,10 +572,10 @@ impl MemoryInfo {
         info.huge_pages_available = info.huge_page_size > 0;
 
         // Check THP status
-        if let Ok(thp_enabled) = fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
-        {
+        if let Ok(thp_enabled) = fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled") {
             // Format is: "[always] madvise never" where brackets indicate current setting
-            info.thp_enabled = thp_enabled.contains("[always]") || thp_enabled.contains("[madvise]");
+            info.thp_enabled =
+                thp_enabled.contains("[always]") || thp_enabled.contains("[madvise]");
         }
 
         info
@@ -667,15 +665,18 @@ mod tests {
     #[test]
     fn test_io_uring_capabilities_advanced() {
         let kv = KernelVersion::new(6, 0, 0);
-        let _caps = IoUringCapabilities::from_kernel_version(Some(&kv));
+        let caps = IoUringCapabilities::from_kernel_version(Some(&kv));
 
         #[cfg(all(target_os = "linux", feature = "io-uring"))]
         {
-            assert!(_caps.sqpoll_supported);
-            assert!(_caps.iopoll_supported);
-            assert!(_caps.coop_taskrun);
-            assert!(_caps.single_issuer);
+            assert!(caps.sqpoll_supported);
+            assert!(caps.iopoll_supported);
+            assert!(caps.coop_taskrun);
+            assert!(caps.single_issuer);
         }
+
+        // Suppress warning when feature is disabled
+        let _ = caps;
     }
 
     #[test]
@@ -696,15 +697,18 @@ mod tests {
     #[test]
     fn test_xdp_capabilities_from_kernel() {
         let kv = KernelVersion::new(5, 3, 0);
-        let _caps = XdpCapabilities::from_kernel_version(Some(&kv));
+        let caps = XdpCapabilities::from_kernel_version(Some(&kv));
 
         #[cfg(all(target_os = "linux", feature = "xdp"))]
         {
-            assert!(_caps.available);
-            assert!(_caps.generic_supported);
-            assert!(_caps.native_supported);
-            assert!(_caps.cpumap_supported);
+            assert!(caps.available);
+            assert!(caps.generic_supported);
+            assert!(caps.native_supported);
+            assert!(caps.cpumap_supported);
         }
+
+        // Suppress warning when feature is disabled
+        let _ = caps;
     }
 
     #[test]
@@ -765,7 +769,7 @@ mod tests {
     #[test]
     fn test_memory_info_gb_conversion() {
         let info = MemoryInfo {
-            total_memory: 16 * 1024 * 1024 * 1024, // 16 GB
+            total_memory: 16 * 1024 * 1024 * 1024,    // 16 GB
             available_memory: 8 * 1024 * 1024 * 1024, // 8 GB
             ..Default::default()
         };

@@ -1,8 +1,8 @@
 //! Connector metrics types.
 //!
 //! Provides metrics reporting for connectors:
-//! - [`ConnectorMetrics`]: Metrics reported by a connector implementation
-//! - [`RuntimeMetrics`]: Metrics tracked by the connector runtime
+//! - `ConnectorMetrics`: Metrics reported by a connector implementation
+//! - `RuntimeMetrics`: Metrics tracked by the connector runtime
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -78,7 +78,8 @@ impl RuntimeMetrics {
 
     /// Records that a batch of records was processed.
     pub fn record_batch(&self, record_count: u64, byte_count: u64) {
-        self.records_total.fetch_add(record_count, Ordering::Relaxed);
+        self.records_total
+            .fetch_add(record_count, Ordering::Relaxed);
         self.bytes_total.fetch_add(byte_count, Ordering::Relaxed);
         self.batches_total.fetch_add(1, Ordering::Relaxed);
     }

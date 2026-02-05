@@ -3,11 +3,11 @@
 //! The SDK provides higher-level utilities built on top of the core connector
 //! traits (`SourceConnector`, `SinkConnector`):
 //!
-//! - **Retry & Resilience**: [`RetryPolicy`], [`CircuitBreaker`]
-//! - **Rate Limiting**: [`RateLimiter`], [`TokenBucket`], [`LeakyBucket`]
-//! - **Test Harness**: [`ConnectorTestHarness`] for connector validation
+//! - **Retry & Resilience**: `RetryPolicy`, `CircuitBreaker`
+//! - **Rate Limiting**: `RateLimiter`, `TokenBucket`, `LeakyBucket`
+//! - **Test Harness**: `ConnectorTestHarness` for connector validation
 //! - **Builders**: Fluent APIs for connector construction
-//! - **Schema Discovery**: [`infer_schema_from_samples`]
+//! - **Schema Discovery**: `infer_schema_from_samples`
 //!
 //! # Example: Using Retry Policy
 //!

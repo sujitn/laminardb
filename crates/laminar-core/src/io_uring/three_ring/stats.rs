@@ -26,27 +26,38 @@ pub struct ThreeRingStats {
     /// Submissions to poll ring.
     pub poll_submissions: u64,
 
-    /// Latency ring latency tracking.
+    /// Latency ring total latency in nanoseconds.
     pub latency_ring_total_ns: u64,
+    /// Number of latency ring samples.
     pub latency_ring_samples: u64,
+    /// Minimum latency ring latency in nanoseconds.
     pub latency_ring_min_ns: u64,
+    /// Maximum latency ring latency in nanoseconds.
     pub latency_ring_max_ns: u64,
 
-    /// Main ring latency tracking.
+    /// Main ring total latency in nanoseconds.
     pub main_ring_total_ns: u64,
+    /// Number of main ring samples.
     pub main_ring_samples: u64,
+    /// Minimum main ring latency in nanoseconds.
     pub main_ring_min_ns: u64,
+    /// Maximum main ring latency in nanoseconds.
     pub main_ring_max_ns: u64,
 
-    /// Poll ring latency tracking.
+    /// Poll ring total latency in nanoseconds.
     pub poll_ring_total_ns: u64,
+    /// Number of poll ring samples.
     pub poll_ring_samples: u64,
+    /// Minimum poll ring latency in nanoseconds.
     pub poll_ring_min_ns: u64,
+    /// Maximum poll ring latency in nanoseconds.
     pub poll_ring_max_ns: u64,
 
-    /// Errors encountered.
+    /// Errors on latency ring.
     pub latency_errors: u64,
+    /// Errors on main ring.
     pub main_errors: u64,
+    /// Errors on poll ring.
     pub poll_errors: u64,
 
     /// Poll fallbacks (poll ring ops that went to main ring).
@@ -66,6 +77,7 @@ impl ThreeRingStats {
     }
 
     /// Record a latency ring completion.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn record_latency_completion(&mut self, latency: Option<Duration>, success: bool) {
         self.latency_completions += 1;
         if !success {
@@ -81,6 +93,7 @@ impl ThreeRingStats {
     }
 
     /// Record a main ring completion.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn record_main_completion(&mut self, latency: Option<Duration>, success: bool) {
         self.main_completions += 1;
         if !success {
@@ -96,6 +109,7 @@ impl ThreeRingStats {
     }
 
     /// Record a poll ring completion.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn record_poll_completion(&mut self, latency: Option<Duration>, success: bool) {
         self.poll_completions += 1;
         if !success {
@@ -177,6 +191,7 @@ impl ThreeRingStats {
     ///
     /// Higher ratio means latency ring is effectively waking the main ring.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn wake_up_efficiency(&self) -> f64 {
         if self.main_ring_sleeps > 0 {
             self.latency_wake_ups as f64 / self.main_ring_sleeps as f64
@@ -187,6 +202,7 @@ impl ThreeRingStats {
 
     /// Get success rate across all rings.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn success_rate(&self) -> f64 {
         let total = self.total_completions();
         if total > 0 {

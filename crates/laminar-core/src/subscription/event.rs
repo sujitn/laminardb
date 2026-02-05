@@ -287,9 +287,9 @@ impl ChangeEvent {
     #[must_use]
     pub fn row_count(&self) -> usize {
         match self {
-            Self::Insert { data, .. }
-            | Self::Delete { data, .. }
-            | Self::Snapshot { data, .. } => data.num_rows(),
+            Self::Insert { data, .. } | Self::Delete { data, .. } | Self::Snapshot { data, .. } => {
+                data.num_rows()
+            }
             Self::Update { new, .. } => new.num_rows(),
             Self::Watermark { .. } => 0,
         }
@@ -311,20 +311,16 @@ impl ChangeEvent {
         let data = Arc::clone(&record.event.data);
         let timestamp = record.emit_timestamp;
         match record.operation {
-            CdcOperation::Insert | CdcOperation::UpdateAfter => {
-                Self::Insert {
-                    data,
-                    timestamp,
-                    sequence,
-                }
-            }
-            CdcOperation::Delete | CdcOperation::UpdateBefore => {
-                Self::Delete {
-                    data,
-                    timestamp,
-                    sequence,
-                }
-            }
+            CdcOperation::Insert | CdcOperation::UpdateAfter => Self::Insert {
+                data,
+                timestamp,
+                sequence,
+            },
+            CdcOperation::Delete | CdcOperation::UpdateBefore => Self::Delete {
+                data,
+                timestamp,
+                sequence,
+            },
         }
     }
 }
@@ -390,13 +386,14 @@ impl ChangeEventBatch {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use super::*;
     use arrow_array::Int64Array;
     use arrow_schema::{DataType, Field, Schema};
     use std::mem;
 
-    /// Helper: create a RecordBatch with `n` rows.
+    /// Helper: create a `RecordBatch` with `n` rows.
     fn make_batch(n: usize) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
         let values: Vec<i64> = (0..n as i64).collect();

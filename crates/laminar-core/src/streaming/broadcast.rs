@@ -418,7 +418,8 @@ impl<T> BroadcastChannel<T> {
             (0..capacity).map(|_| UnsafeCell::new(None)).collect();
 
         // Pre-allocate cursor slots (64-byte aligned each)
-        let cursor_slots: Vec<CursorSlot> = (0..max_subscribers).map(|_| CursorSlot::empty()).collect();
+        let cursor_slots: Vec<CursorSlot> =
+            (0..max_subscribers).map(|_| CursorSlot::empty()).collect();
 
         // Pre-allocate name storage
         let cursor_names: Vec<String> = (0..max_subscribers).map(|_| String::new()).collect();
@@ -898,6 +899,10 @@ pub struct SubscriberInfo {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::default_trait_access)]
+#[allow(clippy::unnecessary_map_or)]
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -946,7 +951,10 @@ mod tests {
 
         assert_eq!(config.capacity, 512);
         assert_eq!(config.max_subscribers, 8);
-        assert_eq!(config.slow_subscriber_policy, SlowSubscriberPolicy::DropSlow);
+        assert_eq!(
+            config.slow_subscriber_policy,
+            SlowSubscriberPolicy::DropSlow
+        );
         assert_eq!(config.slow_subscriber_timeout, Duration::from_secs(1));
         assert_eq!(config.lag_warning_threshold, 500);
     }
@@ -960,10 +968,7 @@ mod tests {
     #[test]
     fn test_slow_subscriber_policy_variants() {
         assert_eq!(SlowSubscriberPolicy::Block, SlowSubscriberPolicy::Block);
-        assert_ne!(
-            SlowSubscriberPolicy::Block,
-            SlowSubscriberPolicy::DropSlow
-        );
+        assert_ne!(SlowSubscriberPolicy::Block, SlowSubscriberPolicy::DropSlow);
         assert_ne!(
             SlowSubscriberPolicy::Block,
             SlowSubscriberPolicy::SkipForSlow
@@ -1011,7 +1016,10 @@ mod tests {
         channel.subscribe("sub2").unwrap();
 
         let result = channel.subscribe("sub3");
-        assert!(matches!(result, Err(BroadcastError::MaxSubscribersReached(2))));
+        assert!(matches!(
+            result,
+            Err(BroadcastError::MaxSubscribersReached(2))
+        ));
     }
 
     #[test]
@@ -1104,7 +1112,10 @@ mod tests {
     fn test_try_read_nonexistent() {
         let channel = BroadcastChannel::<i32>::new(BroadcastConfig::default());
         let result = channel.try_read(999);
-        assert!(matches!(result, Err(BroadcastError::SubscriberNotFound(999))));
+        assert!(matches!(
+            result,
+            Err(BroadcastError::SubscriberNotFound(999))
+        ));
     }
 
     // --- Lag tracking tests ---

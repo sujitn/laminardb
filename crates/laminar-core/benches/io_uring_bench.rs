@@ -5,6 +5,11 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
+use criterion::{BenchmarkId, Throughput};
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+use std::hint::black_box;
+
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
 mod linux_benchmarks {
     use super::*;
     use laminar_core::io_uring::{CoreRingManager, IoUringConfig, RingMode};
@@ -67,6 +72,7 @@ mod linux_benchmarks {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&path)
                 .unwrap();
             file.write_all(&vec![0u8; 64 * 1024 * 256]).unwrap();
@@ -122,6 +128,7 @@ mod linux_benchmarks {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&path)
                 .unwrap();
             file.write_all(&vec![0u8; 64 * 1024 * 256]).unwrap();

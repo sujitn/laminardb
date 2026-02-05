@@ -205,7 +205,8 @@ impl NotificationRing {
         unsafe {
             *self.buffer[idx].get() = notif;
         }
-        self.write_pos.store(write.wrapping_add(1), Ordering::Release);
+        self.write_pos
+            .store(write.wrapping_add(1), Ordering::Release);
         true
     }
 
@@ -274,10 +275,10 @@ impl NotificationRing {
 ///
 /// Provides the end-to-end path from Ring 0 event emission to Ring 1 dispatch:
 ///
-/// 1. **Registration** (Ring 2): [`register_source`] allocates a slot.
-/// 2. **Notification** (Ring 0): [`notify_source`] increments the slot sequence
+/// 1. **Registration** (Ring 2): [`Self::register_source`] allocates a slot.
+/// 2. **Notification** (Ring 0): [`Self::notify_source`] increments the slot sequence
 ///    and pushes a [`NotificationRef`] into the SPSC ring.
-/// 3. **Drain** (Ring 1): [`drain_notifications`] pops all pending notifications.
+/// 3. **Drain** (Ring 1): [`Self::drain_notifications`] pops all pending notifications.
 pub struct NotificationHub {
     /// Notification slots indexed by `source_id`.
     slots: Vec<NotificationSlot>,
@@ -322,7 +323,7 @@ impl NotificationHub {
 
     /// Marks the given source as inactive.
     ///
-    /// Inactive sources are skipped by [`notify_source`]. The slot is not
+    /// Inactive sources are skipped by [`Self::notify_source`]. The slot is not
     /// deallocated — use [`NotificationSlot::reactivate`] to re-enable.
     pub fn deactivate_source(&self, source_id: u32) {
         if let Some(slot) = self.slots.get(source_id as usize) {
@@ -396,6 +397,7 @@ impl NotificationHub {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
     use std::mem;
@@ -518,7 +520,7 @@ mod tests {
     #[test]
     fn test_notification_ring_wraparound() {
         let ring = NotificationRing::new(4); // capacity = 4
-        // Fill and drain multiple times to exercise wraparound
+                                             // Fill and drain multiple times to exercise wraparound
         for round in 0..5u64 {
             for i in 0..4u64 {
                 let seq = round * 4 + i;
@@ -641,8 +643,7 @@ mod tests {
         let writer = thread::spawn(move || {
             let mut pushed = 0u64;
             while pushed < n {
-                let notif =
-                    NotificationRef::new(pushed, 0, EventType::Insert, 0, 0, 0);
+                let notif = NotificationRef::new(pushed, 0, EventType::Insert, 0, 0, 0);
                 if ring_writer.push(notif) {
                     pushed += 1;
                 } else {

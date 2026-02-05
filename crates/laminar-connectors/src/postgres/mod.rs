@@ -17,10 +17,10 @@
 //!
 //! # Module Structure
 //!
-//! - [`sink_config`] - Configuration and enums
-//! - [`sink`] - `PostgresSink` implementing `SinkConnector`
-//! - [`sink_metrics`] - Lock-free atomic metrics
-//! - [`types`] - Arrow → `PostgreSQL` type mapping
+//! - `sink_config` - Configuration and enums
+//! - `sink` - `PostgresSink` implementing `SinkConnector`
+//! - `sink_metrics` - Lock-free atomic metrics
+//! - `types` - Arrow → `PostgreSQL` type mapping
 //!
 //! # Usage
 //!
@@ -101,17 +101,9 @@ fn postgres_sink_config_keys() -> Vec<ConfigKeySpec> {
             "",
         ),
         ConfigKeySpec::optional("batch.size", "Max records before flush", "4096"),
-        ConfigKeySpec::optional(
-            "flush.interval.ms",
-            "Max time before flush (ms)",
-            "1000",
-        ),
+        ConfigKeySpec::optional("flush.interval.ms", "Max time before flush (ms)", "1000"),
         ConfigKeySpec::optional("pool.size", "Connection pool size", "4"),
-        ConfigKeySpec::optional(
-            "connect.timeout.ms",
-            "Connection timeout (ms)",
-            "10000",
-        ),
+        ConfigKeySpec::optional("connect.timeout.ms", "Connection timeout (ms)", "10000"),
         ConfigKeySpec::optional(
             "ssl.mode",
             "SSL mode: disable/prefer/require/verify-ca/verify-full",

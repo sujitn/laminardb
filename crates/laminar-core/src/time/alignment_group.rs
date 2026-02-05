@@ -37,11 +37,15 @@
 //! group.register_source(0); // orders stream
 //! group.register_source(1); // payments stream
 //!
+//! // Initialize both sources with watermarks
+//! group.report_watermark(0, 0);
+//! group.report_watermark(1, 0);
+//!
 //! // Report watermarks
 //! let action = group.report_watermark(0, 10_000); // orders at 10:00
 //! assert_eq!(action, AlignmentAction::Continue);
 //!
-//! // Source 0 jumps far ahead
+//! // Source 0 jumps far ahead (>300s drift from source 1 at 0)
 //! let action = group.report_watermark(0, 310_000); // orders at 10:05:10
 //! assert_eq!(action, AlignmentAction::Pause); // Too far ahead of source 1!
 //! ```

@@ -388,6 +388,7 @@ impl Reactor {
     /// # Errors
     ///
     /// Returns `ReactorError` if CPU affinity cannot be set (platform-specific)
+    #[allow(unused_variables)]
     pub fn set_cpu_affinity(&self) -> Result<(), ReactorError> {
         if let Some(cpu_id) = self.config.cpu_affinity {
             #[cfg(target_os = "linux")]
@@ -404,7 +405,7 @@ impl Reactor {
                     CPU_ZERO(&mut set);
                     CPU_SET(cpu_id, &mut set);
 
-                    let result = sched_setaffinity(0, mem::size_of::<cpu_set_t>(), &set);
+                    let result = sched_setaffinity(0, mem::size_of::<cpu_set_t>(), &raw const set);
                     if result != 0 {
                         return Err(ReactorError::InitializationFailed(format!(
                             "Failed to set CPU affinity to core {}: {}",
@@ -836,9 +837,7 @@ mod tests {
 
         // Submit some events
         for i in 0..5 {
-            reactor
-                .submit(Event::new(i * 1000, batch.clone()))
-                .unwrap();
+            reactor.submit(Event::new(i * 1000, batch.clone())).unwrap();
         }
 
         // Shutdown should process remaining events

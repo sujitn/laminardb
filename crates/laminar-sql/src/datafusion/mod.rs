@@ -61,7 +61,11 @@
 //! let df = ctx.sql("SELECT * FROM events WHERE value > 100").await?;
 //! ```
 
-/// F075: DataFusion aggregate bridge for streaming aggregation
+/// F075: DataFusion aggregate bridge for streaming aggregation.
+///
+/// Bridges DataFusion's `Accumulator` trait with `laminar-core`'s
+/// `DynAccumulator` / `DynAggregatorFactory` traits. This avoids
+/// duplicating aggregation logic.
 pub mod aggregate_bridge;
 mod bridge;
 mod channel_source;
@@ -76,8 +80,8 @@ pub mod watermark_udf;
 pub mod window_udf;
 
 pub use aggregate_bridge::{
-    create_aggregate_factory, lookup_aggregate_udf, scalar_value_to_result,
-    result_to_scalar_value, DataFusionAccumulatorAdapter, DataFusionAggregateFactory,
+    create_aggregate_factory, lookup_aggregate_udf, result_to_scalar_value, scalar_value_to_result,
+    DataFusionAccumulatorAdapter, DataFusionAggregateFactory,
 };
 pub use bridge::{BridgeSendError, BridgeSender, BridgeStream, BridgeTrySendError, StreamBridge};
 pub use channel_source::ChannelStreamSource;
@@ -308,10 +312,7 @@ mod tests {
         drop(sender);
 
         // Aggregate query on unbounded stream should fail at execution
-        let df = ctx
-            .sql("SELECT COUNT(*) as cnt FROM events")
-            .await
-            .unwrap();
+        let df = ctx.sql("SELECT COUNT(*) as cnt FROM events").await.unwrap();
 
         // Execution should fail because we can't aggregate an infinite stream
         let result = df.collect().await;
@@ -332,11 +333,7 @@ mod tests {
         ctx.register_table("events", Arc::new(provider)).unwrap();
 
         sender
-            .send(test_batch(
-                &schema,
-                vec![3, 1, 2],
-                vec![30.0, 10.0, 20.0],
-            ))
+            .send(test_batch(&schema, vec![3, 1, 2], vec![30.0, 10.0, 20.0]))
             .await
             .unwrap();
         drop(sender);
@@ -534,10 +531,9 @@ mod tests {
         drop(sender);
 
         let mut planner = StreamingPlanner::new();
-        let result =
-            execute_streaming_sql("SELECT id FROM items WHERE id > 1", &ctx, &mut planner)
-                .await
-                .unwrap();
+        let result = execute_streaming_sql("SELECT id FROM items WHERE id > 1", &ctx, &mut planner)
+            .await
+            .unwrap();
 
         match result {
             StreamingSqlResult::Query(qr) => {
@@ -548,15 +544,15 @@ mod tests {
                 }
                 assert_eq!(total, 2); // id=2, id=3
             }
-            _ => panic!("Expected Query result"),
+            StreamingSqlResult::Ddl(_) => panic!("Expected Query result"),
         }
     }
 
     #[tokio::test]
     async fn test_watermark_function_in_filter() {
-        use std::sync::atomic::AtomicI64;
         use arrow_array::TimestampMillisecondArray;
         use arrow_schema::TimeUnit;
+        use std::sync::atomic::AtomicI64;
 
         // Create context with a specific watermark value
         let config = SessionConfig::new()

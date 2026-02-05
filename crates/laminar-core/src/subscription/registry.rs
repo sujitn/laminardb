@@ -219,7 +219,7 @@ impl SubscriptionRegistry {
     /// # Arguments
     ///
     /// * `source_name` — Name of the MV or streaming query.
-    /// * `source_id` — Ring 0 source identifier (from [`NotificationHub`]).
+    /// * `source_id` — Ring 0 source identifier (from `NotificationHub`).
     /// * `config` — Subscription configuration (buffer size, backpressure, etc.).
     pub fn create(
         &self,
@@ -323,10 +323,7 @@ impl SubscriptionRegistry {
     /// Called by the Ring 1 dispatcher on every notification. Uses a read lock
     /// for fast concurrent access.
     #[must_use]
-    pub fn get_senders_for_source(
-        &self,
-        source_id: u32,
-    ) -> Vec<broadcast::Sender<ChangeEvent>> {
+    pub fn get_senders_for_source(&self, source_id: u32) -> Vec<broadcast::Sender<ChangeEvent>> {
         let by_source = self.by_source.read().unwrap();
         let Some(ids) = by_source.get(&source_id) else {
             return Vec::new();
@@ -388,11 +385,7 @@ impl SubscriptionRegistry {
     /// Returns the state of a subscription.
     #[must_use]
     pub fn state(&self, id: SubscriptionId) -> Option<SubscriptionState> {
-        self.subscriptions
-            .read()
-            .unwrap()
-            .get(&id)
-            .map(|e| e.state)
+        self.subscriptions.read().unwrap().get(&id).map(|e| e.state)
     }
 
     /// Increments the delivered event count for a subscription.
@@ -425,6 +418,7 @@ impl Default for SubscriptionRegistry {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -669,11 +663,8 @@ mod tests {
 
         // Register a source in the hub, then subscribe to it in the registry
         let source_id = hub.register_source().unwrap();
-        let (sub_id, _rx) = reg.create(
-            "mv_orders".into(),
-            source_id,
-            SubscriptionConfig::default(),
-        );
+        let (sub_id, _rx) =
+            reg.create("mv_orders".into(), source_id, SubscriptionConfig::default());
 
         // Verify the mapping works
         let senders = reg.get_senders_for_source(source_id);

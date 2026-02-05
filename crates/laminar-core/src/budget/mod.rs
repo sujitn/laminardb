@@ -106,10 +106,7 @@ mod tests {
 
     #[test]
     fn test_yield_reason_display() {
-        assert_eq!(
-            format!("{}", YieldReason::BudgetExceeded),
-            "BudgetExceeded"
-        );
+        assert_eq!(format!("{}", YieldReason::BudgetExceeded), "BudgetExceeded");
         assert_eq!(format!("{}", YieldReason::Ring0Priority), "Ring0Priority");
         assert_eq!(format!("{}", YieldReason::QueueEmpty), "QueueEmpty");
         assert_eq!(
@@ -143,7 +140,10 @@ mod tests {
         }
 
         let alerts = monitor.check_alerts();
-        assert!(!alerts.is_empty(), "Should have alerts for 20 violations in 1 second");
+        assert!(
+            !alerts.is_empty(),
+            "Should have alerts for 20 violations in 1 second"
+        );
         assert_eq!(alerts[0].task, "test_task");
         // Rate should be 20 violations / 1 second = 20/sec
         assert!(
@@ -204,14 +204,14 @@ mod tests {
         }
         let elapsed = start.elapsed();
 
+        #[allow(clippy::cast_sign_loss)]
         let overhead_ns = elapsed.as_nanos() / iterations as u128;
         // Debug builds disable inlining and add extra checks, so the threshold
         // must be relaxed. Release builds should stay under 200ns.
         let threshold = if cfg!(debug_assertions) { 2_000 } else { 200 };
         assert!(
             overhead_ns < threshold,
-            "Budget overhead {} ns is too high (target < {}ns)",
-            overhead_ns, threshold,
+            "Budget overhead {overhead_ns} ns is too high (target < {threshold}ns)",
         );
     }
 }

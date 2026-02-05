@@ -12,7 +12,7 @@ use super::router::RoutedCompletion;
 ///
 /// # Ring 0/1/2 Integration
 ///
-/// The three-ring I/O pattern maps to the LaminarDB ring architecture:
+/// The three-ring I/O pattern maps to the `LaminarDB` ring architecture:
 ///
 /// - **Ring 0 (Hot Path)**: Latency ring completions trigger event processing
 /// - **Ring 1 (Background)**: Main ring completions for WAL/checkpoints
@@ -81,6 +81,7 @@ pub trait RingHandler {
 /// This handler collects completions into vectors and provides
 /// basic Ring 0/1/2 scaffolding.
 #[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SimpleRingHandler {
     /// Latency completions received.
     pub latency_completions: Vec<RoutedCompletion>,
@@ -127,9 +128,7 @@ impl SimpleRingHandler {
     /// Get total completions collected.
     #[must_use]
     pub fn total_completions(&self) -> usize {
-        self.latency_completions.len()
-            + self.main_completions.len()
-            + self.poll_completions.len()
+        self.latency_completions.len() + self.main_completions.len() + self.poll_completions.len()
     }
 
     /// Request shutdown.
@@ -187,6 +186,7 @@ impl RingHandler for SimpleRingHandler {
 /// Callback-based ring handler.
 ///
 /// Allows providing closures for handling completions.
+#[allow(dead_code)]
 pub struct CallbackRingHandler<L, M, P>
 where
     L: FnMut(RoutedCompletion),
@@ -206,6 +206,7 @@ where
     P: FnMut(RoutedCompletion),
 {
     /// Create a new callback handler.
+    #[allow(dead_code)]
     pub fn new(latency: L, main: M, poll: P) -> Self {
         Self {
             latency_callback: latency,
@@ -216,6 +217,7 @@ where
     }
 
     /// Request shutdown.
+    #[allow(dead_code)]
     pub fn request_shutdown(&mut self) {
         self.shutdown = true;
     }

@@ -3,7 +3,7 @@
 //! Operations are classified by their latency requirements:
 //! - **Latency**: Always polled, sub-microsecond response required
 //! - **Main**: Normal I/O, can wait for batch completion
-//! - **Poll**: Storage I/O via IOPOLL (NVMe only)
+//! - **Poll**: Storage I/O via IOPOLL (`NVMe` only)
 
 /// Ring affinity for I/O operations.
 ///
@@ -29,12 +29,12 @@ pub enum RingAffinity {
     /// - Background reads
     Main,
 
-    /// Storage polling operations (NVMe only).
+    /// Storage polling operations (`NVMe` only).
     ///
     /// Use for:
     /// - High-throughput storage reads
     /// - High-throughput storage writes
-    /// - Direct I/O to NVMe devices
+    /// - Direct I/O to `NVMe` devices
     ///
     /// Note: IOPOLL rings cannot be used with socket operations.
     Poll,
@@ -158,9 +158,9 @@ pub enum OperationType {
     StorageRead,
     /// High-throughput storage write.
     StorageWrite,
-    /// Direct I/O read (O_DIRECT).
+    /// Direct I/O read (`O_DIRECT`).
     DirectRead,
-    /// Direct I/O write (O_DIRECT).
+    /// Direct I/O write (`O_DIRECT`).
     DirectWrite,
 }
 
