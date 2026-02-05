@@ -76,26 +76,42 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install hwloc
 
-      # Build release binaries (includes test binaries)
-      - name: Build release (Linux/macOS)
+      # Build and test (debug mode for faster compilation and lower memory usage)
+      - name: Build (Linux/macOS)
         if: runner.os != 'Windows'
-        run: cargo build --workspace --release --all-features --all-targets
+        run: cargo build --workspace --all-features
+        env:
+          CARGO_BUILD_JOBS: 2  # Limit parallelism to reduce memory usage
 
-      - name: Build release (Windows)
+      - name: Build (Windows)
         if: runner.os == 'Windows'
-        run: cargo build --workspace --release --all-targets
+        run: cargo build --workspace
+        env:
+          CARGO_BUILD_JOBS: 2
 
-      # Run tests using the release build
       - name: Run tests (Linux/macOS)
         if: runner.os != 'Windows'
-        run: cargo nextest run --workspace --all-features --release
+        run: cargo nextest run --workspace --all-features
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo nextest run --workspace --release
+        run: cargo nextest run --workspace
 
       - name: Run doc tests
-        run: cargo test --doc --workspace --release
+        run: cargo test --doc --workspace
+
+      # Verify release build compiles (but don't run tests again)
+      - name: Check release build (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: cargo build --workspace --release --all-features
+        env:
+          CARGO_BUILD_JOBS: 2
+
+      - name: Check release build (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --workspace --release
+        env:
+          CARGO_BUILD_JOBS: 2
 
   # ============================================
   # Feature Combinations
