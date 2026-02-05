@@ -317,6 +317,7 @@ mod linux_impl {
     }
 
     #[cfg(test)]
+    #[allow(clippy::manual_let_else, clippy::needless_return)]
     mod tests {
         use super::*;
         use std::collections::HashMap;
