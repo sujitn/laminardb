@@ -70,7 +70,7 @@ hwlocality = { version = "1.0.0-alpha.8", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
 io-uring = { workspace = true, optional = true }
-libbpf-rs = { version = "0.24", optional = true }
+libbpf-rs = { version = "0.26", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
