@@ -12,8 +12,8 @@
 | Consumer | ~~1~~ **0** | ~~4~~ **0** | 2 |
 | Producer | 0 | ~~2~~ **1** | 2 |
 | Serialization | 1 | ~~1~~ **0** | 2 |
-| Streaming | 0 | 2 | 2 |
-| **Total** | ~~4~~ **0** | ~~9~~ **3** | **9** |
+| Streaming | 0 | ~~2~~ **0** | 2 |
+| **Total** | ~~4~~ **0** | ~~9~~ **1** | **9** |
 
 ### Phase 1 Complete (2026-02-05)
 
@@ -42,6 +42,18 @@ Implemented:
 - 12 new unit tests for StartupMode and SR SSL fields
 
 Tests: 39 Kafka config tests, 567 total connector tests passing
+
+### Phase 3 Complete (2026-02-05)
+
+Implemented:
+- KafkaWatermarkTracker for per-partition watermark tracking (F064)
+- KafkaAlignmentMode enum (Pause/WarnOnly/DropExcess)
+- KafkaAlignmentConfig for multi-source coordination (F066)
+- enable.watermark.tracking, alignment.group.id, alignment.max.drift.ms, alignment.mode config keys
+- 6 new unit tests for watermark config parsing
+- 13 unit tests for watermark tracking logic
+
+Tests: 167 Kafka tests passing
 
 ---
 
@@ -138,13 +150,22 @@ pub batch_num_messages: Option<i32>,   // default: 10000
 pub queue_buffering_max_ms: Option<i32>, // linger.ms equivalent
 ```
 
-### 12. Per-Partition Watermarks Integration
+### 12. ✅ Per-Partition Watermarks Integration - COMPLETE
 
-Connect F064 (Per-Partition Watermarks) to KafkaSource.
+Implemented in `watermarks.rs`:
+- `KafkaWatermarkTracker` struct with per-partition tracking
+- `register_partitions()`, `add_partition()`, `remove_partition()` for rebalance
+- `update_partition()` to track event times and compute watermarks
+- `mark_idle()` and `check_idle_partitions()` for idle detection
+- Config fields: `enable_watermark_tracking`, `max_out_of_orderness`, `idle_timeout`
 
-### 13. Watermark Alignment
+### 13. ✅ Watermark Alignment - COMPLETE
 
-Connect F066 (Watermark Alignment Groups) for multi-topic joins.
+Implemented in `watermarks.rs`:
+- `KafkaAlignmentMode` enum (Pause/WarnOnly/DropExcess)
+- `KafkaAlignmentConfig` struct with group_id, max_drift, mode
+- `AlignmentCheckResult` enum for coordination results
+- Config fields: `alignment_group_id`, `alignment_max_drift`, `alignment_mode`
 
 ---
 
@@ -224,9 +245,9 @@ Connect F034 (Connector SDK) rate limiters.
 10. ✅ Header support - include_headers done in Phase 1
 11. Protobuf deserializer - Deferred
 
-### Phase 4: Streaming Integration
-12. Per-partition watermarks (F064)
-13. Watermark alignment (F066)
+### Phase 4: Streaming Integration ✅ COMPLETE
+12. ✅ Per-partition watermarks (F064) - KafkaWatermarkTracker
+13. ✅ Watermark alignment (F066) - KafkaAlignmentConfig
 
 ### Phase 5: Polish
 14-22. Nice-to-have improvements

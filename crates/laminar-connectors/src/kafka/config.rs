@@ -525,6 +525,14 @@ pub struct KafkaSourceConfig {
     pub max_out_of_orderness: Duration,
     /// Timeout before marking a partition as idle.
     pub idle_timeout: Duration,
+    /// Enable per-partition watermark tracking (integrates with F064).
+    pub enable_watermark_tracking: bool,
+    /// Alignment group ID for multi-source coordination (integrates with F066).
+    pub alignment_group_id: Option<String>,
+    /// Maximum allowed drift between sources in alignment group.
+    pub alignment_max_drift: Option<Duration>,
+    /// Enforcement mode for watermark alignment.
+    pub alignment_mode: Option<super::watermarks::KafkaAlignmentMode>,
 
     // -- Backpressure --
     /// Channel fill ratio at which to pause consumption.
@@ -576,6 +584,10 @@ impl Default for KafkaSourceConfig {
             max_partition_fetch_bytes: None,
             max_out_of_orderness: Duration::from_secs(5),
             idle_timeout: Duration::from_secs(30),
+            enable_watermark_tracking: false,
+            alignment_group_id: None,
+            alignment_max_drift: None,
+            alignment_mode: None,
             backpressure_high_watermark: 0.8,
             backpressure_low_watermark: 0.5,
             kafka_properties: HashMap::new(),
@@ -733,6 +745,22 @@ impl KafkaSourceConfig {
             .get_parsed::<u64>("idle.timeout.ms")?
             .unwrap_or(30_000);
 
+        let enable_watermark_tracking = config
+            .get_parsed::<bool>("enable.watermark.tracking")?
+            .unwrap_or(false);
+
+        let alignment_group_id = config.get("alignment.group.id").map(String::from);
+
+        let alignment_max_drift_ms = config.get_parsed::<u64>("alignment.max.drift.ms")?;
+
+        let alignment_mode = match config.get("alignment.mode") {
+            Some(s) => Some(
+                s.parse::<super::watermarks::KafkaAlignmentMode>()
+                    .map_err(ConnectorError::ConfigurationError)?,
+            ),
+            None => None,
+        };
+
         let backpressure_high_watermark = config
             .get_parsed::<f64>("backpressure.high.watermark")?
             .unwrap_or(0.8);
@@ -779,6 +807,10 @@ impl KafkaSourceConfig {
             max_partition_fetch_bytes,
             max_out_of_orderness: Duration::from_millis(max_out_of_orderness_ms),
             idle_timeout: Duration::from_millis(idle_timeout_ms),
+            enable_watermark_tracking,
+            alignment_group_id,
+            alignment_max_drift: alignment_max_drift_ms.map(Duration::from_millis),
+            alignment_mode,
             backpressure_high_watermark,
             backpressure_low_watermark,
             kafka_properties,
@@ -1604,5 +1636,69 @@ mod tests {
             cfg.schema_registry_ssl_key_location,
             Some("/key.pem".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_watermark_defaults() {
+        let cfg = KafkaSourceConfig::from_config(&make_config(&[])).unwrap();
+        assert_eq!(cfg.max_out_of_orderness, Duration::from_secs(5));
+        assert_eq!(cfg.idle_timeout, Duration::from_secs(30));
+        assert!(!cfg.enable_watermark_tracking);
+        assert!(cfg.alignment_group_id.is_none());
+        assert!(cfg.alignment_max_drift.is_none());
+        assert!(cfg.alignment_mode.is_none());
+    }
+
+    #[test]
+    fn test_parse_watermark_tracking_enabled() {
+        let cfg = KafkaSourceConfig::from_config(&make_config(&[
+            ("enable.watermark.tracking", "true"),
+            ("max.out.of.orderness.ms", "10000"),
+            ("idle.timeout.ms", "60000"),
+        ]))
+        .unwrap();
+
+        assert!(cfg.enable_watermark_tracking);
+        assert_eq!(cfg.max_out_of_orderness, Duration::from_millis(10_000));
+        assert_eq!(cfg.idle_timeout, Duration::from_millis(60_000));
+    }
+
+    #[test]
+    fn test_parse_alignment_config() {
+        use crate::kafka::KafkaAlignmentMode;
+
+        let cfg = KafkaSourceConfig::from_config(&make_config(&[
+            ("alignment.group.id", "orders-payments"),
+            ("alignment.max.drift.ms", "300000"),
+            ("alignment.mode", "pause"),
+        ]))
+        .unwrap();
+
+        assert_eq!(cfg.alignment_group_id, Some("orders-payments".to_string()));
+        assert_eq!(
+            cfg.alignment_max_drift,
+            Some(Duration::from_millis(300_000))
+        );
+        assert_eq!(cfg.alignment_mode, Some(KafkaAlignmentMode::Pause));
+    }
+
+    #[test]
+    fn test_parse_alignment_mode_variants() {
+        use crate::kafka::KafkaAlignmentMode;
+
+        let cfg = KafkaSourceConfig::from_config(&make_config(&[("alignment.mode", "warn-only")]))
+            .unwrap();
+        assert_eq!(cfg.alignment_mode, Some(KafkaAlignmentMode::WarnOnly));
+
+        let cfg =
+            KafkaSourceConfig::from_config(&make_config(&[("alignment.mode", "drop-excess")]))
+                .unwrap();
+        assert_eq!(cfg.alignment_mode, Some(KafkaAlignmentMode::DropExcess));
+    }
+
+    #[test]
+    fn test_parse_alignment_mode_invalid() {
+        let config = make_config(&[("alignment.mode", "invalid")]);
+        assert!(KafkaSourceConfig::from_config(&config).is_err());
     }
 }

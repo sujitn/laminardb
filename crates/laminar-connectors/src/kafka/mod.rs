@@ -46,6 +46,7 @@ pub mod metrics;
 pub mod offsets;
 pub mod rebalance;
 pub mod source;
+pub mod watermarks;
 
 // Sink modules
 pub mod avro_serializer;
@@ -66,6 +67,10 @@ pub use config::{
 pub use metrics::KafkaSourceMetrics;
 pub use offsets::OffsetTracker;
 pub use source::KafkaSource;
+pub use watermarks::{
+    AlignmentCheckResult, KafkaAlignmentConfig, KafkaAlignmentMode, KafkaWatermarkTracker,
+    WatermarkMetrics, WatermarkMetricsSnapshot,
+};
 
 // Sink re-exports
 pub use avro_serializer::AvroSerializer;
@@ -252,6 +257,26 @@ fn kafka_source_config_keys() -> Vec<ConfigKeySpec> {
             "5000",
         ),
         ConfigKeySpec::optional("idle.timeout.ms", "Idle partition timeout", "30000"),
+        ConfigKeySpec::optional(
+            "enable.watermark.tracking",
+            "Enable per-partition watermark tracking (F064)",
+            "false",
+        ),
+        ConfigKeySpec::optional(
+            "alignment.group.id",
+            "Alignment group ID for multi-source coordination (F066)",
+            "",
+        ),
+        ConfigKeySpec::optional(
+            "alignment.max.drift.ms",
+            "Maximum allowed drift between sources in alignment group",
+            "",
+        ),
+        ConfigKeySpec::optional(
+            "alignment.mode",
+            "Alignment enforcement mode (pause/warn-only/drop-excess)",
+            "pause",
+        ),
         // Backpressure
         ConfigKeySpec::optional(
             "backpressure.high.watermark",
