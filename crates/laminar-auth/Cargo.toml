@@ -11,7 +11,7 @@ description = "Authentication and authorization for LaminarDB"
 
 [dependencies]
 # JWT support
-jsonwebtoken = "9.2"
+jsonwebtoken = "10.3"
 
 # Cryptography
 ring = "0.17"
