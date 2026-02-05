@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 48 | 12 | 0 | 0 | 36 |
+| Phase 3 | 49 | 13 | 0 | 0 | 36 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **116** | **33** | **0** | **0** | **83** |
+| **Total** | **117** | **34** | **0** | **0** | **83** |
 
 ## Status Legend
 
@@ -175,6 +175,7 @@ See [Cloud Storage Index](phase-3/cloud/INDEX.md).
 | F031C | Delta Lake Compaction | 📝 | [Link](phase-3/F031C-delta-lake-compaction.md) |
 | F031D | Delta Lake Schema Evolution | 📝 | [Link](phase-3/F031D-delta-lake-schema-evolution.md) |
 | F032 | Iceberg Sink | ✅ | [Link](phase-3/F032-iceberg-sink.md) |
+| F032A | Iceberg I/O Integration | 📝 | [Link](phase-3/F032A-iceberg-io.md) |
 | F033 | Parquet File Source | 📝 | [Link](phase-3/F033-parquet-source.md) |
 | F034 | Connector SDK | ✅ | [Link](phase-3/F034-connector-sdk.md) |
 | F058 | Async State Access | 📝 | [Link](phase-3/F058-async-state-access.md) |
@@ -241,6 +242,6 @@ Remaining work for Phase 3:
 |-----|---------|----------|-------|
 | Delta Lake I/O | F031A-D | P0/P1 | Blocked by deltalake crate version |
 | MySQL CDC I/O | F028A | P1 | Ready - mysql_async now using rustls (no OpenSSL) |
-| Iceberg I/O | F032A | P1 | Business logic done; iceberg-rust crate deferred |
+| Iceberg I/O | F032A | P1 | Blocked by iceberg-datafusion 0.9.0 (needs DF 52.0 compat) |
 
 For historical gap analysis, see the [research documents](../research/).
