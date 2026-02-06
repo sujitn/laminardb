@@ -454,6 +454,11 @@ pub unsafe extern "C" fn laminar_subscription_free(handle: *mut LaminarSubscript
 // For now, use the synchronous laminar_writer_write() API.
 
 #[cfg(test)]
+#[allow(
+    clippy::borrow_as_ptr,
+    clippy::manual_c_str_literals,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
     use crate::ffi::connection::{laminar_close, laminar_execute, laminar_open};

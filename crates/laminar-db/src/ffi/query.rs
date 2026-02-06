@@ -543,6 +543,7 @@ pub unsafe extern "C" fn laminar_batch_free(batch: *mut LaminarRecordBatch) {
 }
 
 #[cfg(test)]
+#[allow(clippy::borrow_as_ptr)]
 mod tests {
     use super::*;
     use crate::ffi::connection::{laminar_close, laminar_open, laminar_query};

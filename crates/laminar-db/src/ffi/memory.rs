@@ -76,13 +76,13 @@ mod tests {
 
     #[test]
     fn test_version() {
-        let version_ptr = laminar_version();
-        assert!(!version_ptr.is_null());
+        let ptr = laminar_version();
+        assert!(!ptr.is_null());
 
-        // SAFETY: version_ptr points to a static string
-        let version_str = unsafe { CStr::from_ptr(version_ptr).to_str().unwrap() };
-        assert!(!version_str.is_empty());
+        // SAFETY: ptr points to a static string
+        let version = unsafe { CStr::from_ptr(ptr).to_str().unwrap() };
+        assert!(!version.is_empty());
         // Should contain version number pattern
-        assert!(version_str.chars().any(|c| c.is_ascii_digit()));
+        assert!(version.chars().any(|c| c.is_ascii_digit()));
     }
 }

@@ -145,13 +145,13 @@ mod tests {
         let code = laminar_last_error_code();
         assert_eq!(code, LAMINAR_ERR_TABLE_NOT_FOUND);
 
-        let msg_ptr = laminar_last_error();
-        assert!(!msg_ptr.is_null());
+        let error_ptr = laminar_last_error();
+        assert!(!error_ptr.is_null());
 
         // SAFETY: We just set this error, pointer is valid
-        let msg = unsafe { std::ffi::CStr::from_ptr(msg_ptr) };
-        let msg_str = msg.to_str().unwrap();
-        assert!(msg_str.contains("test_table"));
+        let error_cstr = unsafe { std::ffi::CStr::from_ptr(error_ptr) };
+        let message = error_cstr.to_str().unwrap();
+        assert!(message.contains("test_table"));
     }
 
     #[test]

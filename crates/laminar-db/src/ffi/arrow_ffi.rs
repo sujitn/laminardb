@@ -288,6 +288,7 @@ pub unsafe extern "C" fn laminar_batch_create(
 }
 
 #[cfg(test)]
+#[allow(clippy::borrow_as_ptr)]
 mod tests {
     use super::*;
     use arrow::array::{Int64Array, StringArray};

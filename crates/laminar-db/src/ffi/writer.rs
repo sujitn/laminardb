@@ -228,6 +228,7 @@ pub unsafe extern "C" fn laminar_writer_free(writer: *mut LaminarWriter) {
 }
 
 #[cfg(test)]
+#[allow(clippy::borrow_as_ptr)]
 mod tests {
     use super::*;
     use crate::ffi::connection::{laminar_close, laminar_execute, laminar_open};

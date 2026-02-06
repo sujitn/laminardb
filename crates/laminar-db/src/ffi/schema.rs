@@ -283,6 +283,7 @@ pub unsafe extern "C" fn laminar_schema_free(schema: *mut LaminarSchema) {
 }
 
 #[cfg(test)]
+#[allow(clippy::borrow_as_ptr)]
 mod tests {
     use std::ptr;
 
