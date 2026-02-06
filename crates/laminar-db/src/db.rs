@@ -1282,6 +1282,9 @@ impl LaminarDB {
         stream_regs: HashMap<String, crate::connector_manager::StreamRegistration>,
     ) -> Result<(), DbError> {
         use crate::connector_manager::{build_sink_config, build_source_config};
+        use crate::pipeline_checkpoint::{
+            PipelineCheckpointManager, SerializableSourceCheckpoint,
+        };
         use crate::stream_executor::StreamExecutor;
         use laminar_connectors::config::ConnectorConfig;
         use laminar_connectors::connector::{SinkConnector, SourceConnector};
@@ -1359,6 +1362,44 @@ impl LaminarDB {
                 .map_err(|e| DbError::Connector(format!("Failed to open sink '{name}': {e}")))?;
         }
 
+        // Create checkpoint manager if configured
+        let checkpoint_config = self.config.checkpoint.clone();
+        let storage_dir = self.config.storage_dir.clone();
+        let mut pipeline_ckpt_mgr = checkpoint_config.as_ref().map(|cp_config| {
+            let data_dir = cp_config
+                .data_dir
+                .clone()
+                .or(storage_dir.clone())
+                .unwrap_or_else(|| std::path::PathBuf::from("./data"));
+            let max_retained = cp_config.max_retained.unwrap_or(3);
+            PipelineCheckpointManager::new(data_dir, max_retained)
+        });
+
+        // Recovery: restore source offsets and rollback sink epochs
+        if let Some(ref mut mgr) = pipeline_ckpt_mgr {
+            if let Ok(Some(checkpoint)) = mgr.load_latest() {
+                for (name, source, _) in &mut sources {
+                    if let Some(src_cp) = checkpoint.source_offsets.get(name) {
+                        let restored = src_cp.to_source_checkpoint();
+                        if let Err(e) = source.restore(&restored).await {
+                            tracing::warn!(source=%name, error=%e, "Source restore failed");
+                        }
+                    }
+                }
+                for (_name, sink, _, _) in &mut sinks {
+                    if sink.capabilities().exactly_once {
+                        let _ = sink.rollback_epoch(checkpoint.epoch).await;
+                    }
+                }
+                mgr.set_epoch(checkpoint.epoch);
+                eprintln!(
+                    "[laminar-db] Recovered from checkpoint epoch {}",
+                    checkpoint.epoch
+                );
+                tracing::info!(epoch = checkpoint.epoch, "Recovered from pipeline checkpoint");
+            }
+        }
+
         // Get stream source handles so results also flow to db.subscribe().
         let mut stream_sources: Vec<(String, streaming::Source<crate::catalog::ArrowRecord>)> =
             Vec::new();
@@ -1387,12 +1428,17 @@ impl LaminarDB {
         // Spawn processing loop
         let shutdown = self.shutdown_signal.clone();
         let max_poll = self.config.default_buffer_size.min(1024);
+        let checkpoint_interval = checkpoint_config
+            .as_ref()
+            .and_then(|c| c.interval_ms)
+            .map(std::time::Duration::from_millis);
 
         let handle = tokio::spawn(async move {
             eprintln!("[laminar-db] Connector pipeline task started");
             let mut cycle_count: u64 = 0;
             let mut total_batches: u64 = 0;
             let mut total_records: u64 = 0;
+            let mut last_checkpoint = std::time::Instant::now();
             loop {
                 // Check for shutdown
                 tokio::select! {
@@ -1513,11 +1559,91 @@ impl LaminarDB {
                     );
                     tracing::debug!(cycles = cycle_count, "Pipeline processing");
                 }
+
+                // Periodic checkpoint
+                if let (Some(interval), Some(ref mut mgr)) =
+                    (checkpoint_interval, &mut pipeline_ckpt_mgr)
+                {
+                    if last_checkpoint.elapsed() >= interval {
+                        let epoch = mgr.next_epoch();
+
+                        // Begin epoch on exactly-once sinks
+                        for (_, sink, _, _) in &mut sinks {
+                            if sink.capabilities().exactly_once {
+                                let _ = sink.begin_epoch(epoch).await;
+                            }
+                        }
+
+                        // Capture source offsets
+                        let mut source_offsets = HashMap::new();
+                        for (name, source, _) in &sources {
+                            source_offsets.insert(
+                                name.clone(),
+                                SerializableSourceCheckpoint::from(&source.checkpoint()),
+                            );
+                        }
+
+                        // Build and persist
+                        #[allow(clippy::cast_possible_truncation)]
+                        let timestamp_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let checkpoint = crate::pipeline_checkpoint::PipelineCheckpoint {
+                            epoch,
+                            timestamp_ms,
+                            source_offsets,
+                            sink_epochs: HashMap::new(),
+                        };
+
+                        if let Err(e) = mgr.save(&checkpoint) {
+                            tracing::warn!(error = %e, "Checkpoint save failed");
+                        } else {
+                            // Commit epoch on exactly-once sinks
+                            for (_, sink, _, _) in &mut sinks {
+                                if sink.capabilities().exactly_once {
+                                    let _ = sink.commit_epoch(epoch).await;
+                                }
+                            }
+                            tracing::info!(epoch, "Pipeline checkpoint completed");
+                        }
+
+                        last_checkpoint = std::time::Instant::now();
+                    }
+                }
             }
 
             eprintln!(
                 "[laminar-db] Pipeline stopping after {cycle_count} cycles ({total_batches} batches, {total_records} records)",
             );
+
+            // Final checkpoint before shutdown
+            if let Some(ref mut mgr) = pipeline_ckpt_mgr {
+                let epoch = mgr.next_epoch();
+                let mut source_offsets = HashMap::new();
+                for (name, source, _) in &sources {
+                    source_offsets.insert(
+                        name.clone(),
+                        SerializableSourceCheckpoint::from(&source.checkpoint()),
+                    );
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                let timestamp_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let checkpoint = crate::pipeline_checkpoint::PipelineCheckpoint {
+                    epoch,
+                    timestamp_ms,
+                    source_offsets,
+                    sink_epochs: HashMap::new(),
+                };
+                if let Err(e) = mgr.save(&checkpoint) {
+                    tracing::warn!(error = %e, "Final checkpoint save failed");
+                } else {
+                    tracing::info!(epoch, "Final pipeline checkpoint saved");
+                }
+            }
 
             // Close all connectors
             for (name, source, _) in &mut sources {

@@ -32,6 +32,7 @@ datafusion = { workspace = true }
 datafusion-common = { workspace = true }
 
 # Serialization
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Error handling
@@ -54,4 +55,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = { workspace = true }
 laminar-derive = { path = "../laminar-derive", version = "0.1.0" }

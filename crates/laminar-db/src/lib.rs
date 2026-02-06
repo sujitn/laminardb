@@ -31,6 +31,7 @@ mod connector_manager;
 mod db;
 mod error;
 mod handle;
+mod pipeline_checkpoint;
 mod sql_utils;
 mod stream_executor;
 
@@ -63,6 +64,7 @@ pub use catalog::{SourceCatalog, SourceEntry};
 pub use config::LaminarConfig;
 pub use db::LaminarDB;
 pub use error::DbError;
+pub use pipeline_checkpoint::PipelineCheckpoint;
 pub use handle::{
     DdlInfo, ExecuteResult, FromBatch, PipelineEdge, PipelineNode, PipelineNodeType,
     PipelineTopology, QueryHandle, QueryInfo, SinkInfo, SourceHandle, SourceInfo, StreamInfo,

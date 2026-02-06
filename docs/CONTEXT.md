@@ -8,6 +8,20 @@
 **Date**: 2026-02-06
 
 ### What Was Accomplished
+- **F-CONN-001: Checkpoint Recovery Wiring** - IMPLEMENTATION COMPLETE (12 new tests, 141 total laminar-db tests)
+  - New `pipeline_checkpoint.rs` module in `laminar-db` crate:
+    - `SerializableSourceCheckpoint`: Serde-friendly mirror of `SourceCheckpoint` with bidirectional conversion
+    - `PipelineCheckpoint`: Point-in-time snapshot with source offsets and sink epochs (JSON serialized)
+    - `PipelineCheckpointManager`: Save/load/prune checkpoint files with `latest.txt` pointer (Windows-compatible)
+  - Added `metadata()` accessor to `SourceCheckpoint` in `laminar-connectors`
+  - Wired into `start_connector_pipeline()` in `db.rs`:
+    - **Recovery**: On startup, loads latest checkpoint, restores source offsets, rolls back sink epochs
+    - **Periodic checkpoint**: Timer-based checkpoint with begin_epoch/commit_epoch on exactly-once sinks
+    - **Final checkpoint**: Saves checkpoint before closing connectors on shutdown
+  - Uses `StreamCheckpointConfig` for interval/data_dir/max_retained settings
+  - All clippy clean with `-D warnings`, 141 laminar-db tests pass
+
+Previous session (2026-02-06):
 - **F028A: MySQL CDC Binlog I/O Integration** - IMPLEMENTATION COMPLETE (21 new tests, 122 MySQL tests with feature)
   - New `cdc/mysql/mysql_io.rs` module for real MySQL binlog replication I/O:
     - `connect()`: Establish MySQL connection via `mysql_async::Conn::new()` with SSL config
@@ -296,10 +310,10 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1347 core + 440 sql + 115 storage + 164 laminar-db (with ffi) + 427 connectors + 4 demo = 2497 (base with ffi), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only + 13 delta-lake-only = 2819 (all feature flags)
+**Total tests**: 1347 core + 440 sql + 115 storage + 178 laminar-db (with ffi) + 427 connectors + 4 demo = 2511 (base with ffi), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only + 13 delta-lake-only = 2833 (all feature flags)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 44/56 features COMPLETE (79%)**
+**Phase 3 Connectors & Integration: 45/56 features COMPLETE (80%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -324,7 +338,8 @@ Previous session (2026-01-28):
 - Arrow C Data Interface complete (F-FFI-003) — 5 new tests, zero-copy export/import via FFI_ArrowArray/FFI_ArrowSchema
 - Async FFI Callbacks complete (F-FFI-004) — 9 new tests (164 total), callback-based subscription notifications from background thread
 - SQL Extensions: F-SQL-002 (LAG/LEAD) + F-SQL-003 (ROW_NUMBER/RANK/DENSE_RANK) — 41 new tests, analytic window functions + ranking bug fix
-- Next: F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
+- **Checkpoint Recovery Wiring complete (F-CONN-001)** — 12 new tests, pipeline checkpoint persistence + recovery + periodic + final checkpoint
+- Next: F-CONN-002/003, F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
 
 ### Immediate Next Steps
 1. F031B/C/D: Delta Lake Recovery, Compaction, Schema Evolution
