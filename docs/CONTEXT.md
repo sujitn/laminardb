@@ -8,6 +8,22 @@
 **Date**: 2026-02-06
 
 ### What Was Accomplished
+- **F028A: MySQL CDC Binlog I/O Integration** - IMPLEMENTATION COMPLETE (21 new tests, 122 MySQL tests with feature)
+  - New `cdc/mysql/mysql_io.rs` module for real MySQL binlog replication I/O:
+    - `connect()`: Establish MySQL connection via `mysql_async::Conn::new()` with SSL config
+    - `start_binlog_stream()`: Create binlog replication stream (GTID or file/position mode)
+    - `read_events()`: Poll binlog stream with timeout for up to N events
+    - `decode_binlog_event()`: Convert mysql_async event types to BinlogMessage enum
+    - Helper functions: `build_opts()`, `build_ssl_opts()`, `build_binlog_request()`, `binlog_value_to_column_value()`, `mysql_value_to_column_value()`, `gtid_set_to_sids()`, `sid_bytes_to_gtid()`
+  - Updated `source.rs`: Added `binlog_stream` field, real I/O in `open()`/`poll_batch()`/`close()`
+  - Updated `gtid.rs`: Added `iter_sets()` method to `GtidSet`
+  - Updated `Cargo.toml`: Added `tokio-stream` to `mysql-cdc` feature
+  - Feature-gated behind `mysql-cdc` Cargo feature (uses rustls, no OpenSSL)
+  - All 119 existing business-logic tests continue to work without the feature
+  - Created feature spec `docs/features/phase-3/F028A-mysql-cdc-io.md`
+  - All clippy clean with `-D warnings`, full workspace passes
+
+Previous session (2026-02-06):
 - **F-FFI-004: Async FFI Callbacks** - IMPLEMENTATION COMPLETE (9 new tests, 164 total)
   - New `ffi/callback.rs` module for push-based subscription notifications:
     - `LaminarSubscriptionCallback`: Function pointer type for data callbacks
@@ -24,6 +40,25 @@
   - After cancel returns, no more callbacks will fire (safe to free user_data)
   - Created feature spec `docs/features/phase-3/F-FFI-004-async-callbacks.md`
   - All clippy clean with `-D warnings`, 164 laminar-db tests pass with `--features ffi`
+
+- **F-SQL-002: LAG/LEAD Window Functions** - IMPLEMENTATION COMPLETE (31 new tests)
+  - `parser/analytic_parser.rs` (NEW): AnalyticFunctionType enum (Lag/Lead/FirstValue/LastValue/NthValue), AnalyticFunctionInfo, AnalyticWindowAnalysis, analyze_analytic_functions() — walks SELECT items for Expr::Function with OVER clause (11 tests)
+  - `translator/analytic_translator.rs` (NEW): AnalyticWindowConfig, AnalyticFunctionConfig, from_analysis() conversion (5 tests)
+  - `operator/lag_lead.rs` (NEW): LagLeadConfig, LagLeadFunctionSpec, LagLeadOperator implementing Operator trait — per-partition LAG history (VecDeque) and LEAD pending queues, watermark flush, checkpoint/restore (13 tests)
+  - `planner/mod.rs`: Added analytic_config to QueryPlan and QueryAnalysis, wired into plan_standard_statement() and analyze_query() (2 tests)
+  - `parser/mod.rs`: Added pub mod analytic_parser
+  - `translator/mod.rs`: Added pub mod analytic_translator + re-exports
+  - `operator/mod.rs`: Already had pub mod lag_lead
+  - Streaming semantics: LAG emits immediately (history buffer), LEAD buffers and waits for offset future events
+  - All clippy clean with `-D warnings`
+
+- **F-SQL-003: ROW_NUMBER/RANK/DENSE_RANK Enhancement** - IMPLEMENTATION COMPLETE (10 new tests)
+  - `parser/order_analyzer.rs`: Added RankType enum (RowNumber/Rank/DenseRank), fixed bug where detect_row_number_pattern() was called AFTER order_columns.is_empty() early return, extended extract_row_number_info() for RANK/DENSE_RANK (8 new + 2 fixed tests)
+  - `translator/order_translator.rs`: Added rank_type field to PerGroupTopKConfig, updated from_analysis() (2 new + 1 fixed test)
+  - `translator/mod.rs`: Re-exported RankType
+  - Bug fix: Subquery pattern `SELECT * FROM (...ROW_NUMBER()...) WHERE rn <= 5` now correctly detected
+
+- Feature spec docs created: F-SQL-002-lag-lead-functions.md, F-SQL-003-ranking-functions.md
 
 Previous session (2026-02-06):
 - **F-FFI-003: Arrow C Data Interface** - IMPLEMENTATION COMPLETE (5 new tests, 155 total)
@@ -261,10 +296,10 @@ Previous session (2026-01-28):
 - Performance Audit: ALL 10 issues fixed
 - F074-F077: Aggregation Semantics Enhancement - COMPLETE (219 tests)
 
-**Total tests**: 1272 core + 412 sql + 115 storage + 164 laminar-db (with ffi) + 440 connectors + 4 demo = 2407 (base), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only + 13 delta-lake-only = 2729 (with feature flags)
+**Total tests**: 1347 core + 440 sql + 115 storage + 164 laminar-db (with ffi) + 427 connectors + 4 demo = 2497 (base with ffi), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only + 13 delta-lake-only = 2819 (all feature flags)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 41/53 features COMPLETE (77%)**
+**Phase 3 Connectors & Integration: 44/56 features COMPLETE (79%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -273,6 +308,7 @@ Previous session (2026-01-28):
 - PostgreSQL CDC Source complete (F027) — 107 tests, full pgoutput decoder
 - PostgreSQL Sink complete (F027B) — 84 tests, COPY BINARY + upsert + exactly-once
 - MySQL CDC Source complete (F028) — 119 tests, binlog decoder + GTID + Z-set changelog
+- **MySQL CDC I/O Integration complete (F028A)** — 21 new tests, mysql_async binlog replication with SSL/GTID/file-position
 - Delta Lake Sink business logic complete (F031) — 73 tests, buffering + epoch management + changelog splitting
 - Delta Lake I/O Integration complete (F031A) — 13 new integration tests, real deltalake crate writes with exactly-once txn metadata
 - Apache Iceberg Sink business logic complete (F032) — 103 tests, REST/Glue/Hive catalogs + partition transforms + equality deletes
@@ -283,22 +319,22 @@ Previous session (2026-01-28):
 - Performance Validation complete (F-DAG-007) — 16 benchmarks, performance audit + optimizations
 - Reactive Subscription System complete (F-SUB-001 to F-SUB-008) — 8 features, 10 new modules
 - Cloud Storage Infrastructure complete (F-CLOUD-001/002/003) — 82 tests, integrated with Delta Lake Sink
-- **FFI API Module complete (F-FFI-001)** — 14 new tests, Connection/Writer/QueryStream/ArrowSubscription with numeric error codes and Send+Sync
-- **C Header Generation complete (F-FFI-002)** — 21 new tests, extern "C" functions with opaque handles, thread-local error storage
-- **Arrow C Data Interface complete (F-FFI-003)** — 5 new tests, zero-copy export/import via FFI_ArrowArray/FFI_ArrowSchema
-- **Async FFI Callbacks complete (F-FFI-004)** — 9 new tests (164 total), callback-based subscription notifications from background thread
-- Next: F028A MySQL CDC I/O, F031B/C/D Delta Lake advanced, or F032A Iceberg I/O
+- FFI API Module complete (F-FFI-001) — 14 new tests, Connection/Writer/QueryStream/ArrowSubscription with numeric error codes and Send+Sync
+- C Header Generation complete (F-FFI-002) — 21 new tests, extern "C" functions with opaque handles, thread-local error storage
+- Arrow C Data Interface complete (F-FFI-003) — 5 new tests, zero-copy export/import via FFI_ArrowArray/FFI_ArrowSchema
+- Async FFI Callbacks complete (F-FFI-004) — 9 new tests (164 total), callback-based subscription notifications from background thread
+- SQL Extensions: F-SQL-002 (LAG/LEAD) + F-SQL-003 (ROW_NUMBER/RANK/DENSE_RANK) — 41 new tests, analytic window functions + ranking bug fix
+- Next: F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
 
 ### Immediate Next Steps
-1. F028A: MySQL CDC binlog I/O (mysql_async now ready with rustls)
-2. F031B/C/D: Delta Lake Recovery, Compaction, Schema Evolution
-3. F032A: Iceberg I/O (when iceberg-rust crate can be added)
-4. F029: MongoDB CDC Source
-5. F033: Parquet File Source
+1. F031B/C/D: Delta Lake Recovery, Compaction, Schema Evolution
+2. F032A: Iceberg I/O (when iceberg-rust crate can be added)
+3. F029: MongoDB CDC Source
+4. F033: Parquet File Source
 
 ### Open Issues
 - **deltalake crate version**: ✅ RESOLVED - Using git main branch with DataFusion 52.x. F031A complete.
-- **mysql_async crate**: ✅ RESOLVED - Now using rustls TLS backend (no OpenSSL required). F028A ready for implementation.
+- **mysql_async crate**: ✅ RESOLVED - F028A complete with rustls TLS backend (no OpenSSL required).
 - **iceberg-rust crate**: Deferred until version compatible with workspace. Business logic complete in F032.
 - None currently blocking.
 
@@ -401,6 +437,7 @@ laminar-core/src/
     changelog   # F076: RetractableFirst/LastValueAccumulator
     asof_join   # F056: ASOF joins
     temporal_join # F021: Temporal joins
+    lag_lead    # F-SQL-002: LAG/LEAD analytic window operator (per-partition history + pending queues)
 
 laminar-sql/src/       # F006B: Production SQL Parser
   parser/              # SQL parsing with streaming extensions
@@ -410,10 +447,14 @@ laminar-sql/src/       # F006B: Production SQL Parser
     late_data_parser   # Late data handling
     join_parser        # Stream-stream/lookup join analysis
     aggregation_parser # F077: 30+ aggregates, FILTER, WITHIN GROUP, datafusion_name()
-  planner/             # StreamingPlanner, QueryPlan
+    analytic_parser    # F-SQL-002: LAG/LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE analytic window functions
+    order_analyzer     # F-SQL-003: ROW_NUMBER/RANK/DENSE_RANK detection, RankType enum
+  planner/             # StreamingPlanner, QueryPlan (+ analytic_config for LAG/LEAD)
   translator/          # Operator configuration builders
     window_translator  # WindowOperatorConfig
     join_translator    # JoinOperatorConfig (stream/lookup)
+    analytic_translator # F-SQL-002: AnalyticWindowConfig, AnalyticFunctionConfig
+    order_translator   # F-SQL-003: PerGroupTopKConfig with RankType
     streaming_ddl      # F-STREAM-007: CREATE SOURCE/SINK → SourceDefinition/SinkDefinition
   datafusion/          # F005/F005B: DataFusion integration
     window_udf         # F005B: TUMBLE/HOP/SESSION scalar UDFs

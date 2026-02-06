@@ -13,24 +13,23 @@ env:
 
 jobs:
   # ============================================
-  # Verify Tag Matches Cargo.toml
+  # Extract Version from Git Tag
   # ============================================
   verify:
-    name: Verify Release
+    name: Extract Version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v6
-      - name: Extract and verify version
+      - name: Extract version from tag
         id: version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) doesn't match Cargo.toml ($CARGO_VERSION)"
+          # Validate semver format
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not valid semver"
             exit 1
           fi
 
@@ -42,6 +41,8 @@ jobs:
           else
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
+
+          echo "Release version: $TAG_VERSION"
 
   # ============================================
   # Run CI First
@@ -86,6 +87,25 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${{ needs.verify.outputs.version }}"
+          echo "Setting workspace version to $VERSION"
+
+          # Use perl for cross-platform in-place editing (macOS sed differs from GNU sed)
+          # Update workspace version in root Cargo.toml
+          perl -i -pe 's/^version = ".*"/version = "'"$VERSION"'"/' Cargo.toml
+
+          # Update inter-crate path dependency versions
+          find crates examples -name Cargo.toml -exec \
+            perl -i -pe 's/(path = "\.\.\/[^"]*", )version = "[^"]*"/${1}version = "'"$VERSION"'"/g' {} +
+          find crates examples -name Cargo.toml -exec \
+            perl -i -pe 's/(path = "\.\.\/\.\.\/[^"]*", )version = "[^"]*"/${1}version = "'"$VERSION"'"/g' {} +
+
+          echo "Workspace version:"
+          grep '^version' Cargo.toml
+
       - name: Install cross
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
@@ -102,25 +122,37 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ needs.verify.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          RELEASE_DIR="target/${TARGET}/release"
           mkdir -p artifacts
 
-          # Copy release binaries
+          # Copy the laminardb server binary
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/*.exe artifacts/ 2>/dev/null || true
-            cp target/${{ matrix.target }}/release/*.dll artifacts/ 2>/dev/null || true
+            cp "${RELEASE_DIR}/laminardb.exe" artifacts/ 2>/dev/null || true
+            cp ${RELEASE_DIR}/*.dll artifacts/ 2>/dev/null || true
           else
-            # Copy library files
-            cp target/${{ matrix.target }}/release/*.so artifacts/ 2>/dev/null || true
-            cp target/${{ matrix.target }}/release/*.dylib artifacts/ 2>/dev/null || true
-            cp target/${{ matrix.target }}/release/*.a artifacts/ 2>/dev/null || true
+            cp "${RELEASE_DIR}/laminardb" artifacts/ 2>/dev/null || true
+            cp ${RELEASE_DIR}/*.so artifacts/ 2>/dev/null || true
+            cp ${RELEASE_DIR}/*.dylib artifacts/ 2>/dev/null || true
+            cp ${RELEASE_DIR}/*.a artifacts/ 2>/dev/null || true
           fi
+
+          # Verify artifacts directory is not empty
+          if [ -z "$(ls -A artifacts)" ]; then
+            echo "::error::No artifacts found in ${RELEASE_DIR}"
+            ls -la "${RELEASE_DIR}/" | head -30
+            exit 1
+          fi
+
+          echo "Packaging artifacts:"
+          ls -la artifacts/
 
           # Create archive
           cd artifacts
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../laminardb-${{ matrix.target }}-v${VERSION}.zip *
+            7z a ../laminardb-${TARGET}-v${VERSION}.zip *
           else
-            tar -czvf ../laminardb-${{ matrix.target }}-v${VERSION}.tar.gz *
+            tar -czvf ../laminardb-${TARGET}-v${VERSION}.tar.gz *
           fi
 
       - name: Upload artifact
@@ -194,49 +226,68 @@ jobs:
     needs: [verify, release]
     runs-on: ubuntu-latest
     if: needs.verify.outputs.prerelease == 'false'
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Set version from tag
+        run: |
+          VERSION="${{ needs.verify.outputs.version }}"
+          echo "Setting workspace version to $VERSION"
+
+          # Update workspace version in root Cargo.toml
+          perl -i -pe 's/^version = ".*"/version = "'"$VERSION"'"/' Cargo.toml
+
+          # Update inter-crate path dependency versions
+          find crates examples -name Cargo.toml -exec \
+            perl -i -pe 's/(path = "\.\.\/[^"]*", )version = "[^"]*"/${1}version = "'"$VERSION"'"/g' {} +
+          find crates examples -name Cargo.toml -exec \
+            perl -i -pe 's/(path = "\.\.\/\.\.\/[^"]*", )version = "[^"]*"/${1}version = "'"$VERSION"'"/g' {} +
+
+          echo "Workspace version:"
+          grep '^version' Cargo.toml
+
       # Publish in dependency order
       - name: Publish laminar-derive
-        run: cargo publish -p laminar-derive --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p laminar-derive --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-core
-        run: cargo publish -p laminar-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p laminar-core --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-sql
-        run: cargo publish -p laminar-sql --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p laminar-sql --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-storage
-        run: cargo publish -p laminar-storage --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p laminar-storage --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-connectors
-        run: cargo publish -p laminar-connectors --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p laminar-connectors --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-db
-        run: cargo publish -p laminar-db --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p laminar-db --registry crates-io --allow-dirty
         continue-on-error: true
 
   # ============================================
