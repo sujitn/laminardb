@@ -622,8 +622,10 @@ impl Operator for LagLeadOperator {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::operator::TimerKey;
     use crate::state::InMemoryStore;
     use crate::time::{BoundedOutOfOrdernessGenerator, TimerService};
 
@@ -781,7 +783,7 @@ mod tests {
         let mut state = InMemoryStore::new();
         let mut wm = BoundedOutOfOrdernessGenerator::new(0);
 
-        let events = vec![
+        let events = [
             make_trade(1, "AAPL", 100.0),
             make_trade(2, "AAPL", 110.0),
             make_trade(3, "AAPL", 120.0),
@@ -898,7 +900,7 @@ mod tests {
 
         // Flush on timer/watermark
         let timer = Timer {
-            key: Default::default(),
+            key: TimerKey::default(),
             timestamp: 100,
         };
         let mut ctx = create_test_context(&mut timers, &mut state, &mut wm);
