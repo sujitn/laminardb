@@ -5,7 +5,7 @@
 //!
 //! # Architecture
 //!
-//! The I/O module is separate from the business logic in [`source.rs`](super::source)
+//! The I/O module is separate from the business logic in `source.rs`
 //! to allow:
 //! - Testing business logic without a running MySQL server
 //! - Clean separation of concerns (connection management vs. event decoding)
