@@ -252,42 +252,42 @@ jobs:
 
       # Publish in dependency order
       - name: Publish laminar-derive
-        run: cargo publish -p laminar-derive --registry crates-io
+        run: cargo publish -p laminar-derive --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-core
-        run: cargo publish -p laminar-core --registry crates-io
+        run: cargo publish -p laminar-core --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-sql
-        run: cargo publish -p laminar-sql --registry crates-io
+        run: cargo publish -p laminar-sql --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-storage
-        run: cargo publish -p laminar-storage --registry crates-io
+        run: cargo publish -p laminar-storage --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-connectors
-        run: cargo publish -p laminar-connectors --registry crates-io
+        run: cargo publish -p laminar-connectors --registry crates-io --allow-dirty
         continue-on-error: true
 
       - name: Wait for index
         run: sleep 30
 
       - name: Publish laminar-db
-        run: cargo publish -p laminar-db --registry crates-io
+        run: cargo publish -p laminar-db --registry crates-io --allow-dirty
         continue-on-error: true
 
   # ============================================
