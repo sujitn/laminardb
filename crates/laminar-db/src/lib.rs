@@ -34,6 +34,7 @@ mod handle;
 mod pipeline_checkpoint;
 mod sql_utils;
 mod stream_executor;
+mod table_store;
 
 /// FFI-friendly API for language bindings.
 ///

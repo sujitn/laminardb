@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 64 | 19 | 0 | 0 | 45 |
+| Phase 3 | 64 | 18 | 0 | 0 | 46 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **132** | **40** | **0** | **0** | **92** |
+| **Total** | **132** | **39** | **0** | **0** | **93** |
 
 ## Status Legend
 
@@ -101,7 +101,7 @@
 
 ## Phase 3: Connectors & Integration
 
-> **Status**: 45/56 features complete (80%)
+> **Status**: 46/56 features complete (82%)
 
 ### Streaming API ✅
 
@@ -198,7 +198,7 @@ See [Cloud Storage Index](phase-3/cloud/INDEX.md).
 | ID | Feature | Status | Spec |
 |----|---------|--------|------|
 | F-CONN-001 | Checkpoint Recovery Wiring | ✅ | [Link](phase-3/F-CONN-001-checkpoint-recovery-wiring.md) |
-| F-CONN-002 | Reference Table Support | 📝 | [Link](phase-3/F-CONN-002-reference-tables.md) |
+| F-CONN-002 | Reference Table Support | ✅ | [Link](phase-3/F-CONN-002-reference-tables.md) |
 | F-CONN-003 | Avro Serialization Hardening | 📝 | [Link](phase-3/F-CONN-003-avro-hardening.md) |
 
 ### Pipeline Observability

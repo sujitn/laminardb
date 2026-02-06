@@ -74,6 +74,7 @@ pub struct LaminarDB {
     connector_manager: parking_lot::Mutex<crate::connector_manager::ConnectorManager>,
     connector_registry: Arc<laminar_connectors::registry::ConnectorRegistry>,
     mv_registry: parking_lot::Mutex<laminar_core::mv::MvRegistry>,
+    table_store: parking_lot::Mutex<crate::table_store::TableStore>,
     state: std::sync::atomic::AtomicU8,
     /// Handle to the background processing task (if running).
     runtime_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -139,6 +140,7 @@ impl LaminarDB {
             ),
             connector_registry,
             mv_registry: parking_lot::Mutex::new(laminar_core::mv::MvRegistry::new()),
+            table_store: parking_lot::Mutex::new(crate::table_store::TableStore::new()),
             state: std::sync::atomic::AtomicU8::new(STATE_CREATED),
             runtime_handle: parking_lot::Mutex::new(None),
             shutdown_signal: Arc::new(tokio::sync::Notify::new()),
@@ -243,6 +245,14 @@ impl LaminarDB {
             StreamingStatement::Standard(stmt) => {
                 if let sqlparser::ast::Statement::CreateTable(ct) = stmt.as_ref() {
                     self.handle_create_table(ct)
+                } else if let sqlparser::ast::Statement::Drop {
+                    object_type: sqlparser::ast::ObjectType::Table,
+                    names,
+                    if_exists,
+                    ..
+                } = stmt.as_ref()
+                {
+                    self.handle_drop_table(names, *if_exists)
                 } else {
                     self.handle_query(sql).await
                 }
@@ -273,6 +283,7 @@ impl LaminarDB {
                     ShowCommand::Queries => self.build_show_queries(),
                     ShowCommand::MaterializedViews => self.build_show_materialized_views(),
                     ShowCommand::Streams => self.build_show_streams(),
+                    ShowCommand::Tables => self.build_show_tables(),
                 };
                 Ok(ExecuteResult::Metadata(batch))
             }
@@ -474,7 +485,8 @@ impl LaminarDB {
 
     /// Handle INSERT INTO statement.
     ///
-    /// Inserts SQL VALUES into a registered source or `DataFusion` table.
+    /// Inserts SQL VALUES into a registered source, a `TableStore`-managed
+    /// table (with PK upsert), or a plain `DataFusion` `MemTable`.
     async fn handle_insert_into(
         &self,
         table_name: &sqlparser::ast::ObjectName,
@@ -491,6 +503,25 @@ impl LaminarDB {
                 .push_arrow(batch)
                 .map_err(|e| DbError::InsertError(format!("Failed to push to source: {e}")))?;
             return Ok(ExecuteResult::RowsAffected(values.len() as u64));
+        }
+
+        // Try inserting into a TableStore-managed table (with PK upsert)
+        {
+            let has_table = self.table_store.lock().has_table(&name);
+            if has_table {
+                let schema = self
+                    .table_store
+                    .lock()
+                    .table_schema(&name)
+                    .ok_or_else(|| DbError::TableNotFound(name.clone()))?;
+                let batch = sql_utils::sql_values_to_record_batch(&schema, values)?;
+                self.table_store.lock().upsert(&name, &batch)?;
+
+                // Sync to DataFusion MemTable
+                self.sync_table_to_datafusion(&name)?;
+
+                return Ok(ExecuteResult::RowsAffected(values.len() as u64));
+            }
         }
 
         // Otherwise, insert into a DataFusion MemTable
@@ -523,7 +554,10 @@ impl LaminarDB {
     /// Handle CREATE TABLE statement.
     ///
     /// Creates a static reference/dimension table backed by a `DataFusion`
-    /// `MemTable`. These tables are used for lookup joins.
+    /// `MemTable`. If a PRIMARY KEY is specified, the table is also registered
+    /// in the `TableStore` for upsert/delete/lookup semantics.
+    /// If `WITH (...)` options include a `connector` key, the table is
+    /// registered in the `ConnectorManager` for connector-backed population.
     fn handle_create_table(
         &self,
         create: &sqlparser::ast::CreateTable,
@@ -554,6 +588,88 @@ impl LaminarDB {
             .collect::<Result<Vec<_>, DbError>>()?;
 
         let schema = Arc::new(arrow::datatypes::Schema::new(fields));
+
+        // Extract primary key from column constraints or table constraints
+        let mut primary_key: Option<String> = None;
+
+        // Check column-level PRIMARY KEY
+        for col in &create.columns {
+            for opt in &col.options {
+                if matches!(opt.option, sqlparser::ast::ColumnOption::PrimaryKey(..)) {
+                    primary_key = Some(col.name.to_string());
+                    break;
+                }
+            }
+            if primary_key.is_some() {
+                break;
+            }
+        }
+
+        // Check table-level PRIMARY KEY constraint
+        if primary_key.is_none() {
+            for constraint in &create.constraints {
+                if let sqlparser::ast::TableConstraint::PrimaryKey(pk) = constraint {
+                    if let Some(first) = pk.columns.first() {
+                        primary_key = Some(first.column.to_string());
+                    }
+                }
+            }
+        }
+
+        // Register in TableStore if PK found
+        if let Some(ref pk) = primary_key {
+            let mut ts = self.table_store.lock();
+            ts.create_table(&name, schema.clone(), pk)?;
+        }
+
+        // Extract connector options from WITH (...)
+        let mut connector_type: Option<String> = None;
+        let mut connector_options: HashMap<String, String> = HashMap::new();
+        let mut format: Option<String> = None;
+        let mut format_options: HashMap<String, String> = HashMap::new();
+
+        let with_options = match &create.table_options {
+            sqlparser::ast::CreateTableOptions::With(opts) => opts.as_slice(),
+            _ => &[],
+        };
+
+        for opt in with_options {
+            if let sqlparser::ast::SqlOption::KeyValue { key, value } = opt {
+                let k = key.to_string().to_lowercase();
+                let val = value.to_string().trim_matches('\'').to_string();
+                match k.as_str() {
+                    "connector" => connector_type = Some(val),
+                    "format" => format = Some(val),
+                    kk if kk.starts_with("format.") => {
+                        format_options
+                            .insert(kk.strip_prefix("format.").unwrap().to_string(), val);
+                    }
+                    _ => {
+                        connector_options.insert(k, val);
+                    }
+                }
+            }
+        }
+
+        // Register connector-backed table in ConnectorManager
+        if connector_type.is_some() || !connector_options.is_empty() {
+            if let Some(ref pk) = primary_key {
+                if let Some(ref ct) = connector_type {
+                    let mut ts = self.table_store.lock();
+                    ts.set_connector(&name, ct);
+                }
+
+                let mut mgr = self.connector_manager.lock();
+                mgr.register_table(crate::connector_manager::TableRegistration {
+                    name: name.clone(),
+                    primary_key: pk.clone(),
+                    connector_type: connector_type.clone(),
+                    connector_options,
+                    format,
+                    format_options,
+                });
+            }
+        }
 
         // Register as a DataFusion MemTable with empty data
         let mem_table = datafusion::datasource::MemTable::try_new(schema.clone(), vec![vec![]])
@@ -1107,12 +1223,13 @@ impl LaminarDB {
             .store(STATE_STARTING, std::sync::atomic::Ordering::Release);
 
         // Snapshot connector registrations under the lock
-        let (source_regs, sink_regs, stream_regs, has_external) = {
+        let (source_regs, sink_regs, stream_regs, table_regs, has_external) = {
             let mgr = self.connector_manager.lock();
             (
                 mgr.sources().clone(),
                 mgr.sinks().clone(),
                 mgr.streams().clone(),
+                mgr.tables().clone(),
                 mgr.has_external_connectors(),
             )
         };
@@ -1133,12 +1250,13 @@ impl LaminarDB {
 
         if has_external {
             eprintln!(
-                "[laminar-db] Starting CONNECTOR pipeline ({} sources, {} sinks, {} streams)",
+                "[laminar-db] Starting CONNECTOR pipeline ({} sources, {} sinks, {} streams, {} tables)",
                 source_regs.len(),
                 sink_regs.len(),
                 stream_regs.len(),
+                table_regs.len(),
             );
-            self.start_connector_pipeline(source_regs, sink_regs, stream_regs)
+            self.start_connector_pipeline(source_regs, sink_regs, stream_regs, table_regs)
                 .await?;
         } else if !stream_regs.is_empty() {
             eprintln!(
@@ -1280,6 +1398,7 @@ impl LaminarDB {
         source_regs: HashMap<String, crate::connector_manager::SourceRegistration>,
         sink_regs: HashMap<String, crate::connector_manager::SinkRegistration>,
         stream_regs: HashMap<String, crate::connector_manager::StreamRegistration>,
+        _table_regs: HashMap<String, crate::connector_manager::TableRegistration>,
     ) -> Result<(), DbError> {
         use crate::connector_manager::{build_sink_config, build_source_config};
         use crate::pipeline_checkpoint::{
@@ -1958,6 +2077,121 @@ impl LaminarDB {
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(names))])
             .expect("show streams: schema matches columns")
+    }
+
+    /// Handle DROP TABLE statement.
+    fn handle_drop_table(
+        &self,
+        names: &[sqlparser::ast::ObjectName],
+        if_exists: bool,
+    ) -> Result<ExecuteResult, DbError> {
+        for obj_name in names {
+            let name_str = obj_name.to_string();
+
+            // Remove from TableStore
+            self.table_store.lock().drop_table(&name_str);
+
+            // Remove from ConnectorManager
+            self.connector_manager.lock().unregister_table(&name_str);
+
+            // Deregister from DataFusion context
+            match self.ctx.deregister_table(&name_str) {
+                Ok(None) if !if_exists => {
+                    return Err(DbError::TableNotFound(name_str));
+                }
+                Ok(Some(_) | None) => {}
+                Err(e) => {
+                    return Err(DbError::InvalidOperation(format!(
+                        "Failed to drop table '{name_str}': {e}"
+                    )));
+                }
+            }
+        }
+
+        let name = names
+            .first()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
+
+        Ok(ExecuteResult::Ddl(DdlInfo {
+            statement_type: "DROP TABLE".to_string(),
+            object_name: name,
+        }))
+    }
+
+    /// Build a SHOW TABLES metadata result.
+    fn build_show_tables(&self) -> RecordBatch {
+        let ts = self.table_store.lock();
+        let mut names = Vec::new();
+        let mut pks = Vec::new();
+        let mut row_counts = Vec::new();
+        let mut connectors = Vec::new();
+
+        for name in ts.table_names() {
+            let pk = ts.primary_key(&name).unwrap_or("").to_string();
+            let count = ts.table_row_count(&name) as u64;
+            let conn = ts.connector(&name).unwrap_or("").to_string();
+
+            names.push(name);
+            pks.push(pk);
+            row_counts.push(count);
+            connectors.push(conn);
+        }
+
+        let names_ref: Vec<&str> = names.iter().map(String::as_str).collect();
+        let pks_ref: Vec<&str> = pks.iter().map(String::as_str).collect();
+        let connectors_ref: Vec<&str> = connectors.iter().map(String::as_str).collect();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("primary_key", DataType::Utf8, false),
+            Field::new("row_count", DataType::UInt64, false),
+            Field::new("connector", DataType::Utf8, false),
+        ]));
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(names_ref)),
+                Arc::new(StringArray::from(pks_ref)),
+                Arc::new(UInt64Array::from(row_counts)),
+                Arc::new(StringArray::from(connectors_ref)),
+            ],
+        )
+        .expect("show tables: schema matches columns")
+    }
+
+    /// Synchronize a `TableStore` table to the `DataFusion` `MemTable`.
+    ///
+    /// Deregisters the existing table (if any) and re-registers with the
+    /// current contents of the `TableStore`.
+    fn sync_table_to_datafusion(&self, name: &str) -> Result<(), DbError> {
+        let batch = self
+            .table_store
+            .lock()
+            .to_record_batch(name)
+            .ok_or_else(|| DbError::TableNotFound(name.to_string()))?;
+
+        let schema = batch.schema();
+
+        // Deregister old
+        let _ = self.ctx.deregister_table(name);
+
+        // Register new
+        let data = if batch.num_rows() > 0 {
+            vec![vec![batch]]
+        } else {
+            vec![vec![]]
+        };
+
+        let mem_table = datafusion::datasource::MemTable::try_new(schema, data)
+            .map_err(|e| DbError::InsertError(format!("Failed to create table: {e}")))?;
+
+        self.ctx
+            .register_table(name, Arc::new(mem_table))
+            .map_err(|e| DbError::InsertError(format!("Failed to register table: {e}")))?;
+
+        Ok(())
     }
 
     /// Build a DESCRIBE result.
@@ -3023,5 +3257,160 @@ mod tests {
         assert_eq!(find("src").node_type, PipelineNodeType::Source);
         assert_eq!(find("st").node_type, PipelineNodeType::Stream);
         assert_eq!(find("sk").node_type, PipelineNodeType::Sink);
+    }
+
+    // ── Reference Table (F-CONN-002) tests ──
+
+    #[tokio::test]
+    async fn test_create_table_with_primary_key() {
+        let db = LaminarDB::open().unwrap();
+        let result = db
+            .execute(
+                "CREATE TABLE instruments (\
+                 symbol VARCHAR PRIMARY KEY, \
+                 company_name VARCHAR, \
+                 sector VARCHAR\
+                 )",
+            )
+            .await
+            .unwrap();
+
+        match result {
+            ExecuteResult::Ddl(info) => {
+                assert_eq!(info.statement_type, "CREATE TABLE");
+                assert_eq!(info.object_name, "instruments");
+            }
+            _ => panic!("Expected DDL result"),
+        }
+
+        // Verify TableStore registration
+        let ts = db.table_store.lock();
+        assert!(ts.has_table("instruments"));
+        assert_eq!(ts.primary_key("instruments"), Some("symbol"));
+        assert_eq!(ts.table_row_count("instruments"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_connector_options() {
+        let db = LaminarDB::open().unwrap();
+        let result = db
+            .execute(
+                "CREATE TABLE instruments (\
+                 symbol VARCHAR PRIMARY KEY, \
+                 company_name VARCHAR\
+                 ) WITH (connector = 'kafka', topic = 'instruments')",
+            )
+            .await
+            .unwrap();
+
+        match result {
+            ExecuteResult::Ddl(info) => {
+                assert_eq!(info.object_name, "instruments");
+            }
+            _ => panic!("Expected DDL result"),
+        }
+
+        // Verify ConnectorManager registration
+        let mgr = db.connector_manager.lock();
+        let tables = mgr.tables();
+        assert!(tables.contains_key("instruments"));
+        let reg = &tables["instruments"];
+        assert_eq!(reg.connector_type.as_deref(), Some("kafka"));
+        assert_eq!(reg.primary_key, "symbol");
+
+        // Verify TableStore connector
+        let ts = db.table_store.lock();
+        assert_eq!(ts.connector("instruments"), Some("kafka"));
+    }
+
+    #[tokio::test]
+    async fn test_insert_into_table_with_pk_upserts() {
+        let db = LaminarDB::open().unwrap();
+        db.execute(
+            "CREATE TABLE products (\
+             id INT PRIMARY KEY, \
+             name VARCHAR, \
+             price DOUBLE\
+             )",
+        )
+        .await
+        .unwrap();
+
+        // Insert a row
+        db.execute("INSERT INTO products VALUES (1, 'Widget', 9.99)")
+            .await
+            .unwrap();
+        assert_eq!(db.table_store.lock().table_row_count("products"), 1);
+
+        // Upsert (same PK = overwrite)
+        db.execute("INSERT INTO products VALUES (1, 'Super Widget', 19.99)")
+            .await
+            .unwrap();
+        assert_eq!(db.table_store.lock().table_row_count("products"), 1);
+
+        // Insert another row (different PK)
+        db.execute("INSERT INTO products VALUES (2, 'Gadget', 14.99)")
+            .await
+            .unwrap();
+        assert_eq!(db.table_store.lock().table_row_count("products"), 2);
+
+        // Verify via SELECT
+        let result = db.execute("SELECT * FROM products").await.unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.schema().fields().len(), 3);
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_show_tables() {
+        let db = LaminarDB::open().unwrap();
+
+        // Empty
+        let result = db.execute("SHOW TABLES").await.unwrap();
+        match result {
+            ExecuteResult::Metadata(batch) => {
+                assert_eq!(batch.num_rows(), 0);
+                assert_eq!(batch.num_columns(), 4);
+                assert_eq!(batch.schema().field(0).name(), "name");
+                assert_eq!(batch.schema().field(1).name(), "primary_key");
+                assert_eq!(batch.schema().field(2).name(), "row_count");
+                assert_eq!(batch.schema().field(3).name(), "connector");
+            }
+            _ => panic!("Expected Metadata result"),
+        }
+
+        // With a table
+        db.execute("CREATE TABLE t (id INT PRIMARY KEY, val VARCHAR)")
+            .await
+            .unwrap();
+        let result = db.execute("SHOW TABLES").await.unwrap();
+        match result {
+            ExecuteResult::Metadata(batch) => {
+                assert_eq!(batch.num_rows(), 1);
+            }
+            _ => panic!("Expected Metadata result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_table() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE TABLE t (id INT PRIMARY KEY, val VARCHAR)")
+            .await
+            .unwrap();
+        assert!(db.table_store.lock().has_table("t"));
+
+        db.execute("DROP TABLE t").await.unwrap();
+        assert!(!db.table_store.lock().has_table("t"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_if_exists() {
+        let db = LaminarDB::open().unwrap();
+        let result = db.execute("DROP TABLE IF EXISTS nonexistent").await;
+        assert!(result.is_ok());
     }
 }

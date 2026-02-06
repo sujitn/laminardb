@@ -53,6 +53,24 @@ pub(crate) struct StreamRegistration {
     pub query_sql: String,
 }
 
+/// Registration of a reference/dimension table from DDL.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct TableRegistration {
+    /// Table name.
+    pub name: String,
+    /// Primary key column name.
+    pub primary_key: String,
+    /// Connector type backing this table (e.g., "kafka" for compacted topics).
+    pub connector_type: Option<String>,
+    /// Connector-specific options.
+    pub connector_options: HashMap<String, String>,
+    /// Format type (e.g., "JSON", "AVRO").
+    pub format: Option<String>,
+    /// Format-specific options.
+    pub format_options: HashMap<String, String>,
+}
+
 /// Build a [`ConnectorConfig`] from a [`SourceRegistration`].
 ///
 /// Normalizes `connector_type` to lowercase, copies all options,
@@ -134,6 +152,7 @@ pub struct ConnectorManager {
     sources: HashMap<String, SourceRegistration>,
     sinks: HashMap<String, SinkRegistration>,
     streams: HashMap<String, StreamRegistration>,
+    tables: HashMap<String, TableRegistration>,
 }
 
 impl ConnectorManager {
@@ -143,6 +162,7 @@ impl ConnectorManager {
             sources: HashMap::new(),
             sinks: HashMap::new(),
             streams: HashMap::new(),
+            tables: HashMap::new(),
         }
     }
 
@@ -174,6 +194,27 @@ impl ConnectorManager {
     /// Remove a stream registration.
     pub fn unregister_stream(&mut self, name: &str) -> bool {
         self.streams.remove(name).is_some()
+    }
+
+    /// Register a reference table from DDL.
+    pub fn register_table(&mut self, reg: TableRegistration) {
+        self.tables.insert(reg.name.clone(), reg);
+    }
+
+    /// Remove a table registration.
+    pub fn unregister_table(&mut self, name: &str) -> bool {
+        self.tables.remove(name).is_some()
+    }
+
+    /// Get all table registrations.
+    pub fn tables(&self) -> &HashMap<String, TableRegistration> {
+        &self.tables
+    }
+
+    /// Get registered table names.
+    #[allow(dead_code)]
+    pub fn table_names(&self) -> Vec<String> {
+        self.tables.keys().cloned().collect()
     }
 
     /// Get registered source names.
@@ -209,13 +250,14 @@ impl ConnectorManager {
     /// Total number of registrations.
     #[allow(dead_code)]
     pub fn registration_count(&self) -> usize {
-        self.sources.len() + self.sinks.len() + self.streams.len()
+        self.sources.len() + self.sinks.len() + self.streams.len() + self.tables.len()
     }
 
     /// Check if a connector type requires external runtime (e.g., Kafka).
     pub fn has_external_connectors(&self) -> bool {
         self.sources.values().any(|s| s.connector_type.is_some())
             || self.sinks.values().any(|s| s.connector_type.is_some())
+            || self.tables.values().any(|t| t.connector_type.is_some())
     }
 
     /// Get all source registrations.
@@ -239,6 +281,7 @@ impl ConnectorManager {
         self.sources.clear();
         self.sinks.clear();
         self.streams.clear();
+        self.tables.clear();
     }
 }
 
@@ -254,6 +297,7 @@ impl std::fmt::Debug for ConnectorManager {
             .field("sources", &self.sources.len())
             .field("sinks", &self.sinks.len())
             .field("streams", &self.streams.len())
+            .field("tables", &self.tables.len())
             .finish()
     }
 }
@@ -456,6 +500,55 @@ mod tests {
         assert!(!mgr.unregister_sink("s1"));
         assert!(mgr.unregister_stream("st1"));
         assert!(!mgr.unregister_stream("st1"));
+        assert_eq!(mgr.registration_count(), 0);
+    }
+
+    // ── Table registration tests ──
+
+    #[test]
+    fn test_register_table() {
+        let mut mgr = ConnectorManager::new();
+        mgr.register_table(TableRegistration {
+            name: "instruments".to_string(),
+            primary_key: "symbol".to_string(),
+            connector_type: Some("kafka".to_string()),
+            connector_options: HashMap::from([("topic".to_string(), "instruments".to_string())]),
+            format: Some("JSON".to_string()),
+            format_options: HashMap::new(),
+        });
+        assert_eq!(mgr.table_names().len(), 1);
+        assert!(mgr.has_external_connectors());
+    }
+
+    #[test]
+    fn test_unregister_table() {
+        let mut mgr = ConnectorManager::new();
+        mgr.register_table(TableRegistration {
+            name: "t".to_string(),
+            primary_key: "id".to_string(),
+            connector_type: None,
+            connector_options: HashMap::new(),
+            format: None,
+            format_options: HashMap::new(),
+        });
+        assert!(mgr.unregister_table("t"));
+        assert!(!mgr.unregister_table("t"));
+    }
+
+    #[test]
+    fn test_table_in_registration_count() {
+        let mut mgr = ConnectorManager::new();
+        assert_eq!(mgr.registration_count(), 0);
+        mgr.register_table(TableRegistration {
+            name: "t".to_string(),
+            primary_key: "id".to_string(),
+            connector_type: None,
+            connector_options: HashMap::new(),
+            format: None,
+            format_options: HashMap::new(),
+        });
+        assert_eq!(mgr.registration_count(), 1);
+        mgr.clear();
         assert_eq!(mgr.registration_count(), 0);
     }
 

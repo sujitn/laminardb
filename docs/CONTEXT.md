@@ -8,6 +8,32 @@
 **Date**: 2026-02-06
 
 ### What Was Accomplished
+- **F-CONN-002: Reference Table Support** - IMPLEMENTATION COMPLETE (21 new tests, 152 total laminar-db tests)
+  - New `table_store.rs` module in `laminar-db` crate:
+    - `TableState`: Per-table state with schema, primary key, PK index, row HashMap, ready flag, connector
+    - `TableStore`: PK-keyed upsert/delete/lookup + `to_record_batch()` concatenation for DataFusion sync
+    - 13 unit tests (create, PK validation, upsert, overwrite, delete, lookup, to_record_batch, drop, ready flag, connector tracking)
+  - Added `TableRegistration` to `ConnectorManager`:
+    - Struct with name, primary_key, connector_type, connector_options, format, format_options
+    - Methods: `register_table()`, `unregister_table()`, `tables()`, `table_names()`
+    - Updated `registration_count()`, `has_external_connectors()`, `clear()`, `Debug`
+    - 3 new tests
+  - Added `SHOW TABLES` DDL support in `laminar-sql`:
+    - `ShowTables` variant in `StreamingDdlKind` tokenizer enum
+    - `Tables` variant in `ShowCommand` enum
+    - Routing in parser `mod.rs`
+    - 1 new test
+  - Wired into `db.rs`:
+    - `table_store` field on `LaminarDB` (parking_lot::Mutex)
+    - Enhanced `handle_create_table()`: extracts PK from column/table constraints, WITH options for connector config
+    - `handle_drop_table()`: removes from TableStore, ConnectorManager, DataFusion context (with IF EXISTS)
+    - `build_show_tables()`: returns RecordBatch with name/primary_key/row_count/connector columns
+    - `handle_insert_into()`: upserts via TableStore for PK tables + DataFusion MemTable sync
+    - `sync_table_to_datafusion()`: deregisters old MemTable, registers new from TableStore data
+    - 5 new tests (CREATE TABLE PK, connector WITH options, INSERT upsert, SHOW TABLES, DROP TABLE)
+  - All clippy clean with `-D warnings`, 152 laminar-db tests pass, 441 laminar-sql tests pass
+
+Previous session (2026-02-06):
 - **F-CONN-001: Checkpoint Recovery Wiring** - IMPLEMENTATION COMPLETE (12 new tests, 141 total laminar-db tests)
   - New `pipeline_checkpoint.rs` module in `laminar-db` crate:
     - `SerializableSourceCheckpoint`: Serde-friendly mirror of `SourceCheckpoint` with bidirectional conversion
@@ -313,7 +339,7 @@ Previous session (2026-01-28):
 **Total tests**: 1347 core + 440 sql + 115 storage + 178 laminar-db (with ffi) + 427 connectors + 4 demo = 2511 (base with ffi), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only + 13 delta-lake-only = 2833 (all feature flags)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 45/56 features COMPLETE (80%)**
+**Phase 3 Connectors & Integration: 46/56 features COMPLETE (82%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -339,10 +365,11 @@ Previous session (2026-01-28):
 - Async FFI Callbacks complete (F-FFI-004) — 9 new tests (164 total), callback-based subscription notifications from background thread
 - SQL Extensions: F-SQL-002 (LAG/LEAD) + F-SQL-003 (ROW_NUMBER/RANK/DENSE_RANK) — 41 new tests, analytic window functions + ranking bug fix
 - **Checkpoint Recovery Wiring complete (F-CONN-001)** — 12 new tests, pipeline checkpoint persistence + recovery + periodic + final checkpoint
-- Next: F-CONN-002/003, F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
+- **Reference Table Support complete (F-CONN-002)** — 21 new tests (152 total), TableStore with PK upsert/delete/lookup, SHOW TABLES/DROP TABLE DDL, connector-backed table registration
+- Next: F-CONN-003, F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
 
 ### Immediate Next Steps
-1. F031B/C/D: Delta Lake Recovery, Compaction, Schema Evolution
+1. F-CONN-003: Avro Serialization Hardening
 2. F032A: Iceberg I/O (when iceberg-rust crate can be added)
 3. F029: MongoDB CDC Source
 4. F033: Parquet File Source
