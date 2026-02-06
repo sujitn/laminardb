@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.laminardb.io/laminar-db"
+documentation = "https://laminardb.io/api/laminar_db"
 description = "Unified database facade for LaminarDB"
 
 [features]
