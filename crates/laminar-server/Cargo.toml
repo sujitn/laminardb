@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.laminardb.io/laminar-server"
 description = "Standalone server binary for LaminarDB"
+publish = false
 
 [[bin]]
 name = "laminardb"
