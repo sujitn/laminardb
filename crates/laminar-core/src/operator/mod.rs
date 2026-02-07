@@ -161,6 +161,7 @@ pub enum OperatorError {
 
 pub mod asof_join;
 pub mod changelog;
+pub mod table_cache;
 pub mod lag_lead;
 pub mod lookup_join;
 pub mod partitioned_topk;

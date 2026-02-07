@@ -9,6 +9,7 @@ use laminar_connectors::config::ConnectorConfig;
 use laminar_connectors::reference::RefreshMode;
 
 use crate::error::DbError;
+use crate::table_cache_mode::TableCacheMode;
 
 /// Registration of a source from DDL.
 #[derive(Debug, Clone)]
@@ -72,6 +73,10 @@ pub(crate) struct TableRegistration {
     pub format_options: HashMap<String, String>,
     /// How the table should be refreshed from the connector.
     pub refresh: Option<RefreshMode>,
+    /// Cache mode for this table (Full, Partial, or None).
+    pub cache_mode: Option<TableCacheMode>,
+    /// Override for maximum LRU cache entries (used with Partial mode).
+    pub cache_max_entries: Option<usize>,
 }
 
 /// Build a [`ConnectorConfig`] from a [`SourceRegistration`].
@@ -579,6 +584,8 @@ mod tests {
             format: Some("JSON".to_string()),
             format_options: HashMap::new(),
             refresh: None,
+            cache_mode: None,
+            cache_max_entries: None,
         });
         assert_eq!(mgr.table_names().len(), 1);
         assert!(mgr.has_external_connectors());
@@ -595,6 +602,8 @@ mod tests {
             format: None,
             format_options: HashMap::new(),
             refresh: None,
+            cache_mode: None,
+            cache_max_entries: None,
         });
         assert!(mgr.unregister_table("t"));
         assert!(!mgr.unregister_table("t"));
@@ -612,6 +621,8 @@ mod tests {
             format: None,
             format_options: HashMap::new(),
             refresh: None,
+            cache_mode: None,
+            cache_max_entries: None,
         });
         assert_eq!(mgr.registration_count(), 1);
         mgr.clear();
@@ -759,6 +770,8 @@ mod tests {
             format: Some("JSON".to_string()),
             format_options: HashMap::new(),
             refresh: None,
+            cache_mode: None,
+            cache_max_entries: None,
         };
         let config = build_table_config(&reg).unwrap();
         assert_eq!(config.connector_type(), "kafka");
@@ -776,6 +789,8 @@ mod tests {
             format: None,
             format_options: HashMap::new(),
             refresh: None,
+            cache_mode: None,
+            cache_max_entries: None,
         };
         let err = build_table_config(&reg).unwrap_err();
         assert!(err.to_string().contains("no connector type"));

@@ -617,18 +617,14 @@ impl LaminarDB {
             }
         }
 
-        // Register in TableStore if PK found
-        if let Some(ref pk) = primary_key {
-            let mut ts = self.table_store.lock();
-            ts.create_table(&name, schema.clone(), pk)?;
-        }
-
         // Extract connector options from WITH (...)
         let mut connector_type: Option<String> = None;
         let mut connector_options: HashMap<String, String> = HashMap::new();
         let mut format: Option<String> = None;
         let mut format_options: HashMap<String, String> = HashMap::new();
         let mut refresh_mode: Option<laminar_connectors::reference::RefreshMode> = None;
+        let mut cache_mode: Option<crate::table_cache_mode::TableCacheMode> = None;
+        let mut cache_max_entries: Option<usize> = None;
 
         let with_options = match &create.table_options {
             sqlparser::ast::CreateTableOptions::With(opts) => opts.as_slice(),
@@ -646,6 +642,17 @@ impl LaminarDB {
                         refresh_mode =
                             Some(crate::connector_manager::parse_refresh_mode(&val)?);
                     }
+                    "cache_mode" => {
+                        cache_mode =
+                            Some(crate::table_cache_mode::parse_cache_mode(&val)?);
+                    }
+                    "cache_max_entries" => {
+                        cache_max_entries = Some(val.parse::<usize>().map_err(|_| {
+                            DbError::InvalidOperation(format!(
+                                "Invalid cache_max_entries '{val}': expected positive integer"
+                            ))
+                        })?);
+                    }
                     kk if kk.starts_with("format.") => {
                         format_options
                             .insert(kk.strip_prefix("format.").unwrap().to_string(), val);
@@ -654,6 +661,24 @@ impl LaminarDB {
                         connector_options.insert(k, val);
                     }
                 }
+            }
+        }
+
+        // Resolve cache mode: if Partial and cache_max_entries overrides, apply it
+        let resolved_cache_mode = match (&cache_mode, cache_max_entries) {
+            (Some(crate::table_cache_mode::TableCacheMode::Partial { .. }), Some(max)) => {
+                Some(crate::table_cache_mode::TableCacheMode::Partial { max_entries: max })
+            }
+            _ => cache_mode.clone(),
+        };
+
+        // Register in TableStore if PK found
+        if let Some(ref pk) = primary_key {
+            let mut ts = self.table_store.lock();
+            if let Some(ref mode) = resolved_cache_mode {
+                ts.create_table_with_cache(&name, schema.clone(), pk, mode.clone())?;
+            } else {
+                ts.create_table(&name, schema.clone(), pk)?;
             }
         }
 
@@ -674,6 +699,8 @@ impl LaminarDB {
                     format,
                     format_options,
                     refresh: refresh_mode,
+                    cache_mode: cache_mode.clone(),
+                    cache_max_entries,
                 });
             }
         }
@@ -1585,6 +1612,7 @@ impl LaminarDB {
                     })?;
             }
             self.sync_table_to_datafusion(name)?;
+            self.table_store.lock().rebuild_xor_filter(name);
             self.table_store.lock().set_ready(name, true);
         }
 
@@ -1752,6 +1780,7 @@ impl LaminarDB {
                             if let Err(e) = table_store_for_loop.lock().upsert(name, &batch) {
                                 tracing::warn!(table=%name, error=%e, "Table upsert error");
                             } else {
+                                table_store_for_loop.lock().rebuild_xor_filter(name);
                                 sync_table_to_df(&ctx_for_sync, &table_store_for_loop, name);
                             }
                         }
@@ -4201,10 +4230,76 @@ mod tests {
         db.start().await.unwrap();
 
         // Should have snapshot data but not the change batch (it's snapshot_only)
-        let ts = db.table_store.lock();
+        let mut ts = db.table_store.lock();
         assert!(ts.is_ready("instruments"));
         assert_eq!(ts.table_row_count("instruments"), 1);
         // The change batch id=2/GOOG should NOT be present
         assert!(ts.lookup("instruments", "2").is_none());
+    }
+
+    // ── F-CONN-002C: PARTIAL Cache Mode DDL tests ──
+
+    #[tokio::test]
+    async fn test_create_table_partial_cache_mode() {
+        let db = LaminarDB::open().unwrap();
+        db.execute(
+            "CREATE TABLE large_dim (\
+             id INT PRIMARY KEY, \
+             name VARCHAR\
+             ) WITH (cache_mode = 'partial')",
+        )
+        .await
+        .unwrap();
+
+        // Verify table exists
+        let ts = db.table_store.lock();
+        assert!(ts.has_table("large_dim"));
+        // Cache metrics should exist for partial-mode tables
+        drop(ts);
+
+        // Insert some data
+        db.execute("INSERT INTO large_dim VALUES (1, 'Alice')")
+            .await
+            .unwrap();
+        db.execute("INSERT INTO large_dim VALUES (2, 'Bob')")
+            .await
+            .unwrap();
+
+        let ts = db.table_store.lock();
+        assert_eq!(ts.table_row_count("large_dim"), 2);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_partial_with_max_entries() {
+        let db = LaminarDB::open().unwrap();
+        db.execute(
+            "CREATE TABLE customers (\
+             id INT PRIMARY KEY, \
+             name VARCHAR\
+             ) WITH (cache_mode = 'partial', cache_max_entries = '10000')",
+        )
+        .await
+        .unwrap();
+
+        let ts = db.table_store.lock();
+        assert!(ts.has_table("customers"));
+        // Verify the cache metrics report the correct max_entries
+        let metrics = ts.cache_metrics("customers").unwrap();
+        assert_eq!(metrics.cache_max_entries, 10000);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_invalid_cache_max_entries() {
+        let db = LaminarDB::open().unwrap();
+        let result = db
+            .execute(
+                "CREATE TABLE bad (\
+                 id INT PRIMARY KEY, \
+                 name VARCHAR\
+                 ) WITH (cache_mode = 'partial', cache_max_entries = 'not_a_number')",
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cache_max_entries"));
     }
 }
