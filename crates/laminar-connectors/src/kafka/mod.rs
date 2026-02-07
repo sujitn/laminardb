@@ -451,7 +451,7 @@ mod avro_roundtrip_tests {
             .register_schema(1, &avro_schema_json)
             .expect("register schema");
 
-        let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+        let record_refs: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
         deser
             .deserialize_batch(&record_refs, schema)
             .expect("deserialize")
@@ -605,7 +605,7 @@ mod avro_roundtrip_tests {
         let mut deser = AvroDeserializer::new();
         deser.register_schema(42, &avro_schema_json).unwrap();
 
-        let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+        let record_refs: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
         let result = deser.deserialize_batch(&record_refs, &schema).unwrap();
         assert_eq!(result.num_rows(), 2);
     }
