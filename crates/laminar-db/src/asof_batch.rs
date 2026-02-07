@@ -11,8 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray,
-    TimestampMillisecondArray,
+    Array, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
 };
 use arrow::compute::concat_batches;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -288,7 +287,11 @@ fn build_output_schema(
         .map(|f| f.as_ref().clone())
         .collect();
 
-    let left_names: HashSet<&str> = left_schema.fields().iter().map(|f| f.name().as_str()).collect();
+    let left_names: HashSet<&str> = left_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
     let make_nullable = config.join_type == AsofSqlJoinType::Left;
     for field in right_schema.fields() {
         // Skip duplicate key column (already in left side)

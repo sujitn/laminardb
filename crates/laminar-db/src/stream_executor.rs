@@ -345,12 +345,12 @@ impl StreamExecutor {
         intermediate_results: &HashMap<String, Vec<RecordBatch>>,
     ) -> Result<Vec<RecordBatch>, DbError> {
         // Resolve left batches: source_batches → intermediate → DataFusion
-        let left_batches =
-            self.resolve_table_batches(&config.left_table, source_batches, intermediate_results)
-                .await?;
-        let right_batches =
-            self.resolve_table_batches(&config.right_table, source_batches, intermediate_results)
-                .await?;
+        let left_batches = self
+            .resolve_table_batches(&config.left_table, source_batches, intermediate_results)
+            .await?;
+        let right_batches = self
+            .resolve_table_batches(&config.right_table, source_batches, intermediate_results)
+            .await?;
 
         let joined =
             crate::asof_batch::execute_asof_join_batch(&left_batches, &right_batches, config)?;
@@ -362,14 +362,10 @@ impl StreamExecutor {
         // Apply projection if present (handles aliases and computed columns)
         if let Some(proj_sql) = projection_sql {
             let schema = joined.schema();
-            let mem_table =
-                datafusion::datasource::MemTable::try_new(schema, vec![vec![joined]]).map_err(
-                    |e| {
-                        DbError::Pipeline(format!(
-                            "Stream '{query_name}' ASOF temp table failed: {e}"
-                        ))
-                    },
-                )?;
+            let mem_table = datafusion::datasource::MemTable::try_new(schema, vec![vec![joined]])
+                .map_err(|e| {
+                DbError::Pipeline(format!("Stream '{query_name}' ASOF temp table failed: {e}"))
+            })?;
 
             let _ = self.ctx.deregister_table("__asof_tmp");
             self.ctx
@@ -381,9 +377,7 @@ impl StreamExecutor {
                 })?;
 
             let df = self.ctx.sql(proj_sql).await.map_err(|e| {
-                DbError::Pipeline(format!(
-                    "Stream '{query_name}' ASOF projection failed: {e}"
-                ))
+                DbError::Pipeline(format!("Stream '{query_name}' ASOF projection failed: {e}"))
             })?;
             let result = df.collect().await.map_err(|e| {
                 DbError::Pipeline(format!(
@@ -414,12 +408,13 @@ impl StreamExecutor {
         }
         // Fall back to DataFusion context (e.g., static reference tables)
         let sql = format!("SELECT * FROM {table_name}");
-        let df = self.ctx.sql(&sql).await.map_err(|e| {
-            DbError::Pipeline(format!("ASOF table '{table_name}' not found: {e}"))
-        })?;
-        df.collect().await.map_err(|e| {
-            DbError::Pipeline(format!("ASOF table '{table_name}' query failed: {e}"))
-        })
+        let df =
+            self.ctx.sql(&sql).await.map_err(|e| {
+                DbError::Pipeline(format!("ASOF table '{table_name}' not found: {e}"))
+            })?;
+        df.collect()
+            .await
+            .map_err(|e| DbError::Pipeline(format!("ASOF table '{table_name}' query failed: {e}")))
     }
 }
 
@@ -543,10 +538,8 @@ fn rewrite_expr(
             let table = parts[0].value.as_str();
             let column = parts[1].value.as_str();
 
-            let is_left = Some(table) == left_alias
-                || table == config.left_table;
-            let is_right = Some(table) == right_alias
-                || table == config.right_table;
+            let is_left = Some(table) == left_alias || table == config.left_table;
+            let is_right = Some(table) == right_alias || table == config.right_table;
 
             if is_left {
                 column.to_string()
@@ -571,9 +564,7 @@ fn rewrite_expr(
                     // Since we don't have the full schema here, use a
                     // conservative approach: only suffix the right time column
                     // when it matches the left time column name.
-                    if column == config.left_time_column
-                        && column == config.right_time_column
-                    {
+                    if column == config.left_time_column && column == config.right_time_column {
                         // Same name for time columns — right side is suffixed
                         format!("{}_{}", column, config.right_table)
                     } else {

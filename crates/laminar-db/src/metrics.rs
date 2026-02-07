@@ -334,6 +334,9 @@ mod tests {
             watermark: 0,
             sql: Some("SELECT symbol, AVG(price) FROM trades GROUP BY symbol".to_string()),
         };
-        assert_eq!(m.sql.as_deref(), Some("SELECT symbol, AVG(price) FROM trades GROUP BY symbol"));
+        assert_eq!(
+            m.sql.as_deref(),
+            Some("SELECT symbol, AVG(price) FROM trades GROUP BY symbol")
+        );
     }
 }

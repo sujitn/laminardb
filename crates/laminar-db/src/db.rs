@@ -353,7 +353,10 @@ impl LaminarDB {
         let name = &source_def.name;
         let schema = source_def.schema.clone();
         let watermark_col = source_def.watermark.as_ref().map(|w| w.column.clone());
-        let max_ooo = source_def.watermark.as_ref().map(|w| w.max_out_of_orderness);
+        let max_ooo = source_def
+            .watermark
+            .as_ref()
+            .map(|w| w.max_out_of_orderness);
 
         // Extract config from source definition
         let buffer_size = if source_def.config.buffer_size > 0 {
@@ -385,10 +388,14 @@ impl LaminarDB {
                 None
             }
         } else {
-            Some(
-                self.catalog
-                    .register_source(name, schema, watermark_col, max_ooo, buffer_size, None)?,
-            )
+            Some(self.catalog.register_source(
+                name,
+                schema,
+                watermark_col,
+                max_ooo,
+                buffer_size,
+                None,
+            )?)
         };
 
         // Auto-register source with checkpoint manager if enabled
@@ -1557,8 +1564,9 @@ impl LaminarDB {
                     (&entry.watermark_column, entry.max_out_of_orderness)
                 {
                     let format = infer_timestamp_format(&entry.schema, col);
-                    let extractor = laminar_core::time::EventTimeExtractor::from_column(col, format)
-                        .with_mode(laminar_core::time::ExtractionMode::Max);
+                    let extractor =
+                        laminar_core::time::EventTimeExtractor::from_column(col, format)
+                            .with_mode(laminar_core::time::ExtractionMode::Max);
                     let generator =
                         laminar_core::time::BoundedOutOfOrdernessGenerator::from_duration(dur);
                     let id = source_ids.len();
@@ -1902,8 +1910,9 @@ impl LaminarDB {
                     (&entry.watermark_column, entry.max_out_of_orderness)
                 {
                     let format = infer_timestamp_format(&entry.schema, col);
-                    let extractor = laminar_core::time::EventTimeExtractor::from_column(col, format)
-                        .with_mode(laminar_core::time::ExtractionMode::Max);
+                    let extractor =
+                        laminar_core::time::EventTimeExtractor::from_column(col, format)
+                            .with_mode(laminar_core::time::ExtractionMode::Max);
                     let generator =
                         laminar_core::time::BoundedOutOfOrdernessGenerator::from_duration(dur);
                     let id = source_ids.len();
@@ -4894,9 +4903,7 @@ mod tests {
     #[tokio::test]
     async fn test_source_handle_capacity() {
         let db = LaminarDB::open().unwrap();
-        db.execute("CREATE SOURCE events (id INT)")
-            .await
-            .unwrap();
+        db.execute("CREATE SOURCE events (id INT)").await.unwrap();
 
         let handle = db.source_untyped("events").unwrap();
         // Default buffer size is 1024
@@ -4994,7 +5001,10 @@ mod tests {
 
         // With 0s delay, watermark should be max timestamp = 3000
         let wm = handle.current_watermark();
-        assert_eq!(wm, 3000, "watermark should equal max timestamp with 0s delay");
+        assert_eq!(
+            wm, 3000,
+            "watermark should equal max timestamp with 0s delay"
+        );
     }
 
     #[tokio::test]
@@ -5095,9 +5105,9 @@ mod tests {
             schema,
             vec![
                 Arc::new(arrow::array::Int64Array::from(vec![1])),
-                Arc::new(
-                    arrow::array::TimestampMicrosecondArray::from(vec![5_000_000i64]),
-                ),
+                Arc::new(arrow::array::TimestampMicrosecondArray::from(vec![
+                    5_000_000i64,
+                ])),
             ],
         )
         .unwrap();
@@ -5144,7 +5154,10 @@ mod tests {
 
         // Global watermark should be min(5000, 2000) = 2000
         let global = db.pipeline_watermark();
-        assert_eq!(global, 2000, "global watermark should be min of all sources");
+        assert_eq!(
+            global, 2000,
+            "global watermark should be min of all sources"
+        );
     }
 
     #[tokio::test]

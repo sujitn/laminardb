@@ -218,13 +218,11 @@ impl PipelineDataSource for KafkaDataSource {
         {
             eprintln!("[kafka] produce error (order-events): {e}");
         }
-        if let Err(e) = generator::produce_to_kafka_keyed(
-            &self.producer,
-            "book-updates",
-            &book_updates,
-            |b| Some(&b.symbol),
-        )
-        .await
+        if let Err(e) =
+            generator::produce_to_kafka_keyed(&self.producer, "book-updates", &book_updates, |b| {
+                Some(&b.symbol)
+            })
+            .await
         {
             eprintln!("[kafka] produce error (book-updates): {e}");
         }
@@ -353,15 +351,11 @@ async fn run_kafka_mode() -> Result<(), Box<dyn std::error::Error>> {
     let orders = gen.generate_kafka_orders(10, base_ts);
     let book_updates = gen.generate_kafka_book_updates(base_ts);
     let tick_count =
-        generator::produce_to_kafka_keyed(&producer, "market-ticks", &ticks, |t| {
-            Some(&t.symbol)
-        })
-        .await?;
+        generator::produce_to_kafka_keyed(&producer, "market-ticks", &ticks, |t| Some(&t.symbol))
+            .await?;
     let order_count =
-        generator::produce_to_kafka_keyed(&producer, "order-events", &orders, |o| {
-            Some(&o.symbol)
-        })
-        .await?;
+        generator::produce_to_kafka_keyed(&producer, "order-events", &orders, |o| Some(&o.symbol))
+            .await?;
     let book_count =
         generator::produce_to_kafka_keyed(&producer, "book-updates", &book_updates, |b| {
             Some(&b.symbol)
@@ -427,8 +421,15 @@ async fn run_with_tui<D: PipelineDataSource>(
     }));
 
     let mut stats_collector = StatsCollector::new();
-    let result =
-        run_tui_loop(&mut terminal, app, &mut stats_collector, data_source, subs, db).await;
+    let result = run_tui_loop(
+        &mut terminal,
+        app,
+        &mut stats_collector,
+        data_source,
+        subs,
+        db,
+    )
+    .await;
 
     // Restore terminal
     disable_raw_mode()?;
