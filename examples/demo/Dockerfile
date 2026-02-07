@@ -18,7 +18,7 @@ COPY . .
 RUN cargo build --release -p laminardb-demo --features kafka
 
 # -- Runtime stage --
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 ca-certificates \
