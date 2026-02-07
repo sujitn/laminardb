@@ -1,10 +1,10 @@
 //! Reference table source trait and refresh modes.
 //!
-//! A [`ReferenceTableSource`] populates a reference/dimension table from an
+//! A [`ReferenceTableSource`](crate::reference::ReferenceTableSource) populates a reference/dimension table from an
 //! external connector. The source produces an initial snapshot (one or more
 //! `RecordBatch`es) followed by an optional stream of incremental changes.
 //!
-//! [`RefreshMode`] controls how and when the table is refreshed:
+//! [`RefreshMode`](crate::reference::RefreshMode) controls how and when the table is refreshed:
 //!
 //! - `SnapshotOnly` — load once at startup, never update.
 //! - `SnapshotPlusCdc` — load at startup, then apply CDC changes.
