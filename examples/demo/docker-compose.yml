@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.2.5

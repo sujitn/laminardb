@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_embedded_mode() -> Result<(), Box<dyn std::error::Error>> {
     // -- Build LaminarDB --
     let db = LaminarDB::builder()
-        .config_var("KAFKA_BROKERS", "localhost:9092")
+        .config_var("KAFKA_BROKERS", "localhost:19092")
         .config_var("GROUP_ID", "demo")
         .config_var("ENVIRONMENT", "development")
         .buffer_size(65536)
@@ -346,7 +346,7 @@ async fn run_kafka_mode() -> Result<(), Box<dyn std::error::Error>> {
     use rdkafka::config::ClientConfig;
     use rdkafka::producer::FutureProducer;
 
-    let brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".into());
+    let brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:19092".into());
     let group_id = std::env::var("GROUP_ID").unwrap_or_else(|_| "laminardb-demo".into());
 
     // -- Build LaminarDB with Kafka config --
@@ -375,9 +375,21 @@ async fn run_kafka_mode() -> Result<(), Box<dyn std::error::Error>> {
     let ticks = gen.generate_kafka_ticks(20, base_ts);
     let orders = gen.generate_kafka_orders(10, base_ts);
     let book_updates = gen.generate_kafka_book_updates(base_ts);
-    let tick_count = generator::produce_to_kafka(&producer, "market-ticks", &ticks).await?;
-    let order_count = generator::produce_to_kafka(&producer, "order-events", &orders).await?;
-    let book_count = generator::produce_to_kafka(&producer, "book-updates", &book_updates).await?;
+    let tick_count =
+        generator::produce_to_kafka_keyed(&producer, "market-ticks", &ticks, |t| {
+            Some(&t.symbol)
+        })
+        .await?;
+    let order_count =
+        generator::produce_to_kafka_keyed(&producer, "order-events", &orders, |o| {
+            Some(&o.symbol)
+        })
+        .await?;
+    let book_count =
+        generator::produce_to_kafka_keyed(&producer, "book-updates", &book_updates, |b| {
+            Some(&b.symbol)
+        })
+        .await?;
 
     eprintln!(
         "Produced {} ticks, {} orders, {} book updates to Kafka",
@@ -479,10 +491,33 @@ async fn run_kafka_mode() -> Result<(), Box<dyn std::error::Error>> {
             app.ingest_enriched_orders(enriched);
             app.cleanup_tick_buffer(ts);
 
-            // Produce to Kafka topics
-            let _ = generator::produce_to_kafka(&producer, "market-ticks", &ticks).await;
-            let _ = generator::produce_to_kafka(&producer, "order-events", &orders).await;
-            let _ = generator::produce_to_kafka(&producer, "book-updates", &book_updates).await;
+            // Produce to Kafka topics (keyed by symbol for co-partitioning)
+            if let Err(e) =
+                generator::produce_to_kafka_keyed(&producer, "market-ticks", &ticks, |t| {
+                    Some(&t.symbol)
+                })
+                .await
+            {
+                eprintln!("[kafka] produce error (market-ticks): {e}");
+            }
+            if let Err(e) =
+                generator::produce_to_kafka_keyed(&producer, "order-events", &orders, |o| {
+                    Some(&o.symbol)
+                })
+                .await
+            {
+                eprintln!("[kafka] produce error (order-events): {e}");
+            }
+            if let Err(e) = generator::produce_to_kafka_keyed(
+                &producer,
+                "book-updates",
+                &book_updates,
+                |b| Some(&b.symbol),
+            )
+            .await
+            {
+                eprintln!("[kafka] produce error (book-updates): {e}");
+            }
 
             // Drain pipeline output subscriptions
             drain_subscriptions(
