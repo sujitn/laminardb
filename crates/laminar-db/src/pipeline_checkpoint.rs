@@ -67,6 +67,9 @@ pub struct PipelineCheckpoint {
     pub source_offsets: HashMap<String, SerializableSourceCheckpoint>,
     /// Per-sink last committed epoch (key: sink name).
     pub sink_epochs: HashMap<String, u64>,
+    /// Per-table source offsets (key: table name). Absent in older checkpoints.
+    #[serde(default)]
+    pub table_offsets: HashMap<String, SerializableSourceCheckpoint>,
 }
 
 /// Manages pipeline checkpoint persistence on disk.
@@ -284,6 +287,7 @@ mod tests {
                 },
             )]),
             sink_epochs: HashMap::from([("pg-sink".to_string(), 41)]),
+            table_offsets: HashMap::new(),
         };
 
         let json = serde_json::to_string(&cp).unwrap();
@@ -304,6 +308,7 @@ mod tests {
             timestamp_ms: 0,
             source_offsets: HashMap::new(),
             sink_epochs: HashMap::new(),
+            table_offsets: HashMap::new(),
         };
 
         let json = serde_json::to_string(&cp).unwrap();
@@ -333,6 +338,7 @@ mod tests {
                 },
             )]),
             sink_epochs: HashMap::new(),
+            table_offsets: HashMap::new(),
         };
 
         let saved_epoch = mgr.save(&cp).unwrap();
@@ -370,6 +376,7 @@ mod tests {
                 timestamp_ms: i * 1_000,
                 source_offsets: HashMap::new(),
                 sink_epochs: HashMap::new(),
+                table_offsets: HashMap::new(),
             };
             mgr.save(&cp).unwrap();
         }
@@ -390,6 +397,7 @@ mod tests {
                 timestamp_ms: epoch * 1_000,
                 source_offsets: HashMap::new(),
                 sink_epochs: HashMap::new(),
+                table_offsets: HashMap::new(),
             };
             mgr.save(&cp).unwrap();
         }
@@ -457,6 +465,7 @@ mod tests {
                 },
             )]),
             sink_epochs: HashMap::new(),
+            table_offsets: HashMap::new(),
         })
         .unwrap();
 
@@ -473,6 +482,7 @@ mod tests {
                 },
             )]),
             sink_epochs: HashMap::new(),
+            table_offsets: HashMap::new(),
         })
         .unwrap();
 
@@ -529,5 +539,48 @@ mod tests {
 
         let mgr = PipelineCheckpointManager::new(dir.path(), 3);
         assert!(mgr.load_latest().unwrap().is_none());
+    }
+
+    // ── table_offsets backward compatibility tests ──
+
+    #[test]
+    fn test_checkpoint_with_table_offsets_round_trip() {
+        let cp = PipelineCheckpoint {
+            epoch: 10,
+            timestamp_ms: 2_000,
+            source_offsets: HashMap::new(),
+            sink_epochs: HashMap::new(),
+            table_offsets: HashMap::from([(
+                "instruments".to_string(),
+                SerializableSourceCheckpoint {
+                    offsets: HashMap::from([("lsn".to_string(), "0/ABCD".to_string())]),
+                    epoch: 10,
+                    metadata: HashMap::new(),
+                },
+            )]),
+        };
+
+        let json = serde_json::to_string(&cp).unwrap();
+        let restored: PipelineCheckpoint = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.table_offsets.len(), 1);
+        let tbl = restored.table_offsets.get("instruments").unwrap();
+        assert_eq!(tbl.offsets.get("lsn"), Some(&"0/ABCD".to_string()));
+        assert_eq!(tbl.epoch, 10);
+    }
+
+    #[test]
+    fn test_checkpoint_backward_compat_missing_table_offsets() {
+        // Old format without table_offsets field should deserialize with empty map
+        let json = r#"{
+            "epoch": 5,
+            "timestamp_ms": 1000,
+            "source_offsets": {},
+            "sink_epochs": {}
+        }"#;
+
+        let cp: PipelineCheckpoint = serde_json::from_str(json).unwrap();
+        assert_eq!(cp.epoch, 5);
+        assert!(cp.table_offsets.is_empty());
     }
 }

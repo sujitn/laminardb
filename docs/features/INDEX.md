@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 67 | 17 | 0 | 0 | 50 |
+| Phase 3 | 67 | 16 | 0 | 0 | 51 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **135** | **38** | **0** | **0** | **97** |
+| **Total** | **135** | **37** | **0** | **0** | **98** |
 
 ## Status Legend
 
@@ -101,7 +101,7 @@
 
 ## Phase 3: Connectors & Integration
 
-> **Status**: 49/67 features complete (73%)
+> **Status**: 51/67 features complete (76%)
 
 ### Streaming API ✅
 
@@ -199,7 +199,7 @@ See [Cloud Storage Index](phase-3/cloud/INDEX.md).
 |----|---------|--------|------|
 | F-CONN-001 | Checkpoint Recovery Wiring | ✅ | [Link](phase-3/F-CONN-001-checkpoint-recovery-wiring.md) |
 | F-CONN-002 | Reference Table Support | ✅ | [Link](phase-3/F-CONN-002-reference-tables.md) |
-| F-CONN-002B | Connector-Backed Table Population | 📝 | [Link](phase-3/F-CONN-002B-table-source-population.md) |
+| F-CONN-002B | Connector-Backed Table Population | ✅ | [Link](phase-3/F-CONN-002B-table-source-population.md) |
 | F-CONN-002C | PARTIAL Cache Mode & Xor Filter | 📝 | [Link](phase-3/F-CONN-002C-partial-cache-xor-filter.md) |
 | F-CONN-002D | RocksDB-Backed Persistent Table Store | 📝 | [Link](phase-3/F-CONN-002D-rocksdb-table-store.md) |
 | F-CONN-003 | Avro Serialization Hardening | ✅ | [Link](phase-3/F-CONN-003-avro-hardening.md) |

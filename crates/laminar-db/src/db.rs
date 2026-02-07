@@ -74,7 +74,7 @@ pub struct LaminarDB {
     connector_manager: parking_lot::Mutex<crate::connector_manager::ConnectorManager>,
     connector_registry: Arc<laminar_connectors::registry::ConnectorRegistry>,
     mv_registry: parking_lot::Mutex<laminar_core::mv::MvRegistry>,
-    table_store: parking_lot::Mutex<crate::table_store::TableStore>,
+    table_store: Arc<parking_lot::Mutex<crate::table_store::TableStore>>,
     state: std::sync::atomic::AtomicU8,
     /// Handle to the background processing task (if running).
     runtime_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -140,7 +140,7 @@ impl LaminarDB {
             ),
             connector_registry,
             mv_registry: parking_lot::Mutex::new(laminar_core::mv::MvRegistry::new()),
-            table_store: parking_lot::Mutex::new(crate::table_store::TableStore::new()),
+            table_store: Arc::new(parking_lot::Mutex::new(crate::table_store::TableStore::new())),
             state: std::sync::atomic::AtomicU8::new(STATE_CREATED),
             runtime_handle: parking_lot::Mutex::new(None),
             shutdown_signal: Arc::new(tokio::sync::Notify::new()),
@@ -558,6 +558,7 @@ impl LaminarDB {
     /// in the `TableStore` for upsert/delete/lookup semantics.
     /// If `WITH (...)` options include a `connector` key, the table is
     /// registered in the `ConnectorManager` for connector-backed population.
+    #[allow(clippy::too_many_lines)]
     fn handle_create_table(
         &self,
         create: &sqlparser::ast::CreateTable,
@@ -627,6 +628,7 @@ impl LaminarDB {
         let mut connector_options: HashMap<String, String> = HashMap::new();
         let mut format: Option<String> = None;
         let mut format_options: HashMap<String, String> = HashMap::new();
+        let mut refresh_mode: Option<laminar_connectors::reference::RefreshMode> = None;
 
         let with_options = match &create.table_options {
             sqlparser::ast::CreateTableOptions::With(opts) => opts.as_slice(),
@@ -640,6 +642,10 @@ impl LaminarDB {
                 match k.as_str() {
                     "connector" => connector_type = Some(val),
                     "format" => format = Some(val),
+                    "refresh" => {
+                        refresh_mode =
+                            Some(crate::connector_manager::parse_refresh_mode(&val)?);
+                    }
                     kk if kk.starts_with("format.") => {
                         format_options
                             .insert(kk.strip_prefix("format.").unwrap().to_string(), val);
@@ -667,6 +673,7 @@ impl LaminarDB {
                     connector_options,
                     format,
                     format_options,
+                    refresh: refresh_mode,
                 });
             }
         }
@@ -1413,15 +1420,16 @@ impl LaminarDB {
         source_regs: HashMap<String, crate::connector_manager::SourceRegistration>,
         sink_regs: HashMap<String, crate::connector_manager::SinkRegistration>,
         stream_regs: HashMap<String, crate::connector_manager::StreamRegistration>,
-        _table_regs: HashMap<String, crate::connector_manager::TableRegistration>,
+        table_regs: HashMap<String, crate::connector_manager::TableRegistration>,
     ) -> Result<(), DbError> {
-        use crate::connector_manager::{build_sink_config, build_source_config};
+        use crate::connector_manager::{build_sink_config, build_source_config, build_table_config};
         use crate::pipeline_checkpoint::{
             PipelineCheckpointManager, SerializableSourceCheckpoint,
         };
         use crate::stream_executor::StreamExecutor;
         use laminar_connectors::config::ConnectorConfig;
         use laminar_connectors::connector::{SinkConnector, SourceConnector};
+        use laminar_connectors::reference::{ReferenceTableSource, RefreshMode};
 
         // Build StreamExecutor
         let ctx = SessionContext::new();
@@ -1496,6 +1504,24 @@ impl LaminarDB {
                 .map_err(|e| DbError::Connector(format!("Failed to open sink '{name}': {e}")))?;
         }
 
+        // Build table sources from registrations
+        let mut table_sources: Vec<(String, Box<dyn ReferenceTableSource>, RefreshMode)> =
+            Vec::new();
+        for (name, reg) in &table_regs {
+            if reg.connector_type.is_none() {
+                continue;
+            }
+            let config = build_table_config(reg)?;
+            let source = self
+                .connector_registry
+                .create_table_source(&config)
+                .map_err(|e| {
+                    DbError::Connector(format!("Cannot create table source '{name}': {e}"))
+                })?;
+            let mode = reg.refresh.clone().unwrap_or(RefreshMode::SnapshotPlusCdc);
+            table_sources.push((name.clone(), source, mode));
+        }
+
         // Create checkpoint manager if configured
         let checkpoint_config = self.config.checkpoint.clone();
         let storage_dir = self.config.storage_dir.clone();
@@ -1525,6 +1551,15 @@ impl LaminarDB {
                         let _ = sink.rollback_epoch(checkpoint.epoch).await;
                     }
                 }
+                // Restore table source offsets
+                for (name, source, _) in &mut table_sources {
+                    if let Some(tbl_cp) = checkpoint.table_offsets.get(name) {
+                        let restored = tbl_cp.to_source_checkpoint();
+                        if let Err(e) = source.restore(&restored).await {
+                            tracing::warn!(table=%name, error=%e, "Table source restore failed");
+                        }
+                    }
+                }
                 mgr.set_epoch(checkpoint.epoch);
                 eprintln!(
                     "[laminar-db] Recovered from checkpoint epoch {}",
@@ -1532,6 +1567,25 @@ impl LaminarDB {
                 );
                 tracing::info!(epoch = checkpoint.epoch, "Recovered from pipeline checkpoint");
             }
+        }
+
+        // Snapshot phase: populate tables before stream processing begins
+        for (name, source, mode) in &mut table_sources {
+            if matches!(mode, RefreshMode::Manual) {
+                continue;
+            }
+            while let Some(batch) = source.poll_snapshot().await.map_err(|e| {
+                DbError::Connector(format!("Table '{name}' snapshot error: {e}"))
+            })? {
+                self.table_store
+                    .lock()
+                    .upsert(name, &batch)
+                    .map_err(|e| {
+                        DbError::Connector(format!("Table '{name}' upsert error: {e}"))
+                    })?;
+            }
+            self.sync_table_to_datafusion(name)?;
+            self.table_store.lock().set_ready(name, true);
         }
 
         // Get stream source handles so results also flow to db.subscribe().
@@ -1566,6 +1620,8 @@ impl LaminarDB {
             .as_ref()
             .and_then(|c| c.interval_ms)
             .map(std::time::Duration::from_millis);
+        let table_store_for_loop = self.table_store.clone();
+        let ctx_for_sync = self.ctx.clone();
 
         let handle = tokio::spawn(async move {
             eprintln!("[laminar-db] Connector pipeline task started");
@@ -1686,6 +1742,26 @@ impl LaminarDB {
                     }
                 }
 
+                // Poll table sources for incremental changes
+                for (name, source, mode) in &mut table_sources {
+                    if matches!(mode, RefreshMode::SnapshotOnly | RefreshMode::Manual) {
+                        continue;
+                    }
+                    match source.poll_changes().await {
+                        Ok(Some(batch)) => {
+                            if let Err(e) = table_store_for_loop.lock().upsert(name, &batch) {
+                                tracing::warn!(table=%name, error=%e, "Table upsert error");
+                            } else {
+                                sync_table_to_df(&ctx_for_sync, &table_store_for_loop, name);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(table=%name, error=%e, "Table poll error");
+                        }
+                    }
+                }
+
                 cycle_count += 1;
                 if cycle_count.is_multiple_of(50) {
                     eprintln!(
@@ -1717,6 +1793,15 @@ impl LaminarDB {
                             );
                         }
 
+                        // Capture table source offsets
+                        let mut table_offsets = HashMap::new();
+                        for (name, source, _) in &table_sources {
+                            table_offsets.insert(
+                                name.clone(),
+                                SerializableSourceCheckpoint::from(&source.checkpoint()),
+                            );
+                        }
+
                         // Build and persist
                         #[allow(clippy::cast_possible_truncation)]
                         let timestamp_ms = std::time::SystemTime::now()
@@ -1728,6 +1813,7 @@ impl LaminarDB {
                             timestamp_ms,
                             source_offsets,
                             sink_epochs: HashMap::new(),
+                            table_offsets,
                         };
 
                         if let Err(e) = mgr.save(&checkpoint) {
@@ -1761,6 +1847,13 @@ impl LaminarDB {
                         SerializableSourceCheckpoint::from(&source.checkpoint()),
                     );
                 }
+                let mut table_offsets = HashMap::new();
+                for (name, source, _) in &table_sources {
+                    table_offsets.insert(
+                        name.clone(),
+                        SerializableSourceCheckpoint::from(&source.checkpoint()),
+                    );
+                }
                 #[allow(clippy::cast_possible_truncation)]
                 let timestamp_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1771,11 +1864,19 @@ impl LaminarDB {
                     timestamp_ms,
                     source_offsets,
                     sink_epochs: HashMap::new(),
+                    table_offsets,
                 };
                 if let Err(e) = mgr.save(&checkpoint) {
                     tracing::warn!(error = %e, "Final checkpoint save failed");
                 } else {
                     tracing::info!(epoch, "Final pipeline checkpoint saved");
+                }
+            }
+
+            // Close table sources
+            for (name, source, _) in &mut table_sources {
+                if let Err(e) = source.close().await {
+                    tracing::warn!(table = %name, error = %e, "Table source close error");
                 }
             }
 
@@ -2250,6 +2351,33 @@ impl LaminarDB {
             ],
         )
         .map_err(|e| DbError::InvalidOperation(format!("describe metadata: {e}")))
+    }
+}
+
+/// Sync a reference table from [`TableStore`] into `DataFusion` as a `MemTable`.
+///
+/// This is the static (free-function) counterpart of
+/// [`LaminarDB::sync_table_to_datafusion`] — needed because the spawned
+/// pipeline task cannot hold `&self`.
+fn sync_table_to_df(
+    ctx: &SessionContext,
+    table_store: &Arc<parking_lot::Mutex<crate::table_store::TableStore>>,
+    name: &str,
+) {
+    let Some(batch) = table_store.lock().to_record_batch(name) else {
+        return;
+    };
+    let schema = batch.schema();
+    let _ = ctx.deregister_table(name);
+
+    let data = if batch.num_rows() > 0 {
+        vec![vec![batch]]
+    } else {
+        vec![vec![]]
+    };
+
+    if let Ok(mem_table) = datafusion::datasource::MemTable::try_new(schema, data) {
+        let _ = ctx.register_table(name, Arc::new(mem_table));
     }
 }
 
@@ -3855,5 +3983,228 @@ mod tests {
         // Row 2+: count of current + 1 preceding = 2
         assert_eq!(cnt_col.value(1), 2);
         assert_eq!(cnt_col.value(2), 2);
+    }
+
+    // ── F-CONN-002B: Connector-Backed Table Population ──
+
+    /// Helper: create a test RecordBatch for table population tests.
+    fn table_test_batch(ids: &[i32], symbols: &[&str]) -> RecordBatch {
+        use arrow::array::Int32Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("symbol", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(ids.to_vec())),
+                Arc::new(StringArray::from(symbols.to_vec())),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Register a mock table source factory that returns a `MockReferenceTableSource`
+    /// pre-loaded with the given snapshot and change batches.
+    fn register_mock_table_source(
+        db: &LaminarDB,
+        snapshot_batches: Vec<RecordBatch>,
+        change_batches: Vec<RecordBatch>,
+    ) {
+        use laminar_connectors::config::ConnectorInfo;
+        use laminar_connectors::reference::MockReferenceTableSource;
+
+        let snap = std::sync::Arc::new(parking_lot::Mutex::new(Some(snapshot_batches)));
+        let chg = std::sync::Arc::new(parking_lot::Mutex::new(Some(change_batches)));
+        db.connector_registry().register_table_source(
+            "mock",
+            ConnectorInfo {
+                name: "mock".to_string(),
+                display_name: "Mock Table Source".to_string(),
+                version: "0.1.0".to_string(),
+                is_source: true,
+                is_sink: false,
+                config_keys: vec![],
+            },
+            std::sync::Arc::new(move |_config| {
+                let s = snap.lock().take().unwrap_or_default();
+                let c = chg.lock().take().unwrap_or_default();
+                Ok(Box::new(MockReferenceTableSource::new(s, c)))
+            }),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_table_source_snapshot_populates_table() {
+        let db = LaminarDB::open().unwrap();
+        let batch = table_test_batch(&[1, 2], &["AAPL", "GOOG"]);
+        register_mock_table_source(&db, vec![batch], vec![]);
+
+        db.execute(
+            "CREATE SOURCE events (symbol VARCHAR, price DOUBLE) \
+             WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.execute(
+            "CREATE TABLE instruments (id INT PRIMARY KEY, symbol VARCHAR NOT NULL) \
+             WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.start().await.unwrap();
+
+        // Table should be populated by snapshot
+        let ts = db.table_store.lock();
+        assert!(ts.is_ready("instruments"));
+        assert_eq!(ts.table_row_count("instruments"), 2);
+    }
+
+    #[tokio::test]
+    async fn test_table_source_manual_no_snapshot() {
+        let db = LaminarDB::open().unwrap();
+        let batch = table_test_batch(&[1], &["AAPL"]);
+        register_mock_table_source(&db, vec![batch], vec![]);
+
+        db.execute(
+            "CREATE SOURCE events (symbol VARCHAR, price DOUBLE) \
+             WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.execute(
+            "CREATE TABLE instruments (id INT PRIMARY KEY, symbol VARCHAR NOT NULL) \
+             WITH (connector = 'mock', format = 'json', refresh = 'manual')",
+        )
+        .await
+        .unwrap();
+
+        db.start().await.unwrap();
+
+        // Manual mode: table stays empty
+        let ts = db.table_store.lock();
+        assert!(!ts.is_ready("instruments"));
+        assert_eq!(ts.table_row_count("instruments"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_table_source_multiple_tables() {
+        let db = LaminarDB::open().unwrap();
+
+        // Register two separate mock factories
+        use laminar_connectors::config::ConnectorInfo;
+        use laminar_connectors::reference::MockReferenceTableSource;
+
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let cc = call_count.clone();
+        let batch1 = table_test_batch(&[1], &["AAPL"]);
+        let batch2 = table_test_batch(&[2, 3], &["GOOG", "MSFT"]);
+        let batches =
+            std::sync::Arc::new(parking_lot::Mutex::new(vec![vec![batch1], vec![batch2]]));
+
+        db.connector_registry().register_table_source(
+            "mock",
+            ConnectorInfo {
+                name: "mock".to_string(),
+                display_name: "Mock".to_string(),
+                version: "0.1.0".to_string(),
+                is_source: true,
+                is_sink: false,
+                config_keys: vec![],
+            },
+            std::sync::Arc::new(move |_config| {
+                let idx = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as usize;
+                let mut all = batches.lock();
+                let snap = if idx < all.len() {
+                    std::mem::take(&mut all[idx])
+                } else {
+                    vec![]
+                };
+                Ok(Box::new(MockReferenceTableSource::new(snap, vec![])))
+            }),
+        );
+
+        db.execute(
+            "CREATE SOURCE events (x INT) WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.execute(
+            "CREATE TABLE t1 (id INT PRIMARY KEY, symbol VARCHAR NOT NULL) \
+             WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.execute(
+            "CREATE TABLE t2 (id INT PRIMARY KEY, symbol VARCHAR NOT NULL) \
+             WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.start().await.unwrap();
+
+        let ts = db.table_store.lock();
+        // Both tables should be snapshot-populated (order may vary)
+        let total = ts.table_row_count("t1") + ts.table_row_count("t2");
+        assert_eq!(total, 3); // 1 + 2
+        assert!(ts.is_ready("t1"));
+        assert!(ts.is_ready("t2"));
+    }
+
+    #[tokio::test]
+    async fn test_table_create_with_refresh_mode() {
+        let db = LaminarDB::open().unwrap();
+
+        // Just test DDL parsing — no need to register a mock factory
+        db.execute(
+            "CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR NOT NULL) \
+             WITH (connector = 'mock', format = 'json', refresh = 'cdc')",
+        )
+        .await
+        .unwrap();
+
+        let mgr = db.connector_manager.lock();
+        let reg = mgr.tables().get("t").unwrap();
+        assert_eq!(
+            reg.refresh,
+            Some(laminar_connectors::reference::RefreshMode::SnapshotPlusCdc)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_table_source_snapshot_only_no_changes() {
+        let db = LaminarDB::open().unwrap();
+        let snap = table_test_batch(&[1], &["AAPL"]);
+        let change = table_test_batch(&[2], &["GOOG"]);
+        register_mock_table_source(&db, vec![snap], vec![change]);
+
+        db.execute(
+            "CREATE SOURCE events (symbol VARCHAR, price DOUBLE) \
+             WITH (connector = 'mock', format = 'json')",
+        )
+        .await
+        .unwrap();
+
+        db.execute(
+            "CREATE TABLE instruments (id INT PRIMARY KEY, symbol VARCHAR NOT NULL) \
+             WITH (connector = 'mock', format = 'json', refresh = 'snapshot_only')",
+        )
+        .await
+        .unwrap();
+
+        db.start().await.unwrap();
+
+        // Should have snapshot data but not the change batch (it's snapshot_only)
+        let ts = db.table_store.lock();
+        assert!(ts.is_ready("instruments"));
+        assert_eq!(ts.table_row_count("instruments"), 1);
+        // The change batch id=2/GOOG should NOT be present
+        assert!(ts.lookup("instruments", "2").is_none());
     }
 }

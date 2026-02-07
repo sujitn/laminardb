@@ -9,32 +9,35 @@
 **Date**: 2026-02-07
 
 ### What Was Accomplished
-- **F-SQL-006: Window Frame (ROWS BETWEEN)** - COMPLETE (22 new tests, 494 laminar-sql / 170 laminar-db tests)
-  - `analytic_parser.rs`: Added `WindowFrameFunction`, `FrameUnits`, `FrameBound`, `WindowFrameInfo`, `WindowFrameAnalysis` types + `analyze_window_frames()` function (10 tests)
-  - `analytic_translator.rs`: Added `WindowFrameFunctionConfig`, `WindowFrameConfig` with `from_analysis()`, `with_max_partitions()`, `has_following()` (4 tests)
-  - `translator/mod.rs`: Added `WindowFrameConfig`, `WindowFrameFunctionConfig` re-exports
-  - `planner/mod.rs`: Added `frame_config: Option<WindowFrameConfig>` to `QueryPlan` and `QueryAnalysis`, wired extraction + UNBOUNDED FOLLOWING validation (4 tests)
-  - `db.rs`: Added `frame_functions` to EXPLAIN display + 4 DataFusion execution tests (moving average, running sum, rolling max, rolling count)
-  - DataFusion handles execution; we detect + extract frame metadata for streaming operators and diagnostics
+- **F-CONN-002B: Connector-Backed Table Population** - COMPLETE (19 new tests, 441 connector / 181 laminar-db tests)
+  - `reference.rs` (NEW): `ReferenceTableSource` trait, `RefreshMode` enum, `MockReferenceTableSource` (6 tests)
+  - `registry.rs`: Added `TableSourceFactory`, `register_table_source()`, `create_table_source()`, `list_table_sources()` (3 tests)
+  - `connector_manager.rs`: Added `refresh` field to `TableRegistration`, `build_table_config()`, `parse_refresh_mode()` (5 tests)
+  - `pipeline_checkpoint.rs`: Added `table_offsets` field with `#[serde(default)]` backward compat (2 tests)
+  - `db.rs`: `table_store` → `Arc<Mutex<>>`, snapshot phase before spawn, incremental CDC polling in loop, checkpoint wiring, `sync_table_to_df()` free fn, refresh mode DDL parsing (5 tests)
+  - Tables are now snapshot-populated on startup and incrementally refreshed during processing
 
 Previous session (2026-02-07):
-- **F-SQL-005: Multi-Way JOIN Support** - COMPLETE (21 new tests, 476 laminar-sql / 166 laminar-db tests)
-- **F-SQL-004: HAVING Clause Execution** - COMPLETE (22 new tests, 459 laminar-sql / 162 laminar-db tests)
-- **F-CONN-003: Avro Serialization Hardening** - COMPLETE (~40 new tests, 627 total connector tests with kafka)
+- **F-SQL-006: Window Frame (ROWS BETWEEN)** - COMPLETE (22 new tests, 494 laminar-sql / 170 laminar-db tests)
+- **F-SQL-005: Multi-Way JOIN Support** - COMPLETE (21 new tests)
+- **F-SQL-004: HAVING Clause Execution** - COMPLETE (22 new tests)
+- **F-CONN-003: Avro Serialization Hardening** - COMPLETE (~40 new tests)
 
 ### Where We Left Off
 
-**Phase 3: 50/67 features COMPLETE (75%)**
+**Phase 3: 51/67 features COMPLETE (76%)**
 
 All Phase 1 (12), Phase 1.5 (1), and Phase 2 (34) features are complete.
 See [INDEX.md](./features/INDEX.md) for the full feature-by-feature breakdown.
 
-**Test counts**: ~2,540 base, ~2,890 with all feature flags (`kafka`, `postgres-cdc`, `postgres-sink`, `delta-lake`, `mysql-cdc`, `ffi`)
+**Test counts**: ~2,560 base, ~2,910 with all feature flags (`kafka`, `postgres-cdc`, `postgres-sink`, `delta-lake`, `mysql-cdc`, `ffi`)
 
 ### Immediate Next Steps
-1. F-OBS-001: Pipeline Observability API
-2. F031B/C/D: Delta Lake advanced (recovery, compaction, schema evolution)
-3. F032A: Iceberg I/O (blocked by iceberg-rust DF 52.0 compat)
+1. F-CONN-002C: PARTIAL Cache Mode & Xor Filter
+2. F-CONN-002D: RocksDB-Backed Persistent Table Store
+3. F-OBS-001: Pipeline Observability API
+4. F031B/C/D: Delta Lake advanced (recovery, compaction, schema evolution)
+5. F032A: Iceberg I/O (blocked by iceberg-rust DF 52.0 compat)
 
 ### Open Issues
 - **iceberg-rust crate**: Deferred until compatible with workspace DataFusion. Business logic complete in F032.

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use laminar_connectors::config::ConnectorConfig;
+use laminar_connectors::reference::RefreshMode;
 
 use crate::error::DbError;
 
@@ -69,6 +70,8 @@ pub(crate) struct TableRegistration {
     pub format: Option<String>,
     /// Format-specific options.
     pub format_options: HashMap<String, String>,
+    /// How the table should be refreshed from the connector.
+    pub refresh: Option<RefreshMode>,
 }
 
 /// Build a [`ConnectorConfig`] from a [`SourceRegistration`].
@@ -142,6 +145,66 @@ pub(crate) fn build_sink_config(reg: &SinkRegistration) -> Result<ConnectorConfi
     }
 
     Ok(config)
+}
+
+/// Build a [`ConnectorConfig`] from a [`TableRegistration`].
+///
+/// Same normalization and validation as [`build_source_config`].
+pub(crate) fn build_table_config(reg: &TableRegistration) -> Result<ConnectorConfig, DbError> {
+    let connector_type = reg.connector_type.as_deref().ok_or_else(|| {
+        DbError::Connector(format!("Table '{}' has no connector type", reg.name))
+    })?;
+
+    let mut config = ConnectorConfig::new(connector_type.to_lowercase());
+    for (k, v) in &reg.connector_options {
+        config.set(normalize_option_key(k), v.clone());
+    }
+
+    if let Some(ref fmt_str) = reg.format {
+        laminar_connectors::serde::Format::parse(&fmt_str.to_lowercase()).map_err(|e| {
+            DbError::Connector(format!(
+                "Invalid format '{}' for table '{}': {e}",
+                fmt_str, reg.name,
+            ))
+        })?;
+        config.set("format".to_string(), fmt_str.to_lowercase());
+    }
+
+    for (k, v) in &reg.format_options {
+        config.set(format!("format.{k}"), v.clone());
+    }
+
+    Ok(config)
+}
+
+/// Parse a refresh mode string from DDL `WITH (refresh = '...')`.
+///
+/// Supported values:
+/// - `"snapshot_only"` / `"snapshot"` → `RefreshMode::SnapshotOnly`
+/// - `"cdc"` / `"snapshot_plus_cdc"` → `RefreshMode::SnapshotPlusCdc`
+/// - `"periodic:<seconds>"` → `RefreshMode::Periodic { interval }`
+/// - `"manual"` → `RefreshMode::Manual`
+pub(crate) fn parse_refresh_mode(s: &str) -> Result<RefreshMode, DbError> {
+    let lower = s.to_lowercase();
+    match lower.as_str() {
+        "snapshot_only" | "snapshot" => Ok(RefreshMode::SnapshotOnly),
+        "cdc" | "snapshot_plus_cdc" => Ok(RefreshMode::SnapshotPlusCdc),
+        "manual" => Ok(RefreshMode::Manual),
+        _ if lower.starts_with("periodic:") => {
+            let secs_str = lower.strip_prefix("periodic:").unwrap();
+            let secs: u64 = secs_str.parse().map_err(|_| {
+                DbError::Connector(format!(
+                    "Invalid periodic interval '{secs_str}': expected integer seconds"
+                ))
+            })?;
+            Ok(RefreshMode::Periodic {
+                interval: std::time::Duration::from_secs(secs),
+            })
+        }
+        _ => Err(DbError::Connector(format!(
+            "Unknown refresh mode '{s}': expected snapshot_only, cdc, periodic:<secs>, or manual"
+        ))),
+    }
 }
 
 /// Manages connector registrations from SQL DDL.
@@ -515,6 +578,7 @@ mod tests {
             connector_options: HashMap::from([("topic".to_string(), "instruments".to_string())]),
             format: Some("JSON".to_string()),
             format_options: HashMap::new(),
+            refresh: None,
         });
         assert_eq!(mgr.table_names().len(), 1);
         assert!(mgr.has_external_connectors());
@@ -530,6 +594,7 @@ mod tests {
             connector_options: HashMap::new(),
             format: None,
             format_options: HashMap::new(),
+            refresh: None,
         });
         assert!(mgr.unregister_table("t"));
         assert!(!mgr.unregister_table("t"));
@@ -546,6 +611,7 @@ mod tests {
             connector_options: HashMap::new(),
             format: None,
             format_options: HashMap::new(),
+            refresh: None,
         });
         assert_eq!(mgr.registration_count(), 1);
         mgr.clear();
@@ -679,5 +745,66 @@ mod tests {
             let config = build_source_config(&reg).unwrap();
             assert_eq!(config.get("format"), Some("avro"));
         }
+    }
+
+    // ── build_table_config tests ──
+
+    #[test]
+    fn test_build_table_config_valid() {
+        let reg = TableRegistration {
+            name: "instruments".to_string(),
+            primary_key: "symbol".to_string(),
+            connector_type: Some("KAFKA".to_string()),
+            connector_options: HashMap::from([("topic".to_string(), "instruments".to_string())]),
+            format: Some("JSON".to_string()),
+            format_options: HashMap::new(),
+            refresh: None,
+        };
+        let config = build_table_config(&reg).unwrap();
+        assert_eq!(config.connector_type(), "kafka");
+        assert_eq!(config.get("topic"), Some("instruments"));
+        assert_eq!(config.get("format"), Some("json"));
+    }
+
+    #[test]
+    fn test_build_table_config_missing_type() {
+        let reg = TableRegistration {
+            name: "t".to_string(),
+            primary_key: "id".to_string(),
+            connector_type: None,
+            connector_options: HashMap::new(),
+            format: None,
+            format_options: HashMap::new(),
+            refresh: None,
+        };
+        let err = build_table_config(&reg).unwrap_err();
+        assert!(err.to_string().contains("no connector type"));
+    }
+
+    // ── parse_refresh_mode tests ──
+
+    #[test]
+    fn test_parse_refresh_mode_variants() {
+        use std::time::Duration;
+
+        assert_eq!(parse_refresh_mode("snapshot_only").unwrap(), RefreshMode::SnapshotOnly);
+        assert_eq!(parse_refresh_mode("snapshot").unwrap(), RefreshMode::SnapshotOnly);
+        assert_eq!(parse_refresh_mode("cdc").unwrap(), RefreshMode::SnapshotPlusCdc);
+        assert_eq!(parse_refresh_mode("snapshot_plus_cdc").unwrap(), RefreshMode::SnapshotPlusCdc);
+        assert_eq!(parse_refresh_mode("manual").unwrap(), RefreshMode::Manual);
+        assert_eq!(
+            parse_refresh_mode("periodic:60").unwrap(),
+            RefreshMode::Periodic { interval: Duration::from_secs(60) }
+        );
+        assert_eq!(
+            parse_refresh_mode("PERIODIC:30").unwrap(),
+            RefreshMode::Periodic { interval: Duration::from_secs(30) }
+        );
+    }
+
+    #[test]
+    fn test_parse_refresh_mode_invalid() {
+        assert!(parse_refresh_mode("bogus").is_err());
+        assert!(parse_refresh_mode("periodic:abc").is_err());
     }
 }
