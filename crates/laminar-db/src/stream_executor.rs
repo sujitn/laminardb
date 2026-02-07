@@ -227,38 +227,24 @@ impl StreamExecutor {
             let query_name = query.name.clone();
             let query_sql = query.sql.clone();
 
-            match self.ctx.sql(&query_sql).await {
-                Ok(df) => match df.collect().await {
-                    Ok(batches) => {
-                        if !batches.is_empty() {
-                            // Register results as a temp MemTable for downstream queries
-                            let schema = batches[0].schema();
-                            if let Ok(mem_table) = datafusion::datasource::MemTable::try_new(
-                                schema,
-                                vec![batches.clone()],
-                            ) {
-                                let _ = self.ctx.deregister_table(&query_name);
-                                let _ = self.ctx.register_table(&query_name, Arc::new(mem_table));
-                                intermediate_tables.push(query_name.clone());
-                            }
-                            results.insert(query_name, batches);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            stream = %query_name,
-                            error = %e,
-                            "Stream query execution failed"
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        stream = %query_name,
-                        error = %e,
-                        "Stream query planning failed"
-                    );
+            let df = self.ctx.sql(&query_sql).await.map_err(|e| {
+                DbError::Pipeline(format!("Stream '{query_name}' planning failed: {e}"))
+            })?;
+            let batches = df.collect().await.map_err(|e| {
+                DbError::Pipeline(format!("Stream '{query_name}' execution failed: {e}"))
+            })?;
+
+            if !batches.is_empty() {
+                // Register results as a temp MemTable for downstream queries
+                let schema = batches[0].schema();
+                if let Ok(mem_table) =
+                    datafusion::datasource::MemTable::try_new(schema, vec![batches.clone()])
+                {
+                    let _ = self.ctx.deregister_table(&query_name);
+                    let _ = self.ctx.register_table(&query_name, Arc::new(mem_table));
+                    intermediate_tables.push(query_name.clone());
                 }
+                results.insert(query_name, batches);
             }
         }
 
@@ -379,9 +365,15 @@ mod tests {
         );
 
         let source_batches = HashMap::new();
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
-        // Query should fail gracefully (table not registered)
-        assert!(!results.contains_key("test_stream"));
+        // When no source data is registered, the query references a missing table —
+        // this should surface as an error, not silently produce empty results.
+        let result = executor.execute_cycle(&source_batches).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("test_stream"),
+            "error should name the stream: {err_msg}"
+        );
     }
 
     #[tokio::test]
@@ -441,10 +433,13 @@ mod tests {
         let r1 = executor.execute_cycle(&source_batches).await.unwrap();
         assert!(r1.contains_key("pass"));
 
-        // Second cycle with no data — table should have been cleaned up
+        // Second cycle with no data — table was cleaned up, so query fails
         let empty = HashMap::new();
-        let r2 = executor.execute_cycle(&empty).await.unwrap();
-        assert!(!r2.contains_key("pass"));
+        let r2 = executor.execute_cycle(&empty).await;
+        assert!(
+            r2.is_err(),
+            "query referencing cleaned-up table should fail"
+        );
     }
 
     #[tokio::test]
@@ -672,12 +667,57 @@ mod tests {
         );
         executor.add_query("level2".to_string(), "SELECT name FROM level1".to_string());
 
-        // No source data
+        // No source data — first query references missing table, so cycle fails
         let source_batches = HashMap::new();
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let result = executor.execute_cycle(&source_batches).await;
+        assert!(result.is_err());
+    }
 
-        // Neither query should produce results (graceful degradation)
-        assert!(!results.contains_key("level1"));
-        assert!(!results.contains_key("level2"));
+    #[tokio::test]
+    async fn test_execute_cycle_propagates_planning_error() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        // Register a query with invalid SQL that will fail planning
+        executor.add_query(
+            "bad_query".to_string(),
+            "SELECTTTT * FROMM nowhere".to_string(),
+        );
+
+        let mut source_batches = HashMap::new();
+        source_batches.insert("events".to_string(), vec![test_batch()]);
+
+        let result = executor.execute_cycle(&source_batches).await;
+        assert!(result.is_err(), "invalid SQL should surface as error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("bad_query"),
+            "error should name the stream: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_cycle_propagates_execution_error() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        // Query references a column that doesn't exist in the source schema
+        executor.add_query(
+            "missing_col".to_string(),
+            "SELECT nonexistent_column FROM events".to_string(),
+        );
+
+        let mut source_batches = HashMap::new();
+        source_batches.insert("events".to_string(), vec![test_batch()]);
+
+        let result = executor.execute_cycle(&source_batches).await;
+        assert!(result.is_err(), "missing column should surface as error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing_col"),
+            "error should name the stream: {err_msg}"
+        );
     }
 }

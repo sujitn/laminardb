@@ -24,6 +24,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+mod asof_batch;
 mod builder;
 mod catalog;
 mod config;

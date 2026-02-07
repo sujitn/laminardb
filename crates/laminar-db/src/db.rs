@@ -13,6 +13,7 @@ use laminar_sql::parser::{parse_streaming_sql, ShowCommand, StreamingStatement};
 use laminar_sql::planner::StreamingPlanner;
 use laminar_sql::register_streaming_functions;
 use laminar_sql::translator::streaming_ddl;
+use laminar_sql::translator::{AsofJoinTranslatorConfig, JoinOperatorConfig};
 
 use crate::builder::LaminarDbBuilder;
 use crate::catalog::SourceCatalog;
@@ -980,7 +981,12 @@ impl LaminarDB {
                 }))
             }
             laminar_sql::planner::StreamingPlan::Query(query_plan) => {
-                // Async execution without the lock
+                // Check for ASOF join — DataFusion can't parse ASOF syntax
+                if let Some(asof_config) = Self::extract_asof_config(&query_plan) {
+                    return self.execute_asof_query(&asof_config, sql).await;
+                }
+
+                // Standard DataFusion path
                 let plan_sql = query_plan.statement.to_string();
                 let logical_plan = self.ctx.state().create_logical_plan(&plan_sql).await?;
                 let df = self.ctx.execute_logical_plan(logical_plan).await?;
@@ -1045,6 +1051,109 @@ impl LaminarDB {
             subscription: Some(subscription),
             active: true,
         })
+    }
+
+    /// Extract an ASOF join config from a query plan, if present.
+    fn extract_asof_config(
+        plan: &laminar_sql::planner::QueryPlan,
+    ) -> Option<AsofJoinTranslatorConfig> {
+        plan.join_config.as_ref()?.iter().find_map(|jc| {
+            if let JoinOperatorConfig::Asof(cfg) = jc {
+                Some(cfg.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Execute an ASOF join query by fetching left/right tables separately
+    /// and performing the join in-process (bypasses `DataFusion`'s SQL parser
+    /// which doesn't understand ASOF syntax).
+    async fn execute_asof_query(
+        &self,
+        asof_config: &AsofJoinTranslatorConfig,
+        original_sql: &str,
+    ) -> Result<ExecuteResult, DbError> {
+        let left_sql = format!("SELECT * FROM {}", asof_config.left_table);
+        let right_sql = format!("SELECT * FROM {}", asof_config.right_table);
+
+        let left_batches = self
+            .ctx
+            .sql(&left_sql)
+            .await
+            .map_err(|e| {
+                DbError::Pipeline(format!(
+                    "ASOF left table '{}' query failed: {e}",
+                    asof_config.left_table
+                ))
+            })?
+            .collect()
+            .await
+            .map_err(|e| {
+                DbError::Pipeline(format!(
+                    "ASOF left table '{}' execution failed: {e}",
+                    asof_config.left_table
+                ))
+            })?;
+
+        let right_batches = self
+            .ctx
+            .sql(&right_sql)
+            .await
+            .map_err(|e| {
+                DbError::Pipeline(format!(
+                    "ASOF right table '{}' query failed: {e}",
+                    asof_config.right_table
+                ))
+            })?
+            .collect()
+            .await
+            .map_err(|e| {
+                DbError::Pipeline(format!(
+                    "ASOF right table '{}' execution failed: {e}",
+                    asof_config.right_table
+                ))
+            })?;
+
+        let result_batch =
+            crate::asof_batch::execute_asof_join_batch(&left_batches, &right_batches, asof_config)?;
+
+        if result_batch.num_rows() == 0 {
+            let query_id = self.catalog.register_query(original_sql);
+            return Ok(ExecuteResult::Query(QueryHandle {
+                id: query_id,
+                schema: result_batch.schema(),
+                sql: original_sql.to_string(),
+                subscription: None,
+                active: false,
+            }));
+        }
+
+        let schema = result_batch.schema();
+        let mem_table =
+            datafusion::datasource::MemTable::try_new(schema.clone(), vec![vec![result_batch]])
+                .map_err(|e| {
+                    DbError::Pipeline(format!("Failed to create ASOF result table: {e}"))
+                })?;
+
+        let _ = self.ctx.deregister_table("__asof_result");
+        self.ctx
+            .register_table("__asof_result", Arc::new(mem_table))
+            .map_err(|e| DbError::Pipeline(format!("Failed to register ASOF result table: {e}")))?;
+
+        let df = self
+            .ctx
+            .sql("SELECT * FROM __asof_result")
+            .await
+            .map_err(|e| DbError::Pipeline(format!("Failed to query ASOF result: {e}")))?;
+        let stream = df
+            .execute_stream()
+            .await
+            .map_err(|e| DbError::Pipeline(format!("Failed to stream ASOF result: {e}")))?;
+
+        let _ = self.ctx.deregister_table("__asof_result");
+
+        Ok(self.bridge_query_stream(original_sql, stream))
     }
 
     /// Get a typed source handle for pushing data.

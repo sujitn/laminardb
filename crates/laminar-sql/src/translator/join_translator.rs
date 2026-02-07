@@ -58,6 +58,10 @@ pub enum LookupJoinType {
 /// Configuration for ASOF join operator
 #[derive(Debug, Clone)]
 pub struct AsofJoinTranslatorConfig {
+    /// Left side table name
+    pub left_table: String,
+    /// Right side table name
+    pub right_table: String,
     /// Key column for partitioning (e.g., symbol)
     pub key_column: String,
     /// Left side time column
@@ -98,6 +102,8 @@ impl JoinOperatorConfig {
     pub fn from_analysis(analysis: &JoinAnalysis) -> Self {
         if analysis.is_asof_join {
             return JoinOperatorConfig::Asof(AsofJoinTranslatorConfig {
+                left_table: analysis.left_table.clone(),
+                right_table: analysis.right_table.clone(),
                 key_column: analysis.left_key_column.clone(),
                 left_time_column: analysis.left_time_column.clone().unwrap_or_default(),
                 right_time_column: analysis.right_time_column.clone().unwrap_or_default(),
