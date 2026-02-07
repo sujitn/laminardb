@@ -229,6 +229,11 @@ impl SourceCatalog {
             .map(|entry| entry.sink.subscribe())
     }
 
+    /// Get a stream entry by name.
+    pub(crate) fn get_stream_entry(&self, name: &str) -> Option<Arc<StreamEntry>> {
+        self.streams.read().get(name).cloned()
+    }
+
     /// Get a clone of the stream's source handle (for pushing results).
     pub(crate) fn get_stream_source(&self, name: &str) -> Option<streaming::Source<ArrowRecord>> {
         self.streams

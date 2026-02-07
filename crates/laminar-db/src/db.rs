@@ -81,6 +81,10 @@ pub struct LaminarDB {
     runtime_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Signal to stop the processing loop.
     shutdown_signal: Arc<tokio::sync::Notify>,
+    /// Shared pipeline counters for observability.
+    counters: Arc<crate::metrics::PipelineCounters>,
+    /// Instant when the database was created, for uptime calculation.
+    start_time: std::time::Instant,
 }
 
 impl LaminarDB {
@@ -147,6 +151,8 @@ impl LaminarDB {
             state: std::sync::atomic::AtomicU8::new(STATE_CREATED),
             runtime_handle: parking_lot::Mutex::new(None),
             shutdown_signal: Arc::new(tokio::sync::Notify::new()),
+            counters: Arc::new(crate::metrics::PipelineCounters::new()),
+            start_time: std::time::Instant::now(),
         })
     }
 
@@ -1517,6 +1523,7 @@ impl LaminarDB {
         );
 
         let shutdown = self.shutdown_signal.clone();
+        let counters = Arc::clone(&self.counters);
 
         let handle = tokio::spawn(async move {
             let mut cycle_count: u64 = 0;
@@ -1530,12 +1537,22 @@ impl LaminarDB {
                     () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
                 }
 
+                let cycle_start = std::time::Instant::now();
+
                 // Drain source subscriptions into batches
                 let mut source_batches: HashMap<String, Vec<RecordBatch>> = HashMap::new();
                 for (name, sub) in &source_subs {
                     for _ in 0..256 {
                         match sub.poll() {
                             Some(batch) if batch.num_rows() > 0 => {
+                                #[allow(clippy::cast_possible_truncation)]
+                                let row_count = batch.num_rows() as u64;
+                                counters
+                                    .events_ingested
+                                    .fetch_add(row_count, std::sync::atomic::Ordering::Relaxed);
+                                counters
+                                    .total_batches
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 source_batches.entry(name.clone()).or_default().push(batch);
                             }
                             _ => break,
@@ -1555,6 +1572,12 @@ impl LaminarDB {
                             if let Some(batches) = results.get(stream_name) {
                                 for batch in batches {
                                     if batch.num_rows() > 0 {
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        let row_count = batch.num_rows() as u64;
+                                        counters.events_emitted.fetch_add(
+                                            row_count,
+                                            std::sync::atomic::Ordering::Relaxed,
+                                        );
                                         let _ = src.push_arrow(batch.clone());
                                     }
                                 }
@@ -1567,6 +1590,14 @@ impl LaminarDB {
                 }
 
                 cycle_count += 1;
+                counters
+                    .cycles
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[allow(clippy::cast_possible_truncation)]
+                let elapsed_ns = cycle_start.elapsed().as_nanos() as u64;
+                counters
+                    .last_cycle_duration_ns
+                    .store(elapsed_ns, std::sync::atomic::Ordering::Relaxed);
                 if cycle_count.is_multiple_of(100) {
                     tracing::debug!(cycles = cycle_count, "Embedded pipeline processing");
                 }
@@ -1793,6 +1824,7 @@ impl LaminarDB {
             .map(std::time::Duration::from_millis);
         let table_store_for_loop = self.table_store.clone();
         let ctx_for_sync = self.ctx.clone();
+        let counters = Arc::clone(&self.counters);
 
         let handle = tokio::spawn(async move {
             eprintln!("[laminar-db] Connector pipeline task started");
@@ -1810,13 +1842,23 @@ impl LaminarDB {
                     () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
                 }
 
+                let cycle_start = std::time::Instant::now();
+
                 // Poll sources
                 let mut source_batches = HashMap::new();
                 for (name, source, _) in &mut sources {
                     match source.poll_batch(max_poll).await {
                         Ok(Some(batch)) => {
                             total_batches += 1;
-                            total_records += batch.records.num_rows() as u64;
+                            #[allow(clippy::cast_possible_truncation)]
+                            let row_count = batch.records.num_rows() as u64;
+                            total_records += row_count;
+                            counters
+                                .events_ingested
+                                .fetch_add(row_count, std::sync::atomic::Ordering::Relaxed);
+                            counters
+                                .total_batches
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             source_batches
                                 .entry(name.clone())
                                 .or_insert_with(Vec::new)
@@ -1861,6 +1903,12 @@ impl LaminarDB {
                                 if let Some(batches) = results.get(stream_name) {
                                     for batch in batches {
                                         if batch.num_rows() > 0 {
+                                            #[allow(clippy::cast_possible_truncation)]
+                                            let row_count = batch.num_rows() as u64;
+                                            counters.events_emitted.fetch_add(
+                                                row_count,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
                                             let _ = src.push_arrow(batch.clone());
                                         }
                                     }
@@ -1935,6 +1983,14 @@ impl LaminarDB {
                 }
 
                 cycle_count += 1;
+                counters
+                    .cycles
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[allow(clippy::cast_possible_truncation)]
+                let elapsed_ns = cycle_start.elapsed().as_nanos() as u64;
+                counters
+                    .last_cycle_duration_ns
+                    .store(elapsed_ns, std::sync::atomic::Ordering::Relaxed);
                 if cycle_count.is_multiple_of(50) {
                     eprintln!(
                         "[laminar-db] Pipeline cycle {cycle_count}: {total_batches} batches, {total_records} records total",
@@ -2127,6 +2183,115 @@ impl LaminarDB {
             STATE_SHUTTING_DOWN => "ShuttingDown",
             STATE_STOPPED => "Stopped",
             _ => "Unknown",
+        }
+    }
+
+    /// Get a pipeline-wide metrics snapshot.
+    ///
+    /// Reads shared atomic counters and catalog sizes to produce a
+    /// point-in-time view of pipeline health.
+    #[must_use]
+    pub fn metrics(&self) -> crate::metrics::PipelineMetrics {
+        let snap = self.counters.snapshot();
+        crate::metrics::PipelineMetrics {
+            total_events_ingested: snap.events_ingested,
+            total_events_emitted: snap.events_emitted,
+            total_events_dropped: snap.events_dropped,
+            total_cycles: snap.cycles,
+            total_batches: snap.total_batches,
+            uptime: self.start_time.elapsed(),
+            state: self.pipeline_state_enum(),
+            last_cycle_duration_ns: snap.last_cycle_duration_ns,
+            source_count: self.catalog.list_sources().len(),
+            stream_count: self.catalog.list_streams().len(),
+            sink_count: self.catalog.list_sinks().len(),
+        }
+    }
+
+    /// Get metrics for a single source by name.
+    #[must_use]
+    pub fn source_metrics(&self, name: &str) -> Option<crate::metrics::SourceMetrics> {
+        let entry = self.catalog.get_source(name)?;
+        let pending = entry.source.pending();
+        let capacity = entry.source.capacity();
+        Some(crate::metrics::SourceMetrics {
+            name: entry.name.clone(),
+            total_events: entry.source.sequence(),
+            pending,
+            capacity,
+            is_backpressured: crate::metrics::is_backpressured(pending, capacity),
+            watermark: entry.source.current_watermark(),
+            utilization: crate::metrics::utilization(pending, capacity),
+        })
+    }
+
+    /// Get metrics for all registered sources.
+    #[must_use]
+    pub fn all_source_metrics(&self) -> Vec<crate::metrics::SourceMetrics> {
+        self.catalog
+            .list_sources()
+            .iter()
+            .filter_map(|name| self.source_metrics(name))
+            .collect()
+    }
+
+    /// Get metrics for a single stream by name.
+    #[must_use]
+    pub fn stream_metrics(&self, name: &str) -> Option<crate::metrics::StreamMetrics> {
+        let entry = self.catalog.get_stream_entry(name)?;
+        let pending = entry.source.pending();
+        let capacity = entry.source.capacity();
+        let sql = self
+            .connector_manager
+            .lock()
+            .streams()
+            .get(name)
+            .map(|reg| reg.query_sql.clone());
+        Some(crate::metrics::StreamMetrics {
+            name: entry.name.clone(),
+            total_events: entry.source.sequence(),
+            pending,
+            capacity,
+            is_backpressured: crate::metrics::is_backpressured(pending, capacity),
+            watermark: entry.source.current_watermark(),
+            sql,
+        })
+    }
+
+    /// Get metrics for all registered streams.
+    #[must_use]
+    pub fn all_stream_metrics(&self) -> Vec<crate::metrics::StreamMetrics> {
+        self.catalog
+            .list_streams()
+            .iter()
+            .filter_map(|name| self.stream_metrics(name))
+            .collect()
+    }
+
+    /// Get the total number of events processed (ingested + emitted).
+    #[must_use]
+    pub fn total_events_processed(&self) -> u64 {
+        let snap = self.counters.snapshot();
+        snap.events_ingested + snap.events_emitted
+    }
+
+    /// Get a reference to the shared pipeline counters.
+    ///
+    /// Useful for external code that needs to read counters directly
+    /// (e.g. a TUI dashboard polling at high frequency).
+    #[must_use]
+    pub fn counters(&self) -> &Arc<crate::metrics::PipelineCounters> {
+        &self.counters
+    }
+
+    /// Convert the internal `AtomicU8` state to a `PipelineState` enum.
+    fn pipeline_state_enum(&self) -> crate::metrics::PipelineState {
+        match self.state.load(std::sync::atomic::Ordering::Acquire) {
+            STATE_CREATED => crate::metrics::PipelineState::Created,
+            STATE_STARTING => crate::metrics::PipelineState::Starting,
+            STATE_RUNNING => crate::metrics::PipelineState::Running,
+            STATE_SHUTTING_DOWN => crate::metrics::PipelineState::ShuttingDown,
+            _ => crate::metrics::PipelineState::Stopped,
         }
     }
 
@@ -4458,5 +4623,163 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cache_max_entries"));
+    }
+
+    // --- F-OBS-001: Pipeline Observability API tests ---
+
+    #[tokio::test]
+    async fn test_metrics_initial_state() {
+        let db = LaminarDB::open().unwrap();
+        let m = db.metrics();
+        assert_eq!(m.total_events_ingested, 0);
+        assert_eq!(m.total_events_emitted, 0);
+        assert_eq!(m.total_events_dropped, 0);
+        assert_eq!(m.total_cycles, 0);
+        assert_eq!(m.total_batches, 0);
+        assert_eq!(m.state, crate::metrics::PipelineState::Created);
+        assert_eq!(m.source_count, 0);
+        assert_eq!(m.stream_count, 0);
+        assert_eq!(m.sink_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_source_metrics_after_push() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE trades (symbol VARCHAR, price DOUBLE)")
+            .await
+            .unwrap();
+
+        // Push some data
+        let handle = db.source_untyped("trades").unwrap();
+        let batch = RecordBatch::try_new(
+            handle.schema().clone(),
+            vec![
+                Arc::new(arrow::array::StringArray::from(vec!["AAPL", "GOOG"])),
+                Arc::new(arrow::array::Float64Array::from(vec![150.0, 2800.0])),
+            ],
+        )
+        .unwrap();
+        handle.push_arrow(batch).unwrap();
+
+        let sm = db.source_metrics("trades").unwrap();
+        assert_eq!(sm.name, "trades");
+        assert_eq!(sm.total_events, 1); // 1 push = sequence 1
+        assert!(sm.pending > 0);
+        assert!(sm.capacity > 0);
+        assert!(sm.utilization > 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_source_metrics_not_found() {
+        let db = LaminarDB::open().unwrap();
+        assert!(db.source_metrics("nonexistent").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_all_source_metrics() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE a (id INT)").await.unwrap();
+        db.execute("CREATE SOURCE b (id INT)").await.unwrap();
+
+        let all = db.all_source_metrics();
+        assert_eq!(all.len(), 2);
+        let names: std::collections::HashSet<_> = all.iter().map(|m| m.name.clone()).collect();
+        assert!(names.contains("a"));
+        assert!(names.contains("b"));
+    }
+
+    #[tokio::test]
+    async fn test_total_events_processed_zero() {
+        let db = LaminarDB::open().unwrap();
+        assert_eq!(db.total_events_processed(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_state_enum_created() {
+        let db = LaminarDB::open().unwrap();
+        assert_eq!(
+            db.pipeline_state_enum(),
+            crate::metrics::PipelineState::Created
+        );
+    }
+
+    #[tokio::test]
+    async fn test_counters_accessible() {
+        let db = LaminarDB::open().unwrap();
+        let c = db.counters();
+        c.events_ingested
+            .fetch_add(42, std::sync::atomic::Ordering::Relaxed);
+        let m = db.metrics();
+        assert_eq!(m.total_events_ingested, 42);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_counts_after_create() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE s1 (id INT)").await.unwrap();
+        db.execute("CREATE SINK out1 FROM s1").await.unwrap();
+
+        let m = db.metrics();
+        assert_eq!(m.source_count, 1);
+        assert_eq!(m.sink_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_source_handle_capacity() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE events (id INT)")
+            .await
+            .unwrap();
+
+        let handle = db.source_untyped("events").unwrap();
+        // Default buffer size is 1024
+        assert!(handle.capacity() >= 1024);
+        assert!(!handle.is_backpressured());
+    }
+
+    #[tokio::test]
+    async fn test_stream_metrics_with_sql() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE trades (symbol VARCHAR, price DOUBLE, ts BIGINT)")
+            .await
+            .unwrap();
+        db.execute(
+            "CREATE STREAM avg_price AS \
+             SELECT symbol, AVG(price) as avg_price \
+             FROM trades GROUP BY symbol, TUMBLE(ts, INTERVAL '1' MINUTE)",
+        )
+        .await
+        .unwrap();
+
+        let sm = db.stream_metrics("avg_price");
+        assert!(sm.is_some());
+        let sm = sm.unwrap();
+        assert_eq!(sm.name, "avg_price");
+        assert!(sm.sql.is_some());
+        assert!(sm.sql.as_deref().unwrap().contains("AVG"));
+    }
+
+    #[tokio::test]
+    async fn test_all_stream_metrics() {
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE trades (symbol VARCHAR, price DOUBLE, ts BIGINT)")
+            .await
+            .unwrap();
+        db.execute(
+            "CREATE STREAM s1 AS SELECT symbol, AVG(price) as avg_price \
+             FROM trades GROUP BY symbol, TUMBLE(ts, INTERVAL '1' MINUTE)",
+        )
+        .await
+        .unwrap();
+
+        let all = db.all_stream_metrics();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "s1");
+    }
+
+    #[tokio::test]
+    async fn test_stream_metrics_not_found() {
+        let db = LaminarDB::open().unwrap();
+        assert!(db.stream_metrics("nonexistent").is_none());
     }
 }

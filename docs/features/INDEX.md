@@ -7,10 +7,10 @@
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
 | Phase 2 | 34 | 0 | 0 | 0 | 34 |
-| Phase 3 | 67 | 14 | 0 | 0 | 53 |
+| Phase 3 | 67 | 13 | 0 | 0 | 54 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **135** | **35** | **0** | **0** | **100** |
+| **Total** | **135** | **34** | **0** | **0** | **101** |
 
 ## Status Legend
 
@@ -101,7 +101,7 @@
 
 ## Phase 3: Connectors & Integration
 
-> **Status**: 51/67 features complete (76%)
+> **Status**: 54/67 features complete (81%)
 
 ### Streaming API ✅
 
@@ -208,7 +208,7 @@ See [Cloud Storage Index](phase-3/cloud/INDEX.md).
 
 | ID | Feature | Status | Spec |
 |----|---------|--------|------|
-| F-OBS-001 | Pipeline Observability API | 📝 | [Link](phase-3/F-OBS-001-pipeline-observability.md) |
+| F-OBS-001 | Pipeline Observability API | ✅ | [Link](phase-3/F-OBS-001-pipeline-observability.md) |
 
 ### Production Demo
 
