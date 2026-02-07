@@ -5,9 +5,29 @@
 
 ## Last Session
 
-**Date**: 2026-02-06
+**Date**: 2026-02-07
 
 ### What Was Accomplished
+- **F-CONN-003: Avro Serialization Hardening** - IMPLEMENTATION COMPLETE (~40 new tests, 627 total connector tests with kafka feature)
+  - **Bug fix**: `Fingerprint::load_fingerprint_id()` was byte-swapping schema IDs via `u32::from_be()` — replaced with `Fingerprint::Id(n)` directly, fixing SOE/Confluent wire format deserialization
+  - **5 new SerdeError variants**: `SchemaNotFound`, `InvalidConfluentHeader`, `SchemaIncompatible`, `AvroDecodeError`, `RecordCountMismatch` — replaced generic `MalformedInput` in avro.rs and avro_serializer.rs (5 error tests)
+  - **Complex Avro type support** in `schema_registry.rs`:
+    - `parse_avro_type()`: arrays→List, maps→Map, nested records→Struct, enums→Dictionary(Int32,Utf8), fixed→FixedSizeBinary
+    - `arrow_to_avro_type()`: changed return from `&'static str` to `serde_json::Value` for complex types (List→array, Map→map, Struct→record, Dictionary→enum, FixedSizeBinary→fixed)
+    - Nullable complex types in unions (`["null", {"type":"array",...}]`)
+    - 14 new tests (array, map, nested record, enum, fixed, nullable complex in union, missing items/values, arrow↔avro bidirectional, roundtrip)
+  - **LRU cache eviction with TTL** in `SchemaRegistryClient`:
+    - `SchemaRegistryCacheConfig`: max_entries (default 1000), ttl (default 1 hour)
+    - `cache_insert()`/`cache_get()`: LRU via VecDeque, lazy TTL expiration on access
+    - `cache_evict_expired()`: bulk eviction of expired entries
+    - `with_cache_config()` constructor
+    - 7 new tests (config defaults, LRU eviction, access refresh, TTL expiration, no-TTL, bulk evict, replace existing)
+  - **Schema compatibility enforcement**: `validate_and_register_schema()` method checks compatibility before registration, returns `SchemaIncompatible` error (2 tests)
+  - **Round-trip integration tests**: 7 tests covering serialize→deserialize→verify identity
+    - Primitives (Int64/Utf8/Float64), all primitive types (Bool/Int32/Int64/Float32/Float64/Utf8), single row, Confluent wire format header verification, empty batch, 100-row batch
+  - All clippy clean with `-D warnings` (base + kafka feature), 2,502 base tests pass, 627 connector tests with kafka
+
+Previous session (2026-02-06):
 - **F-CONN-002: Reference Table Support** - IMPLEMENTATION COMPLETE (21 new tests, 152 total laminar-db tests)
   - New `table_store.rs` module in `laminar-db` crate:
     - `TableState`: Per-table state with schema, primary key, PK index, row HashMap, ready flag, connector
@@ -339,7 +359,7 @@ Previous session (2026-01-28):
 **Total tests**: 1347 core + 440 sql + 115 storage + 178 laminar-db (with ffi) + 427 connectors + 4 demo = 2511 (base with ffi), +84 postgres-sink-only + 107 postgres-cdc-only + 118 kafka-only + 13 delta-lake-only = 2833 (all feature flags)
 
 ### Where We Left Off
-**Phase 3 Connectors & Integration: 46/56 features COMPLETE (82%)**
+**Phase 3 Connectors & Integration: 47/67 features COMPLETE (70%)**
 - Streaming API core complete (F-STREAM-001 to F-STREAM-007, F-STREAM-013)
 - Developer API overhaul complete (laminar-derive, laminar-db crates)
 - DAG pipeline complete (F-DAG-001 to F-DAG-007)
@@ -366,13 +386,14 @@ Previous session (2026-01-28):
 - SQL Extensions: F-SQL-002 (LAG/LEAD) + F-SQL-003 (ROW_NUMBER/RANK/DENSE_RANK) — 41 new tests, analytic window functions + ranking bug fix
 - **Checkpoint Recovery Wiring complete (F-CONN-001)** — 12 new tests, pipeline checkpoint persistence + recovery + periodic + final checkpoint
 - **Reference Table Support complete (F-CONN-002)** — 21 new tests (152 total), TableStore with PK upsert/delete/lookup, SHOW TABLES/DROP TABLE DDL, connector-backed table registration
-- Next: F-CONN-003, F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
+- **Avro Serialization Hardening complete (F-CONN-003)** — ~40 new tests (627 total with kafka), fingerprint bug fix, complex types, LRU cache, compatibility enforcement, round-trip tests
+- Next: F-SQL-004, F-SQL-005, F-SQL-006, F-OBS-001, F031B/C/D Delta Lake advanced, F032A Iceberg I/O, F029 MongoDB CDC
 
 ### Immediate Next Steps
-1. F-CONN-003: Avro Serialization Hardening
-2. F032A: Iceberg I/O (when iceberg-rust crate can be added)
-3. F029: MongoDB CDC Source
-4. F033: Parquet File Source
+1. F-SQL-004: HAVING Clause Execution
+2. F-SQL-005: Multi-Way JOIN Support
+3. F-SQL-006: Window Frame (ROWS BETWEEN)
+4. F-OBS-001: Pipeline Observability API
 
 ### Open Issues
 - **deltalake crate version**: ✅ RESOLVED - Using git main branch with DataFusion 52.x. F031A complete.
