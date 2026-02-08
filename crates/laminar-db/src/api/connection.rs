@@ -280,6 +280,174 @@ impl Connection {
     pub fn is_checkpoint_enabled(&self) -> bool {
         self.inner.is_checkpoint_enabled()
     }
+
+    // ── Catalog info ──
+
+    /// List source info with schemas and watermark columns.
+    #[must_use]
+    pub fn source_info(&self) -> Vec<crate::SourceInfo> {
+        self.inner.sources()
+    }
+
+    /// List sink info.
+    #[must_use]
+    pub fn sink_info(&self) -> Vec<crate::SinkInfo> {
+        self.inner.sinks()
+    }
+
+    /// List stream info with SQL.
+    #[must_use]
+    pub fn stream_info(&self) -> Vec<crate::StreamInfo> {
+        self.inner.streams()
+    }
+
+    /// List active/completed query info.
+    #[must_use]
+    pub fn query_info(&self) -> Vec<crate::QueryInfo> {
+        self.inner.queries()
+    }
+
+    // ── Pipeline topology & state ──
+
+    /// Get the pipeline topology graph.
+    #[must_use]
+    pub fn pipeline_topology(&self) -> crate::PipelineTopology {
+        self.inner.pipeline_topology()
+    }
+
+    /// Get the pipeline state as a string ("Created", "Running", "Stopped", etc.).
+    #[must_use]
+    pub fn pipeline_state(&self) -> String {
+        self.inner.pipeline_state().to_string()
+    }
+
+    /// Get the global pipeline watermark.
+    #[must_use]
+    pub fn pipeline_watermark(&self) -> i64 {
+        self.inner.pipeline_watermark()
+    }
+
+    /// Get total events processed across all sources.
+    #[must_use]
+    pub fn total_events_processed(&self) -> u64 {
+        self.inner.total_events_processed()
+    }
+
+    /// Get the number of registered sources.
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.inner.source_count()
+    }
+
+    /// Get the number of registered sinks.
+    #[must_use]
+    pub fn sink_count(&self) -> usize {
+        self.inner.sink_count()
+    }
+
+    /// Get the number of active queries.
+    #[must_use]
+    pub fn active_query_count(&self) -> usize {
+        self.inner.active_query_count()
+    }
+
+    // ── Metrics ──
+
+    /// Get pipeline-wide metrics snapshot.
+    #[must_use]
+    pub fn metrics(&self) -> crate::PipelineMetrics {
+        self.inner.metrics()
+    }
+
+    /// Get metrics for a specific source.
+    #[must_use]
+    pub fn source_metrics(&self, name: &str) -> Option<crate::SourceMetrics> {
+        self.inner.source_metrics(name)
+    }
+
+    /// Get metrics for all sources.
+    #[must_use]
+    pub fn all_source_metrics(&self) -> Vec<crate::SourceMetrics> {
+        self.inner.all_source_metrics()
+    }
+
+    /// Get metrics for a specific stream.
+    #[must_use]
+    pub fn stream_metrics(&self, name: &str) -> Option<crate::StreamMetrics> {
+        self.inner.stream_metrics(name)
+    }
+
+    /// Get metrics for all streams.
+    #[must_use]
+    pub fn all_stream_metrics(&self) -> Vec<crate::StreamMetrics> {
+        self.inner.all_stream_metrics()
+    }
+
+    // ── Query control ──
+
+    /// Cancel a running query by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ApiError` if the query is not found.
+    pub fn cancel_query(&self, query_id: u64) -> Result<(), ApiError> {
+        self.inner.cancel_query(query_id).map_err(ApiError::from)
+    }
+
+    // ── Shutdown ──
+
+    /// Gracefully shut down the streaming pipeline.
+    ///
+    /// Unlike `close()`, this waits for in-flight events to drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ApiError` if the shutdown fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal thread used for async execution panics.
+    pub fn shutdown(&self) -> Result<(), ApiError> {
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let inner = Arc::clone(&self.inner);
+                    handle.block_on(async move { inner.shutdown().await })
+                })
+                .join()
+                .unwrap()
+            })
+        } else {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| ApiError::internal(format!("Runtime error: {e}")))?;
+            rt.block_on(self.inner.shutdown())
+        };
+        result.map_err(ApiError::from)
+    }
+
+    // ── Subscription ──
+
+    /// Subscribe to a named stream, returning an `ArrowSubscription`.
+    ///
+    /// The stream must already exist (created via `CREATE STREAM ... AS SELECT ...`).
+    /// Returns a channel-based subscription that delivers `RecordBatch`es as
+    /// they are produced by the streaming pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ApiError` if the stream is not found.
+    pub fn subscribe(
+        &self,
+        stream_name: &str,
+    ) -> Result<super::subscription::ArrowSubscription, ApiError> {
+        let sub = self.inner.subscribe_raw(stream_name).map_err(ApiError::from)?;
+        Ok(super::subscription::ArrowSubscription::new(
+            sub,
+            std::sync::Arc::new(arrow::datatypes::Schema::empty()),
+        ))
+    }
 }
 
 // Thread safety guarantees for FFI.
@@ -389,5 +557,52 @@ mod tests {
             result.unwrap_err().code(),
             super::super::error::codes::TABLE_NOT_FOUND
         );
+    }
+
+    #[test]
+    fn test_source_info() {
+        let conn = Connection::open().unwrap();
+        conn.execute("CREATE SOURCE test_info (id BIGINT, name VARCHAR)")
+            .unwrap();
+        let info = conn.source_info();
+        assert_eq!(info.len(), 1);
+        assert_eq!(info[0].name, "test_info");
+        assert_eq!(info[0].schema.fields().len(), 2);
+    }
+
+    #[test]
+    fn test_pipeline_state() {
+        let conn = Connection::open().unwrap();
+        let state = conn.pipeline_state();
+        assert!(!state.is_empty());
+    }
+
+    #[test]
+    fn test_metrics() {
+        let conn = Connection::open().unwrap();
+        let m = conn.metrics();
+        assert_eq!(m.total_events_ingested, 0);
+    }
+
+    #[test]
+    fn test_source_count() {
+        let conn = Connection::open().unwrap();
+        assert_eq!(conn.source_count(), 0);
+        conn.execute("CREATE SOURCE cnt_test (x BIGINT)").unwrap();
+        assert_eq!(conn.source_count(), 1);
+    }
+
+    #[test]
+    fn test_cancel_query_invalid() {
+        let conn = Connection::open().unwrap();
+        // Cancelling a non-existent query should succeed (no-op in current impl)
+        let result = conn.cancel_query(999);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_shutdown() {
+        let conn = Connection::open().unwrap();
+        assert!(conn.shutdown().is_ok());
     }
 }

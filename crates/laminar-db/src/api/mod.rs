@@ -87,3 +87,12 @@ pub use subscription::ArrowSubscription;
 
 // Re-export LaminarConfig for open_with_config
 pub use crate::LaminarConfig;
+
+// Re-export catalog, pipeline, and metrics types for language bindings
+pub use crate::{
+    PipelineMetrics, PipelineState, SourceMetrics, StreamMetrics,
+};
+pub use crate::{
+    PipelineEdge, PipelineNode, PipelineNodeType, PipelineTopology,
+    QueryInfo, SinkInfo, SourceInfo, StreamInfo,
+};
