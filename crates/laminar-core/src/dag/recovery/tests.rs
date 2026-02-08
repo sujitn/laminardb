@@ -27,7 +27,7 @@ fn test_snapshot_serialization() {
     let snapshot = DagCheckpointSnapshot {
         checkpoint_id: 1,
         epoch: 10,
-        timestamp: 123456789,
+        timestamp: 123_456_789,
         node_states,
         source_offsets,
         watermark: Some(500),
@@ -45,7 +45,7 @@ fn test_snapshot_serialization() {
 
     assert_eq!(deserialized.checkpoint_id, 1);
     assert_eq!(deserialized.epoch, 10);
-    assert_eq!(deserialized.timestamp, 123456789);
+    assert_eq!(deserialized.timestamp, 123_456_789);
     assert_eq!(deserialized.watermark, Some(500));
     assert_eq!(deserialized.node_states.len(), 1);
     assert_eq!(deserialized.source_offsets.len(), 1);
@@ -245,7 +245,7 @@ fn test_recovered_dag_state_debug() {
     };
 
     let recovered = DagRecoveryManager::build_recovered_state(snapshot);
-    let debug_str = format!("{:?}", recovered);
+    let debug_str = format!("{recovered:?}");
 
     assert!(debug_str.contains("RecoveredDagState"));
     assert!(debug_str.contains("checkpoint_id: 123"));
