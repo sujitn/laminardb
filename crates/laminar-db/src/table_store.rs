@@ -404,6 +404,23 @@ impl TableStore {
         }
     }
 
+    /// Upsert a batch and rebuild the xor filter in a single lock scope.
+    ///
+    /// Returns the upserted row count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
+    pub fn upsert_and_rebuild(
+        &mut self,
+        name: &str,
+        batch: &RecordBatch,
+    ) -> Result<usize, DbError> {
+        let count = self.upsert(name, batch)?;
+        self.rebuild_xor_filter(name);
+        Ok(count)
+    }
+
     /// Rebuild the xor filter for a table from all current keys.
     #[allow(dead_code)]
     pub fn rebuild_xor_filter(&mut self, name: &str) {

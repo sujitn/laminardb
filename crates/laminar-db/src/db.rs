@@ -1720,14 +1720,17 @@ impl LaminarDB {
         stream_regs: HashMap<String, crate::connector_manager::StreamRegistration>,
         table_regs: HashMap<String, crate::connector_manager::TableRegistration>,
     ) -> Result<(), DbError> {
+        use crate::checkpoint_coordinator::{
+            source_to_connector_checkpoint, CheckpointConfig as CkpConfig,
+        };
         use crate::connector_manager::{
             build_sink_config, build_source_config, build_table_config,
         };
-        use crate::pipeline_checkpoint::{PipelineCheckpointManager, SerializableSourceCheckpoint};
         use crate::stream_executor::StreamExecutor;
         use laminar_connectors::config::ConnectorConfig;
         use laminar_connectors::connector::{SinkConnector, SourceConnector};
         use laminar_connectors::reference::{ReferenceTableSource, RefreshMode};
+        use laminar_storage::checkpoint_store::FileSystemCheckpointStore;
 
         // Build StreamExecutor
         let ctx = SessionContext::new();
@@ -1748,7 +1751,14 @@ impl LaminarDB {
         }
 
         // Build sources via registry (generic — no connector-specific code)
-        let mut sources: Vec<(String, Box<dyn SourceConnector>, ConnectorConfig)> = Vec::new();
+        // Wrap in Arc<Mutex> so the coordinator can snapshot offsets while the
+        // loop holds a separate reference.
+        #[allow(clippy::type_complexity)]
+        let mut sources: Vec<(
+            String,
+            Arc<tokio::sync::Mutex<Box<dyn SourceConnector>>>,
+            ConnectorConfig,
+        )> = Vec::new();
         for (name, reg) in &source_regs {
             if reg.connector_type.is_none() {
                 continue;
@@ -1772,14 +1782,20 @@ impl LaminarDB {
                         config.connector_type()
                     ))
                 })?;
-            sources.push((name.clone(), source, config));
+            sources.push((
+                name.clone(),
+                Arc::new(tokio::sync::Mutex::new(source)),
+                config,
+            ));
         }
 
         // Build sinks via registry (generic — no connector-specific code)
+        // Wrap in Arc<Mutex> so the coordinator can pre-commit/commit while
+        // the loop holds a separate reference.
         #[allow(clippy::type_complexity)]
         let mut sinks: Vec<(
             String,
-            Box<dyn SinkConnector>,
+            Arc<tokio::sync::Mutex<Box<dyn SinkConnector>>>,
             ConnectorConfig,
             Option<String>,
         )> = Vec::new();
@@ -1795,18 +1811,28 @@ impl LaminarDB {
                     config.connector_type()
                 ))
             })?;
-            sinks.push((name.clone(), sink, config, reg.filter_expr.clone()));
+            sinks.push((
+                name.clone(),
+                Arc::new(tokio::sync::Mutex::new(sink)),
+                config,
+                reg.filter_expr.clone(),
+            ));
         }
 
         // Open all connectors
-        for (name, source, config) in &mut sources {
-            source
+        for (name, source_arc, config) in &sources {
+            source_arc
+                .lock()
+                .await
                 .open(config)
                 .await
                 .map_err(|e| DbError::Connector(format!("Failed to open source '{name}': {e}")))?;
         }
-        for (name, sink, config, _) in &mut sinks {
-            sink.open(config)
+        for (name, sink_arc, config, _) in &sinks {
+            sink_arc
+                .lock()
+                .await
+                .open(config)
                 .await
                 .map_err(|e| DbError::Connector(format!("Failed to open sink '{name}': {e}")))?;
         }
@@ -1829,53 +1855,76 @@ impl LaminarDB {
             table_sources.push((name.clone(), source, mode));
         }
 
-        // Create checkpoint manager if configured
+        // Create unified checkpoint coordinator (replaces PipelineCheckpointManager)
         let checkpoint_config = self.config.checkpoint.clone();
         let storage_dir = self.config.storage_dir.clone();
-        let mut pipeline_ckpt_mgr = checkpoint_config.as_ref().map(|cp_config| {
+        let coordinator: Option<
+            Arc<tokio::sync::Mutex<crate::checkpoint_coordinator::CheckpointCoordinator>>,
+        > = if let Some(ref cp_config) = checkpoint_config {
             let data_dir = cp_config
                 .data_dir
                 .clone()
                 .or(storage_dir.clone())
                 .unwrap_or_else(|| std::path::PathBuf::from("./data"));
             let max_retained = cp_config.max_retained.unwrap_or(3);
-            PipelineCheckpointManager::new(data_dir, max_retained)
-        });
+            let store = FileSystemCheckpointStore::new(&data_dir, max_retained);
+            let config = CkpConfig {
+                interval: cp_config.interval_ms.map(std::time::Duration::from_millis),
+                max_retained,
+                ..CkpConfig::default()
+            };
+            let mut coord =
+                crate::checkpoint_coordinator::CheckpointCoordinator::new(config, Box::new(store));
+            coord.set_counters(Arc::clone(&self.counters));
 
-        // Recovery: restore source offsets and rollback sink epochs
-        if let Some(ref mut mgr) = pipeline_ckpt_mgr {
-            if let Ok(Some(checkpoint)) = mgr.load_latest() {
-                for (name, source, _) in &mut sources {
-                    if let Some(src_cp) = checkpoint.source_offsets.get(name) {
-                        let restored = src_cp.to_source_checkpoint();
-                        if let Err(e) = source.restore(&restored).await {
-                            tracing::warn!(source=%name, error=%e, "Source restore failed");
+            // Register sources with coordinator
+            for (name, source_arc, _) in &sources {
+                coord.register_source(name.clone(), Arc::clone(source_arc));
+            }
+            // Register sinks with coordinator
+            for (name, sink_arc, _, _) in &sinks {
+                let exactly_once = sink_arc.lock().await.capabilities().exactly_once;
+                coord.register_sink(name.clone(), Arc::clone(sink_arc), exactly_once);
+            }
+
+            Some(Arc::new(tokio::sync::Mutex::new(coord)))
+        } else {
+            None
+        };
+
+        // Recovery: restore source/sink/table state via unified coordinator
+        if let Some(ref coord_arc) = coordinator {
+            let mut coord = coord_arc.lock().await;
+            match coord.recover().await {
+                Ok(Some(recovered)) => {
+                    // Manually restore table source offsets (ReferenceTableSource
+                    // is not a SourceConnector, so the coordinator can't do this)
+                    for (name, source, _) in &mut table_sources {
+                        if let Some(cp) = recovered.manifest.table_offsets.get(name) {
+                            let restored =
+                                crate::checkpoint_coordinator::connector_to_source_checkpoint(cp);
+                            if let Err(e) = source.restore(&restored).await {
+                                tracing::warn!(table=%name, error=%e, "Table source restore failed");
+                            }
                         }
                     }
+                    eprintln!(
+                        "[laminar-db] Recovered from checkpoint epoch {}",
+                        recovered.epoch()
+                    );
+                    tracing::info!(
+                        epoch = recovered.epoch(),
+                        sources_restored = recovered.sources_restored,
+                        sinks_rolled_back = recovered.sinks_rolled_back,
+                        "Recovered from unified checkpoint"
+                    );
                 }
-                for (_name, sink, _, _) in &mut sinks {
-                    if sink.capabilities().exactly_once {
-                        let _ = sink.rollback_epoch(checkpoint.epoch).await;
-                    }
+                Ok(None) => {
+                    tracing::info!("No checkpoint found, starting fresh");
                 }
-                // Restore table source offsets
-                for (name, source, _) in &mut table_sources {
-                    if let Some(tbl_cp) = checkpoint.table_offsets.get(name) {
-                        let restored = tbl_cp.to_source_checkpoint();
-                        if let Err(e) = source.restore(&restored).await {
-                            tracing::warn!(table=%name, error=%e, "Table source restore failed");
-                        }
-                    }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Checkpoint recovery failed, starting fresh");
                 }
-                mgr.set_epoch(checkpoint.epoch);
-                eprintln!(
-                    "[laminar-db] Recovered from checkpoint epoch {}",
-                    checkpoint.epoch
-                );
-                tracing::info!(
-                    epoch = checkpoint.epoch,
-                    "Recovered from pipeline checkpoint"
-                );
             }
         }
 
@@ -1895,8 +1944,11 @@ impl LaminarDB {
                     .map_err(|e| DbError::Connector(format!("Table '{name}' upsert error: {e}")))?;
             }
             self.sync_table_to_datafusion(name)?;
-            self.table_store.lock().rebuild_xor_filter(name);
-            self.table_store.lock().set_ready(name, true);
+            {
+                let mut ts = self.table_store.lock();
+                ts.rebuild_xor_filter(name);
+                ts.set_ready(name, true);
+            }
         }
 
         // Get stream source handles so results also flow to db.subscribe().
@@ -1972,6 +2024,7 @@ impl LaminarDB {
         let ctx_for_sync = self.ctx.clone();
         let counters = Arc::clone(&self.counters);
         let pipeline_watermark = Arc::clone(&self.pipeline_watermark);
+        let checkpoint_in_progress = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let handle = tokio::spawn(async move {
             eprintln!("[laminar-db] Connector pipeline task started");
@@ -1993,8 +2046,8 @@ impl LaminarDB {
 
                 // Poll sources
                 let mut source_batches = HashMap::new();
-                for (name, source, _) in &mut sources {
-                    match source.poll_batch(max_poll).await {
+                for (name, source_arc, _) in &sources {
+                    match source_arc.lock().await.poll_batch(max_poll).await {
                         Ok(Some(batch)) => {
                             total_batches += 1;
                             #[allow(clippy::cast_possible_truncation)]
@@ -2090,7 +2143,7 @@ impl LaminarDB {
                             }
 
                             // Route results to external sinks
-                            for (sink_name, sink, _, filter_expr) in &mut sinks {
+                            for (sink_name, sink_arc, _, filter_expr) in &sinks {
                                 for (stream_name, batches) in &results {
                                     for batch in batches {
                                         // Apply WHERE filter if configured
@@ -2113,7 +2166,9 @@ impl LaminarDB {
                                         };
 
                                         if filtered.num_rows() > 0 {
-                                            if let Err(e) = sink.write_batch(&filtered).await {
+                                            if let Err(e) =
+                                                sink_arc.lock().await.write_batch(&filtered).await
+                                            {
                                                 tracing::warn!(
                                                     sink = %sink_name,
                                                     stream = %stream_name,
@@ -2142,11 +2197,32 @@ impl LaminarDB {
                     }
                     match source.poll_changes().await {
                         Ok(Some(batch)) => {
-                            if let Err(e) = table_store_for_loop.lock().upsert(name, &batch) {
-                                tracing::warn!(table=%name, error=%e, "Table upsert error");
-                            } else {
-                                table_store_for_loop.lock().rebuild_xor_filter(name);
-                                sync_table_to_df(&ctx_for_sync, &table_store_for_loop, name);
+                            // Single lock scope: upsert + xor rebuild + extract batch
+                            let maybe_batch = {
+                                let mut ts = table_store_for_loop.lock();
+                                if let Err(e) = ts.upsert_and_rebuild(name, &batch) {
+                                    tracing::warn!(table=%name, error=%e, "Table upsert error");
+                                    None
+                                } else if ts.is_persistent(name) {
+                                    None // persistent tables use ReferenceTableProvider
+                                } else {
+                                    ts.to_record_batch(name)
+                                }
+                            };
+                            if let Some(rb) = maybe_batch {
+                                let schema = rb.schema();
+                                let _ = ctx_for_sync.deregister_table(name.as_str());
+                                let data = if rb.num_rows() > 0 {
+                                    vec![vec![rb]]
+                                } else {
+                                    vec![vec![]]
+                                };
+                                if let Ok(mem_table) =
+                                    datafusion::datasource::MemTable::try_new(schema, data)
+                                {
+                                    let _ = ctx_for_sync
+                                        .register_table(name.as_str(), Arc::new(mem_table));
+                                }
                             }
                         }
                         Ok(None) => {}
@@ -2172,64 +2248,60 @@ impl LaminarDB {
                     tracing::debug!(cycles = cycle_count, "Pipeline processing");
                 }
 
-                // Periodic checkpoint
-                if let (Some(interval), Some(ref mut mgr)) =
-                    (checkpoint_interval, &mut pipeline_ckpt_mgr)
-                {
-                    if last_checkpoint.elapsed() >= interval {
-                        let epoch = mgr.next_epoch();
-
-                        // Begin epoch on exactly-once sinks
-                        for (_, sink, _, _) in &mut sinks {
-                            if sink.capabilities().exactly_once {
-                                let _ = sink.begin_epoch(epoch).await;
-                            }
-                        }
-
-                        // Capture source offsets
-                        let mut source_offsets = HashMap::new();
-                        for (name, source, _) in &sources {
-                            source_offsets.insert(
-                                name.clone(),
-                                SerializableSourceCheckpoint::from(&source.checkpoint()),
-                            );
-                        }
-
-                        // Capture table source offsets
-                        let mut table_offsets = HashMap::new();
+                // Periodic checkpoint (non-blocking — spawned as a separate task)
+                if let (Some(interval), Some(ref coord_arc)) = (checkpoint_interval, &coordinator) {
+                    if last_checkpoint.elapsed() >= interval
+                        && !checkpoint_in_progress.load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        // Capture table source offsets (fast, in-memory)
+                        let mut extra_tables = HashMap::new();
                         for (name, source, _) in &table_sources {
-                            table_offsets.insert(
+                            extra_tables.insert(
                                 name.clone(),
-                                SerializableSourceCheckpoint::from(&source.checkpoint()),
+                                source_to_connector_checkpoint(&source.checkpoint()),
                             );
                         }
 
-                        // Build and persist
-                        #[allow(clippy::cast_possible_truncation)]
-                        let timestamp_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        let checkpoint = crate::pipeline_checkpoint::PipelineCheckpoint {
-                            epoch,
-                            timestamp_ms,
-                            source_offsets,
-                            sink_epochs: HashMap::new(),
-                            table_offsets,
-                            table_store_checkpoint_path: None,
-                        };
+                        let coord_clone = Arc::clone(coord_arc);
+                        let in_progress = Arc::clone(&checkpoint_in_progress);
+                        in_progress.store(true, std::sync::atomic::Ordering::Relaxed);
 
-                        if let Err(e) = mgr.save(&checkpoint) {
-                            tracing::warn!(error = %e, "Checkpoint save failed");
-                        } else {
-                            // Commit epoch on exactly-once sinks
-                            for (_, sink, _, _) in &mut sinks {
-                                if sink.capabilities().exactly_once {
-                                    let _ = sink.commit_epoch(epoch).await;
+                        tokio::spawn(async move {
+                            let mut coord = coord_clone.lock().await;
+                            match coord
+                                .checkpoint_with_extra_tables(
+                                    HashMap::new(),
+                                    None,
+                                    0,
+                                    Vec::new(),
+                                    None,
+                                    extra_tables,
+                                )
+                                .await
+                            {
+                                Ok(result) if result.success => {
+                                    tracing::info!(
+                                        epoch = result.epoch,
+                                        duration_ms = result.duration.as_millis(),
+                                        "Pipeline checkpoint completed"
+                                    );
+                                }
+                                Ok(result) => {
+                                    tracing::warn!(
+                                        epoch = result.epoch,
+                                        error = ?result.error,
+                                        "Pipeline checkpoint failed"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "Checkpoint error"
+                                    );
                                 }
                             }
-                            tracing::info!(epoch, "Pipeline checkpoint completed");
-                        }
+                            in_progress.store(false, std::sync::atomic::Ordering::Relaxed);
+                        });
 
                         last_checkpoint = std::time::Instant::now();
                     }
@@ -2240,40 +2312,46 @@ impl LaminarDB {
                 "[laminar-db] Pipeline stopping after {cycle_count} cycles ({total_batches} batches, {total_records} records)",
             );
 
-            // Final checkpoint before shutdown
-            if let Some(ref mut mgr) = pipeline_ckpt_mgr {
-                let epoch = mgr.next_epoch();
-                let mut source_offsets = HashMap::new();
-                for (name, source, _) in &sources {
-                    source_offsets.insert(
-                        name.clone(),
-                        SerializableSourceCheckpoint::from(&source.checkpoint()),
-                    );
-                }
-                let mut table_offsets = HashMap::new();
+            // Wait for any in-flight checkpoint to complete before final checkpoint
+            while checkpoint_in_progress.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+
+            // Final checkpoint before shutdown (blocking is OK at shutdown)
+            if let Some(ref coord_arc) = coordinator {
+                let mut coord = coord_arc.lock().await;
+                let mut extra_tables = HashMap::new();
                 for (name, source, _) in &table_sources {
-                    table_offsets.insert(
+                    extra_tables.insert(
                         name.clone(),
-                        SerializableSourceCheckpoint::from(&source.checkpoint()),
+                        source_to_connector_checkpoint(&source.checkpoint()),
                     );
                 }
-                #[allow(clippy::cast_possible_truncation)]
-                let timestamp_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                let checkpoint = crate::pipeline_checkpoint::PipelineCheckpoint {
-                    epoch,
-                    timestamp_ms,
-                    source_offsets,
-                    sink_epochs: HashMap::new(),
-                    table_offsets,
-                    table_store_checkpoint_path: None,
-                };
-                if let Err(e) = mgr.save(&checkpoint) {
-                    tracing::warn!(error = %e, "Final checkpoint save failed");
-                } else {
-                    tracing::info!(epoch, "Final pipeline checkpoint saved");
+
+                match coord
+                    .checkpoint_with_extra_tables(
+                        HashMap::new(),
+                        None,
+                        0,
+                        Vec::new(),
+                        None,
+                        extra_tables,
+                    )
+                    .await
+                {
+                    Ok(result) if result.success => {
+                        tracing::info!(epoch = result.epoch, "Final pipeline checkpoint saved");
+                    }
+                    Ok(result) => {
+                        tracing::warn!(
+                            epoch = result.epoch,
+                            error = ?result.error,
+                            "Final checkpoint failed"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Final checkpoint error");
+                    }
                 }
             }
 
@@ -2285,12 +2363,13 @@ impl LaminarDB {
             }
 
             // Close all connectors
-            for (name, source, _) in &mut sources {
-                if let Err(e) = source.close().await {
+            for (name, source_arc, _) in &sources {
+                if let Err(e) = source_arc.lock().await.close().await {
                     tracing::warn!(source = %name, error = %e, "Source close error");
                 }
             }
-            for (name, sink, _, _) in &mut sinks {
+            for (name, sink_arc, _, _) in &sinks {
+                let mut sink = sink_arc.lock().await;
                 if let Err(e) = sink.flush().await {
                     tracing::warn!(sink = %name, error = %e, "Sink flush error");
                 }
@@ -2881,38 +2960,6 @@ impl LaminarDB {
             ],
         )
         .map_err(|e| DbError::InvalidOperation(format!("describe metadata: {e}")))
-    }
-}
-
-/// Sync a reference table from [`TableStore`] into `DataFusion` as a `MemTable`.
-///
-/// This is the static (free-function) counterpart of
-/// [`LaminarDB::sync_table_to_datafusion`] — needed because the spawned
-/// pipeline task cannot hold `&self`.
-fn sync_table_to_df(
-    ctx: &SessionContext,
-    table_store: &Arc<parking_lot::Mutex<crate::table_store::TableStore>>,
-    name: &str,
-) {
-    // Persistent tables use ReferenceTableProvider — skip re-registration.
-    if table_store.lock().is_persistent(name) {
-        return;
-    }
-
-    let Some(batch) = table_store.lock().to_record_batch(name) else {
-        return;
-    };
-    let schema = batch.schema();
-    let _ = ctx.deregister_table(name);
-
-    let data = if batch.num_rows() > 0 {
-        vec![vec![batch]]
-    } else {
-        vec![vec![]]
-    };
-
-    if let Ok(mem_table) = datafusion::datasource::MemTable::try_new(schema, data) {
-        let _ = ctx.register_table(name, Arc::new(mem_table));
     }
 }
 
