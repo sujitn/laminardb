@@ -269,4 +269,39 @@ mod tests {
         data.push(0xFF);
         assert_eq!(AvroDeserializer::extract_confluent_id(&data), Some(42));
     }
+
+    #[test]
+    fn test_extract_confluent_id_edge_cases() {
+        // Empty slice
+        assert_eq!(AvroDeserializer::extract_confluent_id(&[]), None);
+
+        // Magic byte only (too short)
+        assert_eq!(AvroDeserializer::extract_confluent_id(&[0x00]), None);
+
+        // 4 bytes with magic (too short)
+        assert_eq!(
+            AvroDeserializer::extract_confluent_id(&[0x00, 0x00, 0x00, 0x00]),
+            None
+        );
+
+        // Exactly 5 bytes (boundary of CONFLUENT_HEADER_SIZE)
+        let data = [0x00, 0x00, 0x00, 0x00, 0x05];
+        assert_eq!(AvroDeserializer::extract_confluent_id(&data), Some(5));
+
+        // i32::MAX ID
+        let mut data = vec![0x00];
+        data.extend_from_slice(&i32::MAX.to_be_bytes());
+        assert_eq!(
+            AvroDeserializer::extract_confluent_id(&data),
+            Some(i32::MAX)
+        );
+
+        // i32::MIN ID
+        let mut data = vec![0x00];
+        data.extend_from_slice(&i32::MIN.to_be_bytes());
+        assert_eq!(
+            AvroDeserializer::extract_confluent_id(&data),
+            Some(i32::MIN)
+        );
+    }
 }
