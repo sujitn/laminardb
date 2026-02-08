@@ -72,24 +72,48 @@ int32_t laminar_last_error_code(void);
 int32_t laminar_open(LaminarConnection** out);
 int32_t laminar_close(LaminarConnection* conn);
 
-// Execute SQL
+// Execute SQL (sql must be null-terminated)
 int32_t laminar_execute(
     LaminarConnection* conn,
     const char* sql,
     LaminarQueryResult** out  // May be NULL for DDL
 );
 
-// Query with materialized results
+// Execute SQL with explicit length
+int32_t laminar_execute_len(
+    LaminarConnection* conn,
+    const char* sql,
+    size_t len,
+    LaminarQueryResult** out
+);
+
+// Query with materialized results (sql must be null-terminated)
 int32_t laminar_query(
     LaminarConnection* conn,
     const char* sql,
     LaminarQueryResult** out
 );
 
-// Query with streaming results
+// Query with materialized results and explicit length
+int32_t laminar_query_len(
+    LaminarConnection* conn,
+    const char* sql,
+    size_t len,
+    LaminarQueryResult** out
+);
+
+// Query with streaming results (sql must be null-terminated)
 int32_t laminar_query_stream(
     LaminarConnection* conn,
     const char* sql,
+    LaminarQueryStream** out
+);
+
+// Query with streaming results and explicit length
+int32_t laminar_query_stream_len(
+    LaminarConnection* conn,
+    const char* sql,
+    size_t len,
     LaminarQueryStream** out
 );
 
@@ -103,10 +127,18 @@ int32_t laminar_is_closed(LaminarConnection* conn, bool* out);
 ### 2.4 Schema Functions
 
 ```c
-// Get schema for a source
+// Get schema for a source (name must be null-terminated)
 int32_t laminar_get_schema(
     LaminarConnection* conn,
     const char* name,
+    LaminarSchema** out
+);
+
+// Get schema for a source with explicit length
+int32_t laminar_get_schema_len(
+    LaminarConnection* conn,
+    const char* name,
+    size_t len,
     LaminarSchema** out
 );
 
@@ -126,10 +158,18 @@ void laminar_schema_free(LaminarSchema* schema);
 ### 2.5 Writer Functions
 
 ```c
-// Create writer for a source
+// Create writer for a source (source_name must be null-terminated)
 int32_t laminar_writer_create(
     LaminarConnection* conn,
     const char* source_name,
+    LaminarWriter** out
+);
+
+// Create writer for a source with explicit length
+int32_t laminar_writer_create_len(
+    LaminarConnection* conn,
+    const char* source_name,
+    size_t len,
     LaminarWriter** out
 );
 
@@ -172,6 +212,27 @@ void laminar_result_free(LaminarQueryResult* result);
 ```c
 // Get schema
 int32_t laminar_stream_schema(LaminarQueryStream* stream, LaminarSchema** out);
+
+// Callback-based subscription (query must be null-terminated)
+int32_t laminar_subscribe_callback(
+    LaminarConnection* conn,
+    const char* query,
+    LaminarSubscriptionCallback on_data,
+    LaminarErrorCallback on_error,
+    void* user_data,
+    LaminarSubscriptionHandle** out
+);
+
+// Callback-based subscription with explicit length
+int32_t laminar_subscribe_callback_len(
+    LaminarConnection* conn,
+    const char* query,
+    size_t len,
+    LaminarSubscriptionCallback on_data,
+    LaminarErrorCallback on_error,
+    void* user_data,
+    LaminarSubscriptionHandle** out
+);
 
 // Get next batch (blocking)
 int32_t laminar_stream_next(

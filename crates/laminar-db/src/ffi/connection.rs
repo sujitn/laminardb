@@ -113,7 +113,8 @@ pub unsafe extern "C" fn laminar_close(conn: *mut LaminarConnection) -> i32 {
 /// # Safety
 ///
 /// * `conn` must be a valid connection handle
-/// * `sql` must be a valid null-terminated UTF-8 string
+/// * `sql` must be a valid null-terminated UTF-8 string. If not null-terminated,
+///   a buffer over-read will occur.
 /// * If `out` is non-null, it must be a valid pointer
 #[no_mangle]
 pub unsafe extern "C" fn laminar_execute(
@@ -127,8 +128,46 @@ pub unsafe extern "C" fn laminar_execute(
         return LAMINAR_ERR_NULL_POINTER;
     }
 
-    // SAFETY: sql is non-null (checked above)
-    let Ok(sql_str) = (unsafe { CStr::from_ptr(sql) }).to_str() else {
+    // SAFETY: sql is non-null (checked above).
+    // Caller must ensure sql is null-terminated.
+    let len = unsafe { CStr::from_ptr(sql).to_bytes().len() };
+    laminar_execute_len(conn, sql, len, out)
+}
+
+/// Execute a SQL statement with explicit length.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `sql` - SQL string (does not need to be null-terminated)
+/// * `len` - Length of the SQL string in bytes
+/// * `out` - Optional pointer to receive query result (may be NULL for DDL)
+///
+/// # Returns
+///
+/// `LAMINAR_OK` on success, or an error code.
+///
+/// # Safety
+///
+/// * `conn` must be a valid connection handle
+/// * `sql` must be a valid pointer to at least `len` bytes of UTF-8 encoded text
+/// * If `out` is non-null, it must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn laminar_execute_len(
+    conn: *mut LaminarConnection,
+    sql: *const c_char,
+    len: usize,
+    out: *mut *mut LaminarQueryResult,
+) -> i32 {
+    clear_last_error();
+
+    if conn.is_null() || sql.is_null() {
+        return LAMINAR_ERR_NULL_POINTER;
+    }
+
+    // SAFETY: sql is non-null (checked above) and caller guarantees len bytes
+    let sql_slice = unsafe { std::slice::from_raw_parts(sql.cast::<u8>(), len) };
+    let Ok(sql_str) = std::str::from_utf8(sql_slice) else {
         return LAMINAR_ERR_INVALID_UTF8;
     };
 
@@ -201,7 +240,8 @@ pub unsafe extern "C" fn laminar_execute(
 /// # Safety
 ///
 /// * `conn` must be a valid connection handle
-/// * `sql` must be a valid null-terminated UTF-8 string
+/// * `sql` must be a valid null-terminated UTF-8 string. If not null-terminated,
+///   a buffer over-read will occur.
 /// * `out` must be a valid pointer
 #[no_mangle]
 pub unsafe extern "C" fn laminar_query(
@@ -215,8 +255,46 @@ pub unsafe extern "C" fn laminar_query(
         return LAMINAR_ERR_NULL_POINTER;
     }
 
-    // SAFETY: sql is non-null (checked above)
-    let Ok(sql_str) = (unsafe { CStr::from_ptr(sql) }).to_str() else {
+    // SAFETY: sql is non-null (checked above).
+    // Caller must ensure sql is null-terminated.
+    let len = unsafe { CStr::from_ptr(sql).to_bytes().len() };
+    laminar_query_len(conn, sql, len, out)
+}
+
+/// Execute a query with materialized results and explicit length.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `sql` - SQL string (does not need to be null-terminated)
+/// * `len` - Length of the SQL string in bytes
+/// * `out` - Pointer to receive query result
+///
+/// # Returns
+///
+/// `LAMINAR_OK` on success, or an error code.
+///
+/// # Safety
+///
+/// * `conn` must be a valid connection handle
+/// * `sql` must be a valid pointer to at least `len` bytes of UTF-8 encoded text
+/// * `out` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn laminar_query_len(
+    conn: *mut LaminarConnection,
+    sql: *const c_char,
+    len: usize,
+    out: *mut *mut LaminarQueryResult,
+) -> i32 {
+    clear_last_error();
+
+    if conn.is_null() || sql.is_null() || out.is_null() {
+        return LAMINAR_ERR_NULL_POINTER;
+    }
+
+    // SAFETY: sql is non-null (checked above) and caller guarantees len bytes
+    let sql_slice = unsafe { std::slice::from_raw_parts(sql.cast::<u8>(), len) };
+    let Ok(sql_str) = std::str::from_utf8(sql_slice) else {
         return LAMINAR_ERR_INVALID_UTF8;
     };
 
@@ -255,7 +333,8 @@ pub unsafe extern "C" fn laminar_query(
 /// # Safety
 ///
 /// * `conn` must be a valid connection handle
-/// * `sql` must be a valid null-terminated UTF-8 string
+/// * `sql` must be a valid null-terminated UTF-8 string. If not null-terminated,
+///   a buffer over-read will occur.
 /// * `out` must be a valid pointer
 #[no_mangle]
 pub unsafe extern "C" fn laminar_query_stream(
@@ -269,8 +348,46 @@ pub unsafe extern "C" fn laminar_query_stream(
         return LAMINAR_ERR_NULL_POINTER;
     }
 
-    // SAFETY: sql is non-null (checked above)
-    let Ok(sql_str) = (unsafe { CStr::from_ptr(sql) }).to_str() else {
+    // SAFETY: sql is non-null (checked above).
+    // Caller must ensure sql is null-terminated.
+    let len = unsafe { CStr::from_ptr(sql).to_bytes().len() };
+    laminar_query_stream_len(conn, sql, len, out)
+}
+
+/// Execute a query with streaming results and explicit length.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `sql` - SQL string (does not need to be null-terminated)
+/// * `len` - Length of the SQL string in bytes
+/// * `out` - Pointer to receive query stream
+///
+/// # Returns
+///
+/// `LAMINAR_OK` on success, or an error code.
+///
+/// # Safety
+///
+/// * `conn` must be a valid connection handle
+/// * `sql` must be a valid pointer to at least `len` bytes of UTF-8 encoded text
+/// * `out` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn laminar_query_stream_len(
+    conn: *mut LaminarConnection,
+    sql: *const c_char,
+    len: usize,
+    out: *mut *mut LaminarQueryStream,
+) -> i32 {
+    clear_last_error();
+
+    if conn.is_null() || sql.is_null() || out.is_null() {
+        return LAMINAR_ERR_NULL_POINTER;
+    }
+
+    // SAFETY: sql is non-null (checked above) and caller guarantees len bytes
+    let sql_slice = unsafe { std::slice::from_raw_parts(sql.cast::<u8>(), len) };
+    let Ok(sql_str) = std::str::from_utf8(sql_slice) else {
         return LAMINAR_ERR_INVALID_UTF8;
     };
 
@@ -398,6 +515,38 @@ mod tests {
 
             let sql = b"CREATE SOURCE ffi_test (id BIGINT, name VARCHAR)\0";
             let rc = laminar_execute(conn, sql.as_ptr().cast(), ptr::null_mut());
+            assert_eq!(rc, LAMINAR_OK);
+
+            laminar_close(conn);
+        }
+    }
+
+    #[test]
+    fn test_execute_len() {
+        let mut conn: *mut LaminarConnection = ptr::null_mut();
+        // SAFETY: Test code with valid pointers
+        unsafe {
+            laminar_open(&mut conn);
+
+            // Valid SQL, explicit length, no null terminator needed
+            let sql = b"CREATE SOURCE ffi_len_test (id BIGINT)";
+            let rc = laminar_execute_len(conn, sql.as_ptr().cast(), sql.len(), ptr::null_mut());
+            assert_eq!(rc, LAMINAR_OK);
+
+            // Invalid UTF-8
+            let invalid_sql = b"\xFF\xFE\xFD";
+            let rc = laminar_execute_len(
+                conn,
+                invalid_sql.as_ptr().cast(),
+                invalid_sql.len(),
+                ptr::null_mut(),
+            );
+            assert_eq!(rc, LAMINAR_ERR_INVALID_UTF8);
+
+            // Partial SQL execution (should fail if SQL is incomplete, but here we just test UTF-8 handling)
+            let sql_part = b"CREATE SOURCE ffi_part_test (id BIGINT) extra stuff";
+            let len = "CREATE SOURCE ffi_part_test (id BIGINT)".len();
+            let rc = laminar_execute_len(conn, sql_part.as_ptr().cast(), len, ptr::null_mut());
             assert_eq!(rc, LAMINAR_OK);
 
             laminar_close(conn);

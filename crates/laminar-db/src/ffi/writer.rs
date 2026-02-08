@@ -43,7 +43,8 @@ impl LaminarWriter {
 /// # Safety
 ///
 /// * `conn` must be a valid connection handle
-/// * `source_name` must be a valid null-terminated UTF-8 string
+/// * `source_name` must be a valid null-terminated UTF-8 string. If not
+///   null-terminated, a buffer over-read will occur.
 /// * `out` must be a valid pointer
 #[no_mangle]
 pub unsafe extern "C" fn laminar_writer_create(
@@ -57,8 +58,46 @@ pub unsafe extern "C" fn laminar_writer_create(
         return LAMINAR_ERR_NULL_POINTER;
     }
 
-    // SAFETY: source_name is non-null (checked above)
-    let Ok(name_str) = (unsafe { CStr::from_ptr(source_name) }).to_str() else {
+    // SAFETY: source_name is non-null (checked above).
+    // Caller must ensure source_name is null-terminated.
+    let len = unsafe { CStr::from_ptr(source_name).to_bytes().len() };
+    laminar_writer_create_len(conn, source_name, len, out)
+}
+
+/// Create a writer for a source with explicit length.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `source_name` - Source name string (does not need to be null-terminated)
+/// * `len` - Length of the source name string in bytes
+/// * `out` - Pointer to receive writer handle
+///
+/// # Returns
+///
+/// `LAMINAR_OK` on success, or an error code.
+///
+/// # Safety
+///
+/// * `conn` must be a valid connection handle
+/// * `source_name` must be a valid pointer to at least `len` bytes of UTF-8 encoded text
+/// * `out` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn laminar_writer_create_len(
+    conn: *mut LaminarConnection,
+    source_name: *const c_char,
+    len: usize,
+    out: *mut *mut LaminarWriter,
+) -> i32 {
+    clear_last_error();
+
+    if conn.is_null() || source_name.is_null() || out.is_null() {
+        return LAMINAR_ERR_NULL_POINTER;
+    }
+
+    // SAFETY: source_name is non-null (checked above) and caller guarantees len bytes
+    let name_slice = unsafe { std::slice::from_raw_parts(source_name.cast::<u8>(), len) };
+    let Ok(name_str) = std::str::from_utf8(name_slice) else {
         return LAMINAR_ERR_INVALID_UTF8;
     };
 
@@ -259,6 +298,31 @@ mod tests {
 
             laminar_writer_free(writer);
             laminar_close(conn);
+        }
+    }
+
+    #[test]
+    fn test_writer_create_len() {
+        let mut conn: *mut LaminarConnection = ptr::null_mut();
+        let mut writer: *mut LaminarWriter = ptr::null_mut();
+
+        // SAFETY: Test code with valid pointers
+        unsafe {
+            crate::ffi::connection::laminar_open(&mut conn);
+
+            // Create source
+            let sql = b"CREATE SOURCE writer_len_test (id BIGINT)\0";
+            crate::ffi::connection::laminar_execute(conn, sql.as_ptr().cast(), ptr::null_mut());
+
+            // Create writer with explicit length
+            let name = b"writer_len_test extra";
+            let len = b"writer_len_test".len();
+            let rc = laminar_writer_create_len(conn, name.as_ptr().cast(), len, &mut writer);
+            assert_eq!(rc, LAMINAR_OK);
+            assert!(!writer.is_null());
+
+            laminar_writer_free(writer);
+            crate::ffi::connection::laminar_close(conn);
         }
     }
 

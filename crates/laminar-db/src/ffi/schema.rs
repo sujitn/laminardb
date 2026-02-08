@@ -47,7 +47,8 @@ impl LaminarSchema {
 /// # Safety
 ///
 /// * `conn` must be a valid connection handle
-/// * `name` must be a valid null-terminated UTF-8 string
+/// * `name` must be a valid null-terminated UTF-8 string. If not null-terminated,
+///   a buffer over-read will occur.
 /// * `out` must be a valid pointer
 #[no_mangle]
 pub unsafe extern "C" fn laminar_get_schema(
@@ -61,8 +62,46 @@ pub unsafe extern "C" fn laminar_get_schema(
         return LAMINAR_ERR_NULL_POINTER;
     }
 
-    // SAFETY: name is non-null (checked above)
-    let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else {
+    // SAFETY: name is non-null (checked above).
+    // Caller must ensure name is null-terminated.
+    let len = unsafe { CStr::from_ptr(name).to_bytes().len() };
+    laminar_get_schema_len(conn, name, len, out)
+}
+
+/// Get schema for a source with explicit length.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `name` - Source name string (does not need to be null-terminated)
+/// * `len` - Length of the source name string in bytes
+/// * `out` - Pointer to receive schema handle
+///
+/// # Returns
+///
+/// `LAMINAR_OK` on success, or an error code.
+///
+/// # Safety
+///
+/// * `conn` must be a valid connection handle
+/// * `name` must be a valid pointer to at least `len` bytes of UTF-8 encoded text
+/// * `out` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn laminar_get_schema_len(
+    conn: *mut LaminarConnection,
+    name: *const c_char,
+    len: usize,
+    out: *mut *mut LaminarSchema,
+) -> i32 {
+    clear_last_error();
+
+    if conn.is_null() || name.is_null() || out.is_null() {
+        return LAMINAR_ERR_NULL_POINTER;
+    }
+
+    // SAFETY: name is non-null (checked above) and caller guarantees len bytes
+    let name_slice = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), len) };
+    let Ok(name_str) = std::str::from_utf8(name_slice) else {
         return LAMINAR_ERR_INVALID_UTF8;
     };
 
@@ -307,6 +346,31 @@ mod tests {
             assert_eq!(sources_str, "[]");
 
             laminar_string_free(sources);
+            crate::ffi::connection::laminar_close(conn);
+        }
+    }
+
+    #[test]
+    fn test_get_schema_len() {
+        let mut conn: *mut LaminarConnection = ptr::null_mut();
+        let mut schema: *mut LaminarSchema = ptr::null_mut();
+
+        // SAFETY: Test code with valid pointers
+        unsafe {
+            crate::ffi::connection::laminar_open(&mut conn);
+
+            // Create a source
+            let sql = b"CREATE SOURCE schema_len_test (id BIGINT)\0";
+            crate::ffi::connection::laminar_execute(conn, sql.as_ptr().cast(), ptr::null_mut());
+
+            // Get schema with explicit length
+            let name = b"schema_len_test extra";
+            let len = b"schema_len_test".len();
+            let rc = laminar_get_schema_len(conn, name.as_ptr().cast(), len, &mut schema);
+            assert_eq!(rc, LAMINAR_OK);
+            assert!(!schema.is_null());
+
+            laminar_schema_free(schema);
             crate::ffi::connection::laminar_close(conn);
         }
     }

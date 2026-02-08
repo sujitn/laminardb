@@ -232,7 +232,8 @@ impl CallbackContext {
 /// # Safety
 ///
 /// * `conn` must be a valid connection handle
-/// * `query` must be a valid null-terminated UTF-8 string
+/// * `query` must be a valid null-terminated UTF-8 string. If not null-terminated,
+///   a buffer over-read will occur.
 /// * `out` must be a valid pointer
 /// * Callbacks must be thread-safe if `user_data` is shared
 #[no_mangle]
@@ -250,8 +251,53 @@ pub unsafe extern "C" fn laminar_subscribe_callback(
         return LAMINAR_ERR_NULL_POINTER;
     }
 
-    // Parse query string
-    let Ok(query_str) = (unsafe { CStr::from_ptr(query) }).to_str() else {
+    // SAFETY: query is non-null (checked above).
+    // Caller must ensure query is null-terminated.
+    let len = unsafe { CStr::from_ptr(query).to_bytes().len() };
+    laminar_subscribe_callback_len(conn, query, len, on_data, on_error, user_data, out)
+}
+
+/// Create a callback-based subscription with explicit length.
+///
+/// # Arguments
+///
+/// * `conn` - Database connection
+/// * `query` - SQL query string (does not need to be null-terminated)
+/// * `len` - Length of the query string in bytes
+/// * `on_data` - Callback for data batches (may be NULL to ignore data)
+/// * `on_error` - Callback for errors (may be NULL to ignore errors)
+/// * `user_data` - Opaque pointer passed to callbacks
+/// * `out` - Pointer to receive subscription handle
+///
+/// # Returns
+///
+/// `LAMINAR_OK` on success, or an error code.
+///
+/// # Safety
+///
+/// * `conn` must be a valid connection handle
+/// * `query` must be a valid pointer to at least `len` bytes of UTF-8 encoded text
+/// * `out` must be a valid pointer
+/// * Callbacks must be thread-safe if `user_data` is shared
+#[no_mangle]
+pub unsafe extern "C" fn laminar_subscribe_callback_len(
+    conn: *mut LaminarConnection,
+    query: *const c_char,
+    len: usize,
+    on_data: LaminarSubscriptionCallback,
+    on_error: LaminarErrorCallback,
+    user_data: *mut c_void,
+    out: *mut *mut LaminarSubscriptionHandle,
+) -> i32 {
+    clear_last_error();
+
+    if conn.is_null() || query.is_null() || out.is_null() {
+        return LAMINAR_ERR_NULL_POINTER;
+    }
+
+    // SAFETY: query is non-null (checked above) and caller guarantees len bytes
+    let query_slice = unsafe { std::slice::from_raw_parts(query.cast::<u8>(), len) };
+    let Ok(query_str) = std::str::from_utf8(query_slice) else {
         return LAMINAR_ERR_INVALID_UTF8;
     };
 
@@ -613,6 +659,38 @@ mod tests {
             laminar_subscription_cancel(sub);
             laminar_subscription_free(sub);
             laminar_close(conn);
+        }
+    }
+
+    #[test]
+    fn test_subscribe_callback_len() {
+        let mut conn: *mut LaminarConnection = ptr::null_mut();
+        let mut sub: *mut LaminarSubscriptionHandle = ptr::null_mut();
+
+        unsafe {
+            crate::ffi::connection::laminar_open(&mut conn);
+
+            let sql = b"CREATE TABLE callback_len_test (id BIGINT)\0";
+            crate::ffi::connection::laminar_execute(conn, sql.as_ptr().cast(), ptr::null_mut());
+
+            // Subscribe with explicit length
+            let query = b"SELECT * FROM callback_len_test extra";
+            let len = b"SELECT * FROM callback_len_test".len();
+            let rc = laminar_subscribe_callback_len(
+                conn,
+                query.as_ptr().cast(),
+                len,
+                None,
+                None,
+                ptr::null_mut(),
+                &mut sub,
+            );
+            assert_eq!(rc, LAMINAR_OK);
+            assert!(!sub.is_null());
+
+            laminar_subscription_cancel(sub);
+            laminar_subscription_free(sub);
+            crate::ffi::connection::laminar_close(conn);
         }
     }
 
