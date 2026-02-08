@@ -907,6 +907,19 @@ impl LaminarDB {
         Ok(crate::handle::TypedSubscription::from_raw(sub))
     }
 
+    /// Get a raw Arrow subscription for a named stream (crate-internal).
+    ///
+    /// Used by `api::Connection::subscribe` to create an `ArrowSubscription`
+    /// without requiring the `FromBatch` trait bound.
+    pub(crate) fn subscribe_raw(
+        &self,
+        name: &str,
+    ) -> Result<laminar_core::streaming::Subscription<crate::catalog::ArrowRecord>, DbError> {
+        self.catalog
+            .get_stream_subscription(name)
+            .ok_or_else(|| DbError::StreamNotFound(name.to_string()))
+    }
+
     /// Handle EXPLAIN statement — show the streaming query plan.
     fn handle_explain(&self, statement: &StreamingStatement) -> Result<ExecuteResult, DbError> {
         let mut planner = self.planner.lock();
