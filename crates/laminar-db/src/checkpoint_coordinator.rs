@@ -701,8 +701,7 @@ impl CheckpointCoordinator {
 
         let save_result = match task_result {
             Ok(inner) => inner,
-            Err(join_err) => Err(CheckpointStoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Err(join_err) => Err(CheckpointStoreError::Io(std::io::Error::other(
                 join_err.to_string(),
             ))),
         };
