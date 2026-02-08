@@ -18,7 +18,7 @@ use crate::error::DbError;
 pub(crate) fn serialize_record_batch(batch: &RecordBatch) -> Result<Vec<u8>, DbError> {
     let mut buf = Vec::new();
     {
-        let mut writer = arrow_ipc::writer::FileWriter::try_new(&mut buf, batch.schema_ref())
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut buf, batch.schema_ref())
             .map_err(|e| DbError::Storage(format!("IPC writer init: {e}")))?;
         writer
             .write(batch)
@@ -34,7 +34,7 @@ pub(crate) fn serialize_record_batch(batch: &RecordBatch) -> Result<Vec<u8>, DbE
 #[allow(dead_code)]
 pub(crate) fn deserialize_record_batch(data: &[u8]) -> Result<RecordBatch, DbError> {
     let cursor = Cursor::new(data);
-    let mut reader = arrow_ipc::reader::FileReader::try_new(cursor, None)
+    let mut reader = arrow_ipc::reader::StreamReader::try_new(cursor, None)
         .map_err(|e| DbError::Storage(format!("IPC reader init: {e}")))?;
     reader
         .next()
