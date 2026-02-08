@@ -1,7 +1,7 @@
-use std::time::{Duration, Instant};
-use laminar_db::checkpoint_coordinator::{CheckpointCoordinator, CheckpointConfig};
-use laminar_storage::checkpoint_store::{CheckpointStore, CheckpointStoreError};
+use laminar_db::checkpoint_coordinator::{CheckpointConfig, CheckpointCoordinator};
 use laminar_storage::checkpoint_manifest::CheckpointManifest;
+use laminar_storage::checkpoint_store::{CheckpointStore, CheckpointStoreError};
+use std::time::{Duration, Instant};
 
 struct BlockingCheckpointStore {
     delay: Duration,
@@ -73,17 +73,19 @@ async fn test_checkpoint_non_blocking() {
     // Run a checkpoint
     // This should take ~200ms total
     let start = Instant::now();
-    let result = coordinator.checkpoint(
-        std::collections::HashMap::new(),
-        None,
-        0,
-        vec![],
-        None
-    ).await.unwrap();
+    let result = coordinator
+        .checkpoint(std::collections::HashMap::new(), None, 0, vec![], None)
+        .await
+        .unwrap();
     let duration = start.elapsed();
 
     assert!(result.success);
-    assert!(duration >= delay, "Checkpoint duration ({:?}) should be at least delay ({:?})", duration, delay);
+    assert!(
+        duration >= delay,
+        "Checkpoint duration ({:?}) should be at least delay ({:?})",
+        duration,
+        delay
+    );
 
     // Stop ticker and wait for it to finish
     ticker.abort();
@@ -107,6 +109,9 @@ async fn test_checkpoint_non_blocking() {
 
     // Assert that we did NOT block the runtime
     // We allow some margin (e.g., 50ms) but it should be far less than 200ms
-    assert!(max_interval < Duration::from_millis(100),
-        "Checkpoint blocked the runtime! Max interval: {:?} (expected < 100ms)", max_interval);
+    assert!(
+        max_interval < Duration::from_millis(100),
+        "Checkpoint blocked the runtime! Max interval: {:?} (expected < 100ms)",
+        max_interval
+    );
 }
