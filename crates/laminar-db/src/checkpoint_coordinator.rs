@@ -25,7 +25,7 @@ use laminar_connectors::checkpoint::SourceCheckpoint;
 use laminar_connectors::connector::{SinkConnector, SourceConnector};
 use laminar_storage::changelog_drainer::ChangelogDrainer;
 use laminar_storage::checkpoint_manifest::{CheckpointManifest, ConnectorCheckpoint};
-use laminar_storage::checkpoint_store::CheckpointStore;
+use laminar_storage::checkpoint_store::{CheckpointStore, CheckpointStoreError};
 use laminar_storage::per_core_wal::PerCoreWalManager;
 use tracing::{debug, error, info, warn};
 
@@ -138,7 +138,7 @@ pub struct WalPrepareResult {
 /// [`CheckpointManifest`].
 pub struct CheckpointCoordinator {
     config: CheckpointConfig,
-    store: Box<dyn CheckpointStore>,
+    store: Arc<dyn CheckpointStore>,
     sources: Vec<RegisteredSource>,
     sinks: Vec<RegisteredSink>,
     table_sources: Vec<RegisteredSource>,
@@ -160,6 +160,7 @@ impl CheckpointCoordinator {
     /// Creates a new checkpoint coordinator.
     #[must_use]
     pub fn new(config: CheckpointConfig, store: Box<dyn CheckpointStore>) -> Self {
+        let store: Arc<dyn CheckpointStore> = Arc::from(store);
         // Determine starting epoch from stored checkpoints.
         let (next_id, epoch) = match store.load_latest() {
             Ok(Some(m)) => (m.checkpoint_id + 1, m.epoch + 1),
@@ -434,7 +435,18 @@ impl CheckpointCoordinator {
 
         // ── Step 5: Persist manifest ──
         self.phase = CheckpointPhase::Persisting;
-        if let Err(e) = self.store.save(&manifest) {
+        let store = Arc::clone(&self.store);
+        let task_result = tokio::task::spawn_blocking(move || store.save(&manifest)).await;
+
+        let save_result = match task_result {
+            Ok(inner) => inner,
+            Err(join_err) => Err(CheckpointStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                join_err.to_string(),
+            ))),
+        };
+
+        if let Err(e) = save_result {
             self.phase = CheckpointPhase::Idle;
             self.checkpoints_failed += 1;
             let duration = start.elapsed();
@@ -685,7 +697,18 @@ impl CheckpointCoordinator {
 
         // ── Step 5: Persist manifest ──
         self.phase = CheckpointPhase::Persisting;
-        if let Err(e) = self.store.save(&manifest) {
+        let store = Arc::clone(&self.store);
+        let task_result = tokio::task::spawn_blocking(move || store.save(&manifest)).await;
+
+        let save_result = match task_result {
+            Ok(inner) => inner,
+            Err(join_err) => Err(CheckpointStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                join_err.to_string(),
+            ))),
+        };
+
+        if let Err(e) = save_result {
             self.phase = CheckpointPhase::Idle;
             self.checkpoints_failed += 1;
             let duration = start.elapsed();
