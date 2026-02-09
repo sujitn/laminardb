@@ -34,6 +34,18 @@ pub struct PostgresCdcConfig {
     /// SSL mode for the connection.
     pub ssl_mode: SslMode,
 
+    /// Path to CA certificate PEM file (for `VerifyCa` / `VerifyFull`).
+    pub ca_cert_path: Option<String>,
+
+    /// Path to client certificate PEM file (for mTLS).
+    pub client_cert_path: Option<String>,
+
+    /// Path to client private key PEM file (for mTLS).
+    pub client_key_path: Option<String>,
+
+    /// SNI hostname override (for proxy/load-balancer scenarios).
+    pub sni_hostname: Option<String>,
+
     // ── Replication ──
     /// Name of the logical replication slot.
     pub slot_name: String,
@@ -81,6 +93,10 @@ impl Default for PostgresCdcConfig {
             username: "postgres".to_string(),
             password: None,
             ssl_mode: SslMode::Prefer,
+            ca_cert_path: None,
+            client_cert_path: None,
+            client_key_path: None,
+            sni_hostname: None,
             slot_name: "laminar_slot".to_string(),
             publication: "laminar_pub".to_string(),
             start_lsn: None,
@@ -154,6 +170,11 @@ impl PostgresCdcConfig {
                 ConnectorError::ConfigurationError(format!("invalid ssl.mode: {ssl}"))
             })?;
         }
+        cfg.ca_cert_path = config.get("ssl.ca.cert.path").map(String::from);
+        cfg.client_cert_path = config.get("ssl.client.cert.path").map(String::from);
+        cfg.client_key_path = config.get("ssl.client.key.path").map(String::from);
+        cfg.sni_hostname = config.get("ssl.sni.hostname").map(String::from);
+
         if let Some(lsn) = config.get("start.lsn") {
             cfg.start_lsn = Some(lsn.parse::<Lsn>().map_err(|e| {
                 ConnectorError::ConfigurationError(format!("invalid start.lsn: {e}"))
@@ -213,6 +234,22 @@ impl PostgresCdcConfig {
         if self.max_poll_records == 0 {
             return Err(ConnectorError::ConfigurationError(
                 "max.poll.records must be > 0".to_string(),
+            ));
+        }
+        // VerifyCa/VerifyFull require a CA certificate path
+        if matches!(self.ssl_mode, SslMode::VerifyCa | SslMode::VerifyFull)
+            && self.ca_cert_path.is_none()
+        {
+            return Err(ConnectorError::ConfigurationError(format!(
+                "ssl.mode={} requires ssl.ca.cert.path",
+                self.ssl_mode
+            )));
+        }
+        // Client cert without key (or vice versa) is invalid
+        if self.client_cert_path.is_some() != self.client_key_path.is_some() {
+            return Err(ConnectorError::ConfigurationError(
+                "ssl.client.cert.path and ssl.client.key.path must both be set for mTLS"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -476,5 +513,95 @@ mod tests {
 
         let cfg = PostgresCdcConfig::from_config(&config).unwrap();
         assert_eq!(cfg.table_include, vec!["public.users", "public.orders"]);
+    }
+
+    // ── TLS cert path fields ──
+
+    #[test]
+    fn test_default_tls_fields_are_none() {
+        let cfg = PostgresCdcConfig::default();
+        assert!(cfg.ca_cert_path.is_none());
+        assert!(cfg.client_cert_path.is_none());
+        assert!(cfg.client_key_path.is_none());
+        assert!(cfg.sni_hostname.is_none());
+    }
+
+    #[test]
+    fn test_from_config_tls_cert_paths() {
+        let mut config = ConnectorConfig::new("postgres-cdc");
+        config.set("host", "localhost");
+        config.set("database", "db");
+        config.set("slot.name", "s");
+        config.set("publication", "p");
+        config.set("ssl.mode", "verify-full");
+        config.set("ssl.ca.cert.path", "/certs/ca.pem");
+        config.set("ssl.client.cert.path", "/certs/client.pem");
+        config.set("ssl.client.key.path", "/certs/client-key.pem");
+        config.set("ssl.sni.hostname", "db.example.com");
+
+        let cfg = PostgresCdcConfig::from_config(&config).unwrap();
+        assert_eq!(cfg.ssl_mode, SslMode::VerifyFull);
+        assert_eq!(cfg.ca_cert_path.as_deref(), Some("/certs/ca.pem"));
+        assert_eq!(cfg.client_cert_path.as_deref(), Some("/certs/client.pem"));
+        assert_eq!(
+            cfg.client_key_path.as_deref(),
+            Some("/certs/client-key.pem")
+        );
+        assert_eq!(cfg.sni_hostname.as_deref(), Some("db.example.com"));
+    }
+
+    #[test]
+    fn test_validate_verify_ca_requires_ca_path() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.ssl_mode = SslMode::VerifyCa;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("ssl.ca.cert.path"));
+    }
+
+    #[test]
+    fn test_validate_verify_full_requires_ca_path() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.ssl_mode = SslMode::VerifyFull;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("ssl.ca.cert.path"));
+    }
+
+    #[test]
+    fn test_validate_verify_ca_with_ca_path_ok() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.ssl_mode = SslMode::VerifyCa;
+        cfg.ca_cert_path = Some("/certs/ca.pem".to_string());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_client_cert_without_key() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.client_cert_path = Some("/certs/client.pem".to_string());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("mTLS"));
+    }
+
+    #[test]
+    fn test_validate_client_key_without_cert() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.client_key_path = Some("/certs/client-key.pem".to_string());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("mTLS"));
+    }
+
+    #[test]
+    fn test_validate_client_cert_and_key_ok() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.client_cert_path = Some("/certs/client.pem".to_string());
+        cfg.client_key_path = Some("/certs/client-key.pem".to_string());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_require_mode_no_ca_path_ok() {
+        let mut cfg = PostgresCdcConfig::default();
+        cfg.ssl_mode = SslMode::Require;
+        assert!(cfg.validate().is_ok());
     }
 }

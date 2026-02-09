@@ -289,9 +289,20 @@ pub async fn ensure_replication_slot(
 /// [`PostgresCdcConfig`](super::config::PostgresCdcConfig).
 ///
 /// Maps connection parameters, replication slot, publication, start LSN,
-/// and keepalive interval. TLS mapping uses `TlsConfig::disabled()` for
-/// `Disable`, and `TlsConfig::require()` for `Require`/`VerifyCa`/`VerifyFull`
-/// (CA cert path support is a follow-up).
+/// keepalive interval, and TLS settings.
+///
+/// # TLS Mapping
+///
+/// | `SslMode`    | `TlsConfig` method                     |
+/// |--------------|----------------------------------------|
+/// | `Disable`    | `disabled()`                           |
+/// | `Prefer`     | `require()` (no prefer in upstream)    |
+/// | `Require`    | `require()`                            |
+/// | `VerifyCa`   | `verify_ca(ca_path)`                   |
+/// | `VerifyFull` | `verify_full(ca_path)`                 |
+///
+/// Optional SNI hostname and mTLS client cert/key are chained as
+/// builder steps when their config fields are set.
 ///
 /// # Note
 ///
@@ -301,19 +312,30 @@ pub async fn ensure_replication_slot(
 pub fn build_replication_config(
     config: &super::config::PostgresCdcConfig,
 ) -> pgwire_replication::ReplicationConfig {
+    use std::path::PathBuf;
+
     use super::config::SslMode;
 
+    let ca_path = config.ca_cert_path.as_ref().map(PathBuf::from);
+
     let tls = match config.ssl_mode {
-        // For Disable/Prefer we leave TLS disabled since we don't have cert
-        // paths yet. This matches the current `connect()` behavior.
-        SslMode::Disable | SslMode::Prefer => pgwire_replication::TlsConfig::disabled(),
-        SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull => {
-            tracing::warn!(
-                ssl_mode = %config.ssl_mode,
-                "TLS cert paths not yet configured for pgwire-replication; using disabled"
-            );
-            pgwire_replication::TlsConfig::disabled()
-        }
+        SslMode::Disable => pgwire_replication::TlsConfig::disabled(),
+        SslMode::Prefer | SslMode::Require => pgwire_replication::TlsConfig::require(),
+        SslMode::VerifyCa => pgwire_replication::TlsConfig::verify_ca(ca_path),
+        SslMode::VerifyFull => pgwire_replication::TlsConfig::verify_full(ca_path),
+    };
+
+    // Apply optional SNI hostname
+    let tls = if let Some(ref hostname) = config.sni_hostname {
+        tls.with_sni_hostname(hostname)
+    } else {
+        tls
+    };
+
+    // Apply optional mTLS client certificate
+    let tls = match (&config.client_cert_path, &config.client_key_path) {
+        (Some(cert), Some(key)) => tls.with_client_cert(PathBuf::from(cert), PathBuf::from(key)),
+        _ => tls,
     };
 
     let start_lsn = config
@@ -499,5 +521,111 @@ mod tests {
         assert!(query.contains("START_REPLICATION SLOT my_slot LOGICAL 0/1234ABCD"));
         assert!(query.contains("proto_version '1'"));
         assert!(query.contains("publication_names 'my_pub'"));
+    }
+
+    // ── build_replication_config TLS mapping ──
+
+    #[cfg(feature = "postgres-cdc")]
+    mod tls_mapping_tests {
+        use super::super::build_replication_config;
+        use crate::cdc::postgres::config::{PostgresCdcConfig, SslMode};
+
+        #[test]
+        fn test_disable_maps_to_disabled() {
+            let mut cfg = PostgresCdcConfig::default();
+            cfg.ssl_mode = SslMode::Disable;
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.tls.mode, pgwire_replication::SslMode::Disable);
+        }
+
+        #[test]
+        fn test_prefer_maps_to_require() {
+            let cfg = PostgresCdcConfig::default(); // default is Prefer
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.tls.mode, pgwire_replication::SslMode::Require);
+        }
+
+        #[test]
+        fn test_require_maps_to_require() {
+            let mut cfg = PostgresCdcConfig::default();
+            cfg.ssl_mode = SslMode::Require;
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.tls.mode, pgwire_replication::SslMode::Require);
+        }
+
+        #[test]
+        fn test_verify_ca_maps_with_ca_path() {
+            let mut cfg = PostgresCdcConfig::default();
+            cfg.ssl_mode = SslMode::VerifyCa;
+            cfg.ca_cert_path = Some("/certs/ca.pem".to_string());
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.tls.mode, pgwire_replication::SslMode::VerifyCa);
+            assert_eq!(
+                repl.tls.ca_pem_path.as_deref(),
+                Some(std::path::Path::new("/certs/ca.pem"))
+            );
+        }
+
+        #[test]
+        fn test_verify_full_maps_with_ca_path() {
+            let mut cfg = PostgresCdcConfig::default();
+            cfg.ssl_mode = SslMode::VerifyFull;
+            cfg.ca_cert_path = Some("/certs/ca.pem".to_string());
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.tls.mode, pgwire_replication::SslMode::VerifyFull);
+            assert_eq!(
+                repl.tls.ca_pem_path.as_deref(),
+                Some(std::path::Path::new("/certs/ca.pem"))
+            );
+        }
+
+        #[test]
+        fn test_sni_hostname_applied() {
+            let mut cfg = PostgresCdcConfig::default();
+            cfg.sni_hostname = Some("db.example.com".to_string());
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.tls.sni_hostname.as_deref(), Some("db.example.com"));
+        }
+
+        #[test]
+        fn test_mtls_client_cert_applied() {
+            let mut cfg = PostgresCdcConfig::default();
+            cfg.ssl_mode = SslMode::Require;
+            cfg.client_cert_path = Some("/certs/client.pem".to_string());
+            cfg.client_key_path = Some("/certs/client-key.pem".to_string());
+            let repl = build_replication_config(&cfg);
+            assert_eq!(
+                repl.tls.client_cert_pem_path.as_deref(),
+                Some(std::path::Path::new("/certs/client.pem"))
+            );
+            assert_eq!(
+                repl.tls.client_key_pem_path.as_deref(),
+                Some(std::path::Path::new("/certs/client-key.pem"))
+            );
+        }
+
+        #[test]
+        fn test_no_client_cert_when_not_set() {
+            let cfg = PostgresCdcConfig::default();
+            let repl = build_replication_config(&cfg);
+            assert!(repl.tls.client_cert_pem_path.is_none());
+            assert!(repl.tls.client_key_pem_path.is_none());
+        }
+
+        #[test]
+        fn test_connection_fields_mapped() {
+            let mut cfg = PostgresCdcConfig::new("pg.example.com", "mydb", "my_slot", "my_pub");
+            cfg.port = 5433;
+            cfg.username = "replicator".to_string();
+            cfg.password = Some("secret".to_string());
+            let repl = build_replication_config(&cfg);
+            assert_eq!(repl.host, "pg.example.com");
+            assert_eq!(repl.port, 5433);
+            assert_eq!(repl.user, "replicator");
+            assert_eq!(repl.password, "secret");
+            assert_eq!(repl.database, "mydb");
+            assert_eq!(repl.slot, "my_slot");
+            assert_eq!(repl.publication, "my_pub");
+        }
     }
 }
