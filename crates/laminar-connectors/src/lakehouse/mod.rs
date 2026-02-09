@@ -68,6 +68,9 @@ pub mod iceberg;
 pub mod iceberg_config;
 pub mod iceberg_metrics;
 
+// Common metrics
+pub mod metrics;
+
 // Re-export Delta Lake types at module level.
 pub use delta::DeltaLakeSink;
 pub use delta_config::{CompactionConfig, DeliveryGuarantee, DeltaLakeSinkConfig, DeltaWriteMode};
@@ -80,6 +83,7 @@ pub use iceberg_config::{
     IcebergTransform, IcebergWriteMode, MaintenanceConfig, NullOrder, SortDirection, SortField,
 };
 pub use iceberg_metrics::IcebergSinkMetrics;
+pub use metrics::LakehouseSinkMetrics;
 
 use std::sync::Arc;
 

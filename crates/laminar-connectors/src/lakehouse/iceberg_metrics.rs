@@ -7,36 +7,19 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use crate::metrics::ConnectorMetrics;
+use super::metrics::LakehouseSinkMetrics;
 
 /// Atomic counters for Iceberg sink connector statistics.
 #[derive(Debug)]
 pub struct IcebergSinkMetrics {
-    /// Total rows flushed to Parquet files.
-    pub rows_flushed: AtomicU64,
-
-    /// Total bytes written to storage (estimated from `RecordBatch` sizes).
-    pub bytes_written: AtomicU64,
-
-    /// Total number of Parquet flush operations.
-    pub flush_count: AtomicU64,
-
-    /// Total number of Iceberg snapshot commits (epoch commits).
-    pub commits: AtomicU64,
-
-    /// Total errors encountered.
-    pub errors_total: AtomicU64,
-
-    /// Total epochs rolled back.
-    pub epochs_rolled_back: AtomicU64,
+    /// Common metrics (rows flushed, bytes written, commits, etc.).
+    pub common: LakehouseSinkMetrics,
 
     /// Total data files written (Parquet files).
     pub data_files_written: AtomicU64,
 
     /// Total equality delete files written (upsert mode).
     pub delete_files_written: AtomicU64,
-
-    /// Total changelog deletes processed (Z-set weight -1).
-    pub changelog_deletes: AtomicU64,
 
     /// Last Iceberg snapshot ID committed.
     pub last_snapshot_id: AtomicI64,
@@ -50,15 +33,9 @@ impl IcebergSinkMetrics {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            rows_flushed: AtomicU64::new(0),
-            bytes_written: AtomicU64::new(0),
-            flush_count: AtomicU64::new(0),
-            commits: AtomicU64::new(0),
-            errors_total: AtomicU64::new(0),
-            epochs_rolled_back: AtomicU64::new(0),
+            common: LakehouseSinkMetrics::new(),
             data_files_written: AtomicU64::new(0),
             delete_files_written: AtomicU64::new(0),
-            changelog_deletes: AtomicU64::new(0),
             last_snapshot_id: AtomicI64::new(0),
             table_version: AtomicU64::new(0),
         }
@@ -66,9 +43,7 @@ impl IcebergSinkMetrics {
 
     /// Records a successful flush of `records` rows totaling `bytes`.
     pub fn record_flush(&self, records: u64, bytes: u64) {
-        self.rows_flushed.fetch_add(records, Ordering::Relaxed);
-        self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
-        self.flush_count.fetch_add(1, Ordering::Relaxed);
+        self.common.record_flush(records, bytes);
     }
 
     /// Records data files written during a flush.
@@ -84,49 +59,33 @@ impl IcebergSinkMetrics {
 
     /// Records a successful epoch commit with the snapshot ID.
     pub fn record_commit(&self, snapshot_id: i64) {
-        self.commits.fetch_add(1, Ordering::Relaxed);
+        self.common.record_commit();
         self.last_snapshot_id.store(snapshot_id, Ordering::Relaxed);
         self.table_version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a write or I/O error.
     pub fn record_error(&self) {
-        self.errors_total.fetch_add(1, Ordering::Relaxed);
+        self.common.record_error();
     }
 
     /// Records an epoch rollback.
     pub fn record_rollback(&self) {
-        self.epochs_rolled_back.fetch_add(1, Ordering::Relaxed);
+        self.common.record_rollback();
     }
 
     /// Records changelog DELETE operations processed.
     pub fn record_deletes(&self, count: u64) {
-        self.changelog_deletes.fetch_add(count, Ordering::Relaxed);
+        self.common.record_deletes(count);
     }
 
     /// Converts to the SDK's [`ConnectorMetrics`].
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn to_connector_metrics(&self) -> ConnectorMetrics {
-        let mut m = ConnectorMetrics {
-            records_total: self.rows_flushed.load(Ordering::Relaxed),
-            bytes_total: self.bytes_written.load(Ordering::Relaxed),
-            errors_total: self.errors_total.load(Ordering::Relaxed),
-            lag: 0,
-            custom: Vec::new(),
-        };
-        m.add_custom(
-            "iceberg.flush_count",
-            self.flush_count.load(Ordering::Relaxed) as f64,
-        );
-        m.add_custom(
-            "iceberg.commits",
-            self.commits.load(Ordering::Relaxed) as f64,
-        );
-        m.add_custom(
-            "iceberg.epochs_rolled_back",
-            self.epochs_rolled_back.load(Ordering::Relaxed) as f64,
-        );
+        let mut m = ConnectorMetrics::new();
+        self.common.populate_metrics(&mut m, "iceberg");
+
         m.add_custom(
             "iceberg.data_files_written",
             self.data_files_written.load(Ordering::Relaxed) as f64,
@@ -134,10 +93,6 @@ impl IcebergSinkMetrics {
         m.add_custom(
             "iceberg.delete_files_written",
             self.delete_files_written.load(Ordering::Relaxed) as f64,
-        );
-        m.add_custom(
-            "iceberg.changelog_deletes",
-            self.changelog_deletes.load(Ordering::Relaxed) as f64,
         );
         m.add_custom(
             "iceberg.last_snapshot_id",
@@ -154,15 +109,15 @@ impl IcebergSinkMetrics {
     #[must_use]
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
-            rows_flushed: self.rows_flushed.load(Ordering::Relaxed),
-            bytes_written: self.bytes_written.load(Ordering::Relaxed),
-            flush_count: self.flush_count.load(Ordering::Relaxed),
-            commits: self.commits.load(Ordering::Relaxed),
-            errors_total: self.errors_total.load(Ordering::Relaxed),
-            epochs_rolled_back: self.epochs_rolled_back.load(Ordering::Relaxed),
+            rows_flushed: self.common.rows_flushed.load(Ordering::Relaxed),
+            bytes_written: self.common.bytes_written.load(Ordering::Relaxed),
+            flush_count: self.common.flush_count.load(Ordering::Relaxed),
+            commits: self.common.commits.load(Ordering::Relaxed),
+            errors_total: self.common.errors_total.load(Ordering::Relaxed),
+            epochs_rolled_back: self.common.epochs_rolled_back.load(Ordering::Relaxed),
+            changelog_deletes: self.common.changelog_deletes.load(Ordering::Relaxed),
             data_files_written: self.data_files_written.load(Ordering::Relaxed),
             delete_files_written: self.delete_files_written.load(Ordering::Relaxed),
-            changelog_deletes: self.changelog_deletes.load(Ordering::Relaxed),
             last_snapshot_id: self.last_snapshot_id.load(Ordering::Relaxed),
             table_version: self.table_version.load(Ordering::Relaxed),
         }
