@@ -2047,26 +2047,26 @@ fn test_tumbling_window_close_metrics_on_timer() {
     assert_eq!(operator.active_windows_count(), 2);
 
     // Fire window 1
-    let timer1 = Timer {
+    let win_timer_1 = Timer {
         key: WindowId::new(0, 1000).to_key(),
         timestamp: 1000,
     };
     {
         let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-        operator.on_timer(timer1, &mut ctx);
+        operator.on_timer(win_timer_1, &mut ctx);
     }
 
     assert_eq!(operator.window_close_metrics().windows_closed_total(), 1);
     assert_eq!(operator.active_windows_count(), 1);
 
     // Fire window 2
-    let timer2 = Timer {
+    let win_timer_2 = Timer {
         key: WindowId::new(1000, 2000).to_key(),
         timestamp: 2000,
     };
     {
         let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-        operator.on_timer(timer2, &mut ctx);
+        operator.on_timer(win_timer_2, &mut ctx);
     }
 
     assert_eq!(operator.window_close_metrics().windows_closed_total(), 2);
@@ -2252,13 +2252,13 @@ fn test_eowc_tumbling_multiple_windows() {
     }
 
     // Fire window 1: [0, 1000)
-    let timer1 = Timer {
+    let win_timer_1 = Timer {
         key: WindowId::new(0, 1000).to_key(),
         timestamp: 1000,
     };
     let out1 = {
         let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-        operator.on_timer(timer1, &mut ctx)
+        operator.on_timer(win_timer_1, &mut ctx)
     };
     assert_eq!(out1.len(), 1);
     if let Output::Event(e) = &out1[0] {
@@ -2274,13 +2274,13 @@ fn test_eowc_tumbling_multiple_windows() {
     }
 
     // Fire window 2: [1000, 2000)
-    let timer2 = Timer {
+    let win_timer_2 = Timer {
         key: WindowId::new(1000, 2000).to_key(),
         timestamp: 2000,
     };
     let out2 = {
         let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-        operator.on_timer(timer2, &mut ctx)
+        operator.on_timer(win_timer_2, &mut ctx)
     };
     assert_eq!(out2.len(), 1);
     if let Output::Event(e) = &out2[0] {
@@ -2296,13 +2296,13 @@ fn test_eowc_tumbling_multiple_windows() {
     }
 
     // Fire window 3: [2000, 3000)
-    let timer3 = Timer {
+    let win_timer_3 = Timer {
         key: WindowId::new(2000, 3000).to_key(),
         timestamp: 3000,
     };
     let out3 = {
         let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-        operator.on_timer(timer3, &mut ctx)
+        operator.on_timer(win_timer_3, &mut ctx)
     };
     assert_eq!(out3.len(), 1);
     if let Output::Event(e) = &out3[0] {

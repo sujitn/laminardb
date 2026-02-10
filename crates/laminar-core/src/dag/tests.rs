@@ -3103,7 +3103,7 @@ fn test_eowc_dag_multiple_windows() {
 /// Note: Timer re-registration after restore for existing windows is
 /// a known gap in tumbling windows (session windows handle this via
 /// `needs_timer_reregistration`). This test verifies that checkpoint/
-/// restore preserves the registered_windows set and that new windows
+/// restore preserves the `registered_windows` set and that new windows
 /// created after restore work correctly end-to-end.
 #[test]
 fn test_eowc_dag_checkpoint_restore() {
@@ -3172,10 +3172,10 @@ fn test_eowc_dag_checkpoint_restore() {
     );
 }
 
-/// EOWC vs OnWatermark comparison at DAG level
+/// EOWC vs `OnWatermark` comparison at DAG level
 ///
 /// Both strategies should produce the same final result for a single window,
-/// but OnWatermark may emit intermediate results while OnWindowClose does not.
+/// but `OnWatermark` may emit intermediate results while `OnWindowClose` does not.
 #[test]
 fn test_eowc_dag_vs_on_watermark() {
     use crate::operator::window::EmitStrategy;
@@ -3254,7 +3254,7 @@ fn test_eowc_dag_vs_on_watermark() {
     );
 }
 
-/// fire_timers: basic test that it fires timers and routes outputs.
+/// `fire_timers`: basic test that it fires timers and routes outputs.
 #[test]
 fn test_fire_timers_routes_outputs() {
     use crate::operator::window::{

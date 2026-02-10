@@ -1647,13 +1647,13 @@ mod tests {
         }
 
         // Fire window [0, 1000) first (earlier end)
-        let timer1 = Timer {
+        let win_timer_1 = Timer {
             key: WindowId::new(0, 1000).to_key(),
             timestamp: 1000,
         };
         let out1 = {
             let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-            operator.on_timer(timer1, &mut ctx)
+            operator.on_timer(win_timer_1, &mut ctx)
         };
         assert_eq!(out1.len(), 1);
         if let Output::Event(e) = &out1[0] {
@@ -1661,13 +1661,13 @@ mod tests {
         }
 
         // Fire window [500, 1500) second (later end)
-        let timer2 = Timer {
+        let win_timer_2 = Timer {
             key: WindowId::new(500, 1500).to_key(),
             timestamp: 1500,
         };
         let out2 = {
             let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
-            operator.on_timer(timer2, &mut ctx)
+            operator.on_timer(win_timer_2, &mut ctx)
         };
         assert_eq!(out2.len(), 1);
         if let Output::Event(e) = &out2[0] {
