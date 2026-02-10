@@ -2962,7 +2962,9 @@ fn test_process_watermark_invalid_node() {
 fn make_eowc_window_operator(
     emit_strategy: crate::operator::window::EmitStrategy,
 ) -> Box<dyn crate::operator::Operator> {
-    use crate::operator::window::{CountAggregator, TumblingWindowAssigner, TumblingWindowOperator};
+    use crate::operator::window::{
+        CountAggregator, TumblingWindowAssigner, TumblingWindowOperator,
+    };
     use std::time::Duration;
 
     let assigner = TumblingWindowAssigner::from_millis(1000);
@@ -3000,7 +3002,10 @@ fn test_eowc_dag_no_intermediate_single_emission() {
     let snk_id = dag.node_id_by_name("snk").unwrap();
 
     let mut executor = DagExecutor::from_dag(&dag);
-    executor.register_operator(window_id, make_eowc_window_operator(EmitStrategy::OnWindowClose));
+    executor.register_operator(
+        window_id,
+        make_eowc_window_operator(EmitStrategy::OnWindowClose),
+    );
 
     // Process 5 events into window [0, 1000)
     for i in 0..5 {
@@ -3053,7 +3058,10 @@ fn test_eowc_dag_multiple_windows() {
     let snk_id = dag.node_id_by_name("snk").unwrap();
 
     let mut executor = DagExecutor::from_dag(&dag);
-    executor.register_operator(window_id, make_eowc_window_operator(EmitStrategy::OnWindowClose));
+    executor.register_operator(
+        window_id,
+        make_eowc_window_operator(EmitStrategy::OnWindowClose),
+    );
 
     // Window [0, 1000): 3 events
     for i in 0..3 {
@@ -3068,9 +3076,7 @@ fn test_eowc_dag_multiple_windows() {
             .unwrap();
     }
     // Window [2000, 3000): 1 event
-    executor
-        .process_event(src_id, test_event(2500, 1))
-        .unwrap();
+    executor.process_event(src_id, test_event(2500, 1)).unwrap();
 
     // No outputs yet (OnWindowClose)
     assert!(executor.take_sink_outputs(snk_id).is_empty());
@@ -3118,7 +3124,10 @@ fn test_eowc_dag_checkpoint_restore() {
 
     // Phase 1: Process events and checkpoint
     let mut executor = DagExecutor::from_dag(&dag);
-    executor.register_operator(window_id, make_eowc_window_operator(EmitStrategy::OnWindowClose));
+    executor.register_operator(
+        window_id,
+        make_eowc_window_operator(EmitStrategy::OnWindowClose),
+    );
 
     for i in 0..4 {
         executor
@@ -3134,7 +3143,10 @@ fn test_eowc_dag_checkpoint_restore() {
 
     // Phase 2: Restore into a fresh executor
     let mut executor2 = DagExecutor::from_dag(&dag);
-    executor2.register_operator(window_id, make_eowc_window_operator(EmitStrategy::OnWindowClose));
+    executor2.register_operator(
+        window_id,
+        make_eowc_window_operator(EmitStrategy::OnWindowClose),
+    );
     executor2.restore(&states).unwrap();
 
     // After restore, process events into a NEW window [1000, 2000).
@@ -3184,7 +3196,10 @@ fn test_eowc_dag_vs_on_watermark() {
     let snk_eowc = dag_eowc.node_id_by_name("snk").unwrap();
 
     let mut exec_eowc = DagExecutor::from_dag(&dag_eowc);
-    exec_eowc.register_operator(win_eowc, make_eowc_window_operator(EmitStrategy::OnWindowClose));
+    exec_eowc.register_operator(
+        win_eowc,
+        make_eowc_window_operator(EmitStrategy::OnWindowClose),
+    );
 
     // --- OnWatermark pipeline ---
     let dag_wm = DagBuilder::new()
@@ -3208,9 +3223,7 @@ fn test_eowc_dag_vs_on_watermark() {
         exec_eowc
             .process_event(src_eowc, test_event(ts, 1))
             .unwrap();
-        exec_wm
-            .process_event(src_wm, test_event(ts, 1))
-            .unwrap();
+        exec_wm.process_event(src_wm, test_event(ts, 1)).unwrap();
     }
 
     // Fire timers for both
@@ -3244,7 +3257,9 @@ fn test_eowc_dag_vs_on_watermark() {
 /// fire_timers: basic test that it fires timers and routes outputs.
 #[test]
 fn test_fire_timers_routes_outputs() {
-    use crate::operator::window::{CountAggregator, EmitStrategy, TumblingWindowAssigner, TumblingWindowOperator};
+    use crate::operator::window::{
+        CountAggregator, EmitStrategy, TumblingWindowAssigner, TumblingWindowOperator,
+    };
     use std::time::Duration;
 
     let schema = int_schema();
@@ -3287,5 +3302,9 @@ fn test_fire_timers_routes_outputs() {
     // Fire at window end time
     executor.fire_timers(1000);
     let outputs = executor.take_sink_outputs(snk_id);
-    assert_eq!(outputs.len(), 1, "Expected 1 window emission from timer fire");
+    assert_eq!(
+        outputs.len(),
+        1,
+        "Expected 1 window emission from timer fire"
+    );
 }

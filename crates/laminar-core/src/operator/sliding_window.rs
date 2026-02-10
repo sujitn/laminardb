@@ -1534,8 +1534,7 @@ mod tests {
         // Belongs to windows: [0, 60000), [20000, 80000), [40000, 100000)
         let event = create_test_event(50_000, 1);
         let outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&event, &mut ctx)
         };
 
@@ -1563,11 +1562,7 @@ mod tests {
                 timestamp: wid.end,
             };
             let out = {
-                let mut ctx = create_test_context(
-                    &mut timers,
-                    &mut state,
-                    &mut watermark_gen,
-                );
+                let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
                 operator.on_timer(timer, &mut ctx)
             };
             assert_eq!(
@@ -1584,11 +1579,7 @@ mod tests {
                     .as_any()
                     .downcast_ref::<Int64Array>()
                     .unwrap();
-                assert_eq!(
-                    result.value(0),
-                    1,
-                    "Each window should have count=1"
-                );
+                assert_eq!(result.value(0), 1, "Each window should have count=1");
             }
             emission_count += 1;
         }
@@ -1619,11 +1610,7 @@ mod tests {
         for ts in (0..10).map(|i| i * 200) {
             let event = create_test_event(ts, 1);
             let outputs = {
-                let mut ctx = create_test_context(
-                    &mut timers,
-                    &mut state,
-                    &mut watermark_gen,
-                );
+                let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
                 operator.process(&event, &mut ctx)
             };
             for output in &outputs {
@@ -1655,8 +1642,7 @@ mod tests {
         // Event at t=600 belongs to [0, 1000) and [500, 1500)
         let event = create_test_event(600, 10);
         {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&event, &mut ctx);
         }
 
@@ -1666,8 +1652,7 @@ mod tests {
             timestamp: 1000,
         };
         let out1 = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.on_timer(timer1, &mut ctx)
         };
         assert_eq!(out1.len(), 1);
@@ -1681,8 +1666,7 @@ mod tests {
             timestamp: 1500,
         };
         let out2 = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.on_timer(timer2, &mut ctx)
         };
         assert_eq!(out2.len(), 1);

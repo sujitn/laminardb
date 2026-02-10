@@ -217,8 +217,7 @@ impl WindowCloseMetrics {
         if self.windows_closed_total == 0 {
             0
         } else {
-            self.close_latency_sum_ms
-                / i64::try_from(self.windows_closed_total).unwrap_or(i64::MAX)
+            self.close_latency_sum_ms / i64::try_from(self.windows_closed_total).unwrap_or(i64::MAX)
         }
     }
 

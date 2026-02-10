@@ -190,11 +190,7 @@ impl WindowOperatorConfig {
     /// # Errors
     ///
     /// Returns `ParseError::WindowError` if validation fails.
-    pub fn validate(
-        &self,
-        has_watermark: bool,
-        has_window: bool,
-    ) -> Result<(), ParseError> {
+    pub fn validate(&self, has_watermark: bool, has_window: bool) -> Result<(), ParseError> {
         if matches!(
             self.emit_strategy,
             EmitStrategy::OnWindowClose | EmitStrategy::FinalOnly
@@ -357,11 +353,8 @@ mod tests {
 
     #[test]
     fn test_eowc_without_watermark_errors() {
-        let config = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::OnWindowClose);
+        let config = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::OnWindowClose);
 
         let result = config.validate(false, true);
         assert!(result.is_err());
@@ -374,11 +367,8 @@ mod tests {
 
     #[test]
     fn test_eowc_without_window_errors() {
-        let config = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::OnWindowClose);
+        let config = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::OnWindowClose);
 
         let result = config.validate(true, false);
         assert!(result.is_err());
@@ -391,22 +381,16 @@ mod tests {
 
     #[test]
     fn test_eowc_with_watermark_and_window_passes() {
-        let config = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::OnWindowClose);
+        let config = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::OnWindowClose);
 
         assert!(config.validate(true, true).is_ok());
     }
 
     #[test]
     fn test_final_without_watermark_errors() {
-        let config = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::FinalOnly);
+        let config = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::FinalOnly);
 
         let result = config.validate(false, true);
         assert!(result.is_err());
@@ -415,27 +399,18 @@ mod tests {
     #[test]
     fn test_non_eowc_without_watermark_ok() {
         // OnUpdate does not require watermark
-        let config = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::OnUpdate);
+        let config = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::OnUpdate);
         assert!(config.validate(false, false).is_ok());
 
         // Periodic does not require watermark
-        let config2 = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(5)));
+        let config2 = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::Periodic(Duration::from_secs(5)));
         assert!(config2.validate(false, false).is_ok());
 
         // Changelog does not require watermark
-        let config3 = WindowOperatorConfig::tumbling(
-            "ts".to_string(),
-            Duration::from_secs(300),
-        )
-        .with_emit_strategy(EmitStrategy::Changelog);
+        let config3 = WindowOperatorConfig::tumbling("ts".to_string(), Duration::from_secs(300))
+            .with_emit_strategy(EmitStrategy::Changelog);
         assert!(config3.validate(false, false).is_ok());
     }
 }

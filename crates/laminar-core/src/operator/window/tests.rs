@@ -2034,14 +2034,12 @@ fn test_tumbling_window_close_metrics_on_timer() {
     // Process events into 2 windows
     for ts in [100, 400, 700] {
         let event = create_test_event(ts, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
     for ts in [1100, 1500] {
         let event = create_test_event(ts, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
@@ -2054,8 +2052,7 @@ fn test_tumbling_window_close_metrics_on_timer() {
         timestamp: 1000,
     };
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer1, &mut ctx);
     }
 
@@ -2068,8 +2065,7 @@ fn test_tumbling_window_close_metrics_on_timer() {
         timestamp: 2000,
     };
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer2, &mut ctx);
     }
 
@@ -2098,8 +2094,7 @@ fn test_window_close_metrics_empty_window_not_counted() {
         timestamp: 1000,
     };
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer, &mut ctx);
     }
 
@@ -2136,8 +2131,7 @@ fn test_eowc_tumbling_single_window_single_emit() {
     for i in 0..10 {
         let event = create_test_event(i * 5000, 1); // 0, 5k, 10k, ..., 45k
         let outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&event, &mut ctx)
         };
         // No Event outputs during accumulation
@@ -2157,8 +2151,7 @@ fn test_eowc_tumbling_single_window_single_emit() {
         timestamp: 60_000,
     };
     let outputs = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer, &mut ctx)
     };
 
@@ -2168,8 +2161,7 @@ fn test_eowc_tumbling_single_window_single_emit() {
         Output::Event(event) => {
             assert_eq!(event.timestamp, 60_000);
             let result_col = event.data.column(2);
-            let result_array =
-                result_col.as_any().downcast_ref::<Int64Array>().unwrap();
+            let result_array = result_col.as_any().downcast_ref::<Int64Array>().unwrap();
             assert_eq!(result_array.value(0), 10, "Count should be 10");
         }
         other => panic!("Expected Output::Event, got: {other:?}"),
@@ -2204,8 +2196,7 @@ fn test_eowc_tumbling_no_intermediate_emissions() {
     for ts in (0..20).map(|i| i * 100) {
         let event = create_test_event(ts, 1);
         let outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&event, &mut ctx)
         };
         for output in &outputs {
@@ -2242,24 +2233,21 @@ fn test_eowc_tumbling_multiple_windows() {
     // Window [0, 1000): 3 events
     for ts in [100, 400, 700] {
         let event = create_test_event(ts, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
     // Window [1000, 2000): 2 events
     for ts in [1100, 1500] {
         let event = create_test_event(ts, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
     // Window [2000, 3000): 1 event
     {
         let event = create_test_event(2200, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
@@ -2269,8 +2257,7 @@ fn test_eowc_tumbling_multiple_windows() {
         timestamp: 1000,
     };
     let out1 = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer1, &mut ctx)
     };
     assert_eq!(out1.len(), 1);
@@ -2292,8 +2279,7 @@ fn test_eowc_tumbling_multiple_windows() {
         timestamp: 2000,
     };
     let out2 = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer2, &mut ctx)
     };
     assert_eq!(out2.len(), 1);
@@ -2304,11 +2290,7 @@ fn test_eowc_tumbling_multiple_windows() {
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap();
-        assert_eq!(
-            result.value(0),
-            2,
-            "Window [1000,2000) should have count=2"
-        );
+        assert_eq!(result.value(0), 2, "Window [1000,2000) should have count=2");
     } else {
         panic!("Expected Event output for window 2");
     }
@@ -2319,8 +2301,7 @@ fn test_eowc_tumbling_multiple_windows() {
         timestamp: 3000,
     };
     let out3 = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer3, &mut ctx)
     };
     assert_eq!(out3.len(), 1);
@@ -2331,11 +2312,7 @@ fn test_eowc_tumbling_multiple_windows() {
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap();
-        assert_eq!(
-            result.value(0),
-            1,
-            "Window [2000,3000) should have count=1"
-        );
+        assert_eq!(result.value(0), 1, "Window [2000,3000) should have count=1");
     } else {
         panic!("Expected Event output for window 3");
     }
@@ -2364,8 +2341,7 @@ fn test_eowc_tumbling_late_data_dropped_after_close() {
     // Fill window [0, 1000) with 3 events
     for ts in [100, 400, 700] {
         let event = create_test_event(ts, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
@@ -2375,8 +2351,7 @@ fn test_eowc_tumbling_late_data_dropped_after_close() {
         timestamp: 6000,
     };
     let emit_out = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer, &mut ctx)
     };
     assert_eq!(emit_out.len(), 1, "Should emit exactly once");
@@ -2385,16 +2360,14 @@ fn test_eowc_tumbling_late_data_dropped_after_close() {
     // Now advance watermark well past the window close point
     let advance_event = create_test_event(7000, 1);
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&advance_event, &mut ctx);
     }
 
     // Send late event for the closed window [0, 1000)
     let late_event = create_test_event(500, 99);
     let late_outputs = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&late_event, &mut ctx)
     };
 
@@ -2408,9 +2381,7 @@ fn test_eowc_tumbling_late_data_dropped_after_close() {
     );
 
     // Should NOT produce a new Event (window already closed)
-    let is_event = late_outputs
-        .iter()
-        .any(|o| matches!(o, Output::Event(_)));
+    let is_event = late_outputs.iter().any(|o| matches!(o, Output::Event(_)));
     assert!(
         !is_event,
         "Late event after EOWC close must not produce a new Event"
@@ -2431,9 +2402,7 @@ fn test_eowc_tumbling_late_data_side_output() {
         "eowc_test".to_string(),
     );
     operator.set_emit_strategy(EmitStrategy::OnWindowClose);
-    operator.set_late_data_config(
-        LateDataConfig::with_side_output("late_trades".to_string()),
-    );
+    operator.set_late_data_config(LateDataConfig::with_side_output("late_trades".to_string()));
 
     let mut timers = TimerService::new();
     let mut state = InMemoryStore::new();
@@ -2442,8 +2411,7 @@ fn test_eowc_tumbling_late_data_side_output() {
     // Fill window [0, 1000)
     let event = create_test_event(500, 1);
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
@@ -2453,24 +2421,21 @@ fn test_eowc_tumbling_late_data_side_output() {
         timestamp: 1000,
     };
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer, &mut ctx);
     }
 
     // Advance watermark
     let advance = create_test_event(2000, 1);
     {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&advance, &mut ctx);
     }
 
     // Send late event
     let late_event = create_test_event(300, 99);
     let outputs = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&late_event, &mut ctx)
     };
 
@@ -2513,8 +2478,7 @@ fn test_eowc_tumbling_empty_window_no_emission() {
         timestamp: 1000,
     };
     let outputs = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.on_timer(timer, &mut ctx)
     };
 
@@ -2544,8 +2508,7 @@ fn test_eowc_tumbling_checkpoint_restore_then_emit() {
     // Process events into window [0, 1000)
     for ts in [100, 300, 600] {
         let event = create_test_event(ts, 1);
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         operator.process(&event, &mut ctx);
     }
 
@@ -2574,8 +2537,7 @@ fn test_eowc_tumbling_checkpoint_restore_then_emit() {
         timestamp: 1000,
     };
     let outputs = {
-        let mut ctx =
-            create_test_context(&mut timers, &mut state, &mut watermark_gen);
+        let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
         restored.on_timer(timer, &mut ctx)
     };
 
@@ -2587,11 +2549,7 @@ fn test_eowc_tumbling_checkpoint_restore_then_emit() {
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap();
-        assert_eq!(
-            result.value(0),
-            3,
-            "Restored window should have count=3"
-        );
+        assert_eq!(result.value(0), 3, "Restored window should have count=3");
     } else {
         panic!("Expected Event output after restore");
     }
@@ -2603,8 +2561,7 @@ fn test_eowc_tumbling_checkpoint_restore_then_emit() {
 fn test_eowc_vs_on_watermark_same_result() {
     // Property: given the same events, OnWindowClose and OnWatermark
     // should produce the same final result for single-emission cases.
-    let events: Vec<(i64, i64)> =
-        vec![(100, 5), (300, 10), (500, 15), (800, 20)];
+    let events: Vec<(i64, i64)> = vec![(100, 5), (300, 10), (500, 15), (800, 20)];
 
     let mut results = Vec::new();
     for strategy in [EmitStrategy::OnWindowClose, EmitStrategy::OnWatermark] {
@@ -2624,8 +2581,7 @@ fn test_eowc_vs_on_watermark_same_result() {
 
         for &(ts, val) in &events {
             let event = create_test_event(ts, val);
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&event, &mut ctx);
         }
 
@@ -2635,8 +2591,7 @@ fn test_eowc_vs_on_watermark_same_result() {
             timestamp: 1000,
         };
         let outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.on_timer(timer, &mut ctx)
         };
 

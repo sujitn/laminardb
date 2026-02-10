@@ -2562,8 +2562,7 @@ mod tests {
         for ts in [0, 10_000, 20_000] {
             let event = create_test_event(ts, 1);
             let outputs = {
-                let mut ctx =
-                    create_test_context(&mut timers, &mut state, &mut watermark_gen);
+                let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
                 operator.process(&event, &mut ctx)
             };
             // No intermediate Event emissions
@@ -2587,8 +2586,7 @@ mod tests {
             timestamp: timer_time,
         };
         let outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.on_timer(timer, &mut ctx)
         };
 
@@ -2631,8 +2629,7 @@ mod tests {
         for ts in (0..5).map(|i| i * 500) {
             let event = create_test_event(ts, 1);
             let outputs = {
-                let mut ctx =
-                    create_test_context(&mut timers, &mut state, &mut watermark_gen);
+                let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
                 operator.process(&event, &mut ctx)
             };
             for output in &outputs {
@@ -2671,16 +2668,14 @@ mod tests {
         // Session 1: event at t=100 → session [100, 1100)
         let e1 = create_test_event(100, 1);
         {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&e1, &mut ctx);
         }
 
         // Session 2: event at t=1200 → session [1200, 2200)
         let e2 = create_test_event(1200, 1);
         {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&e2, &mut ctx);
         }
         assert_eq!(
@@ -2692,8 +2687,7 @@ mod tests {
         // Bridge: event at t=1050 → session [1050, 2050) overlaps both
         let bridge = create_test_event(1050, 1);
         let bridge_outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&bridge, &mut ctx)
         };
 
@@ -2719,8 +2713,7 @@ mod tests {
             timestamp: timer_time,
         };
         let outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.on_timer(timer, &mut ctx)
         };
 
@@ -2762,8 +2755,7 @@ mod tests {
         // Create session at t=500 → session [500, 1500)
         let e1 = create_test_event(500, 1);
         {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&e1, &mut ctx);
         }
 
@@ -2774,8 +2766,7 @@ mod tests {
             timestamp: timer_time,
         };
         {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.on_timer(timer, &mut ctx);
         }
         assert_eq!(operator.active_session_count(), 0);
@@ -2783,16 +2774,14 @@ mod tests {
         // Advance watermark past the session close
         let advance = create_test_event(5000, 1);
         {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&advance, &mut ctx);
         }
 
         // Send late event for the closed session's time range
         let late = create_test_event(600, 99);
         let late_outputs = {
-            let mut ctx =
-                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            let mut ctx = create_test_context(&mut timers, &mut state, &mut watermark_gen);
             operator.process(&late, &mut ctx)
         };
 
@@ -2803,13 +2792,8 @@ mod tests {
         assert!(is_late, "Late event after session close should be detected");
 
         // Should NOT produce a new Event
-        let is_event = late_outputs
-            .iter()
-            .any(|o| matches!(o, Output::Event(_)));
-        assert!(
-            !is_event,
-            "Late event should not re-open closed session"
-        );
+        let is_event = late_outputs.iter().any(|o| matches!(o, Output::Event(_)));
+        assert!(!is_event, "Late event should not re-open closed session");
 
         assert_eq!(operator.late_data_metrics().late_events_dropped(), 1);
     }
