@@ -6,11 +6,11 @@
 |-------|-------|-------|-------------|-----------|------|
 | Phase 1 | 12 | 0 | 0 | 0 | 12 |
 | Phase 1.5 | 1 | 0 | 0 | 0 | 1 |
-| Phase 2 | 34 | 0 | 0 | 0 | 34 |
+| Phase 2 | 38 | 0 | 0 | 0 | 38 |
 | Phase 3 | 76 | 9 | 0 | 0 | 67 |
 | Phase 4 | 11 | 11 | 0 | 0 | 0 |
 | Phase 5 | 10 | 10 | 0 | 0 | 0 |
-| **Total** | **144** | **30** | **0** | **0** | **114** |
+| **Total** | **148** | **30** | **0** | **0** | **118** |
 
 ## Status Legend
 
@@ -56,9 +56,9 @@
 
 ---
 
-## Phase 2: Production Hardening ✅
+## Phase 2: Production Hardening
 
-> **Status**: Complete. All 34 features implemented.
+> **Status**: Complete. All 38 features done.
 
 | ID | Feature | Status | Spec |
 |----|---------|--------|------|
@@ -67,6 +67,10 @@
 | F015 | CPU Pinning | ✅ | Included in F013 |
 | F016 | Sliding Windows | ✅ | [Link](phase-2/F016-sliding-windows.md) |
 | F017 | Session Windows | ✅ | [Link](phase-2/F017-session-windows.md) |
+| F017B | Session State Refactoring | ✅ | [Link](phase-2/F017B-session-state-refactoring.md) |
+| F017C | Session Merging & Overlap Detection | ✅ | [Link](phase-2/F017C-session-merging.md) |
+| F017D | Session Emit Strategies | ✅ | [Link](phase-2/F017D-session-emit-strategies.md) |
+| F017E | Watermark Closure & Timer Persistence | ✅ | [Link](phase-2/F017E-watermark-closure-timers.md) |
 | F018 | Hopping Windows | ✅ | Same as F016 |
 | F019 | Stream-Stream Joins | ✅ | [Link](phase-2/F019-stream-stream-joins.md) |
 | F020 | Lookup Joins | ✅ | [Link](phase-2/F020-lookup-joins.md) |
