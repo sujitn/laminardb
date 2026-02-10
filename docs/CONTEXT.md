@@ -6,44 +6,42 @@
 
 ## Last Session
 
-**Date**: 2026-02-08
+**Date**: 2026-02-10
 
 ### What Was Accomplished
+- **F017D+E: Session Emit Strategies + Timer Persistence** — Completes Issue #55
+  - Added `needs_timer_reregistration` flag for lazy timer re-registration after restore
+  - `restore()` sets flag when pending timers are recovered; `process()` re-registers them with `TimerService`
+  - Verified all 5 emit strategies work correctly with session windows (OnWatermark, OnWindowClose, OnUpdate, Changelog, Final)
+  - 5 new tests: OnWatermark no intermediate emits, OnWindowClose no intermediate emits, Changelog timer output, OnUpdate progressive counts, timer re-registration after restore
+  - `on_watermark_advance()` deemed unnecessary — session windows use the same timer-based closure pattern as tumbling/sliding windows
+  - 42 total session window tests, 1,423 laminar-core tests, all passing
+
+Previous session (2026-02-10):
+- **F017B: Session State Refactoring** — Multi-session per key support (commit `5e8dc79`)
+- **F017C: Session Merging & Overlap Detection** — Core fix for Issue #55 (commit `3734954`)
+
+Previous session (2026-02-08):
 - **pgwire-replication integration for PostgreSQL CDC WAL streaming** (PR #74, closes #58)
-  - Integrated `pgwire-replication` v0.2 — native CopyBoth transport for logical replication, unblocking real-time CDC
-  - `Cargo.toml`: Added `pgwire-replication` as optional dep, gated under `postgres-cdc` feature
-  - `postgres_io.rs`: `connect()` is now a regular control-plane connection (removed `replication=database`); `ensure_replication_slot()` uses `pg_create_logical_replication_slot()` SQL function; new `build_replication_config()` maps `PostgresCdcConfig` → `pgwire_replication::ReplicationConfig`
-  - `decoder.rs`: Made `pg_timestamp_to_unix_ms()` public for PG-epoch timestamp conversion
-  - `source.rs`: Added `repl_client` field; `open()` connects pgwire-replication after slot management; `poll_batch()` calls `receive_replication_events()` for production path; `process_replication_event()` maps Begin/XLogData/Commit/KeepAlive to existing `process_wal_message()`; `close()` gracefully shuts down replication client
-  - All 558 connector tests pass, clippy clean, docs clean
-
-Previous session (2026-02-08):
-- **FFI API Surface Update** — Exposed full LaminarDB API through `api::Connection` for Python bindings (PR #49)
-- **F027 PostgreSQL CDC Replication I/O** (#44, PR #48) - MERGED
-  - Wire format parsing, slot management, `connect` with `replication=database`
-  - WAL streaming was deferred due to `tokio-postgres` CopyBoth limitation (now resolved via pgwire-replication)
-
-Previous session (2026-02-08):
-- **Unified Checkpoint System (F-CKP-001 through F-CKP-009)** - ALL 9 FEATURES COMPLETE
-
-Previous session (2026-02-07):
-- **F-OBS-001, F-CONN-002B/C/D, F-SQL-004/005/006, F-CONN-003** — all complete
+- **FFI API Surface Update** — Exposed full LaminarDB API through `api::Connection` (PR #49)
+- **Unified Checkpoint System (F-CKP-001 through F-CKP-009)** — ALL 9 FEATURES COMPLETE
 
 ### Where We Left Off
 
+**Phase 2: 38/38 features COMPLETE (100%)** ✅
 **Phase 3: 67/76 features COMPLETE (88%)**
 
-All Phase 1 (12), Phase 1.5 (1), Phase 2 (34), and Unified Checkpoint (9) features are complete.
-See [INDEX.md](./features/INDEX.md) for the full feature-by-feature breakdown.
+Session window hardening (Issue #55): F017B ✅, F017C ✅, F017D ✅, F017E ✅
 
-**Test counts**: ~2,767 base, ~2,777+ with `rocksdb`, ~3,100+ with all feature flags (`kafka`, `postgres-cdc`, `postgres-sink`, `delta-lake`, `mysql-cdc`, `ffi`, `rocksdb`)
+**Test counts**: ~1,423 laminar-core (base), ~3,100+ with all feature flags
 
 ### Immediate Next Steps
+
+**Phase 3 remaining work**:
 1. F027 follow-ups: TLS cert path support for pgwire-replication, initial snapshot, auto-reconnect
-2. Python bindings (`laminardb-python` repo): Update to use the new `api::Connection` methods
-3. F031B/C/D: Delta Lake advanced (recovery, compaction, schema evolution)
-4. F032A: Iceberg I/O (blocked by iceberg-rust DF 52.0 compat)
-5. Remaining Phase 3 gaps (F029, F030, F033, F058, F061)
+2. F031B/C/D: Delta Lake advanced (recovery, compaction, schema evolution)
+3. F032A: Iceberg I/O (blocked by iceberg-rust DF 52.0 compat)
+4. Remaining Phase 3 gaps (F029, F030, F033, F058, F061)
 
 ### Open Issues
 - **pgwire-replication TLS**: `SslMode::Require`/`VerifyCa`/`VerifyFull` currently fall back to disabled — need cert path configuration plumbing.
