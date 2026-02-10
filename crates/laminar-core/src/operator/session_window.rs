@@ -176,7 +176,6 @@ impl SessionMetadata {
     ///
     /// Takes the union of the two sessions' bounds. Used by F017C for
     /// session merging when late data bridges two previously separate sessions.
-    #[allow(dead_code)]
     fn merge(&mut self, other: &SessionMetadata) {
         self.start = self.start.min(other.start);
         self.end = self.end.max(other.end);
@@ -639,6 +638,89 @@ where
 
         Some(Event::new(session.end, batch))
     }
+
+    /// Merges multiple overlapping sessions into one (F017C).
+    ///
+    /// The first session in `overlapping` becomes the "winner" that absorbs all
+    /// others. Each "loser" session has its accumulator merged into the winner,
+    /// its timer removed, its state cleaned up, and (for `Changelog` strategy)
+    /// a retraction emitted if it was previously emitted.
+    ///
+    /// Returns the winner's [`SessionId`]. The caller is responsible for
+    /// extending the winner to include the new event's timestamp and adding
+    /// the current event's value to the accumulator.
+    fn merge_sessions(
+        &mut self,
+        index: &mut SessionIndex,
+        overlapping: &[SessionId],
+        ctx: &mut OperatorContext,
+        output: &mut OutputVec,
+    ) -> SessionId {
+        let winner_id = overlapping[0];
+
+        // Load the winner's accumulator so we can merge losers into it
+        let mut winner_acc = self.load_accumulator(winner_id, ctx.state);
+
+        // If the winner was previously emitted and strategy is Changelog,
+        // retract the winner's old state (since the merged result will differ)
+        if matches!(self.emit_strategy, EmitStrategy::Changelog) {
+            if let Some(winner_meta) = index.get(winner_id) {
+                if winner_meta.emitted {
+                    if let Some(old_evt) =
+                        self.create_output(winner_meta, &winner_acc)
+                    {
+                        output.push(Output::Changelog(ChangelogRecord::delete(
+                            old_evt,
+                            ctx.processing_time,
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Process each loser: merge accumulator, emit retraction, clean up
+        for &loser_id in &overlapping[1..] {
+            let loser_acc = self.load_accumulator(loser_id, ctx.state);
+
+            // Emit retraction for the loser if it was previously emitted
+            if matches!(self.emit_strategy, EmitStrategy::Changelog) {
+                if let Some(loser_meta) = index.get(loser_id) {
+                    if loser_meta.emitted {
+                        if let Some(old_evt) =
+                            self.create_output(loser_meta, &loser_acc)
+                        {
+                            output.push(Output::Changelog(
+                                ChangelogRecord::delete(
+                                    old_evt,
+                                    ctx.processing_time,
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Merge loser's accumulator into winner
+            winner_acc.merge(&loser_acc);
+
+            // Merge loser's metadata bounds into winner
+            if let Some(loser_meta) = index.get(loser_id).cloned() {
+                if let Some(winner_meta) = index.get_mut(winner_id) {
+                    winner_meta.merge(&loser_meta);
+                }
+            }
+
+            // Clean up loser: delete accumulator, remove timer, remove from index
+            let _ = Self::delete_accumulator(loser_id, ctx.state);
+            self.pending_timers.remove(&loser_id.as_u64());
+            index.remove(loser_id);
+        }
+
+        // Store the merged accumulator for the winner
+        let _ = Self::store_accumulator(winner_id, &winner_acc, ctx.state);
+
+        winner_id
+    }
 }
 
 impl<A: Aggregator> Operator for SessionWindowOperator<A>
@@ -707,9 +789,11 @@ where
                 }
             }
             _ => {
-                // Multiple overlaps — extend the earliest for now.
-                // Full merging is deferred to F017C.
-                session_id = overlapping[0];
+                // Multiple overlaps — merge all into one session (F017C)
+                session_id = self.merge_sessions(
+                    &mut index, &overlapping, ctx, &mut output,
+                );
+                // Extend the merged winner to include this event
                 if let Some(session) = index.get_mut(session_id) {
                     session.extend(event_time, self.gap_ms);
                 }
@@ -722,9 +806,8 @@ where
             acc.add(value);
         }
 
-        // Persist accumulator and session index
+        // Persist accumulator
         let _ = Self::store_accumulator(session_id, &acc, ctx.state);
-        let _ = self.store_session_index(key_hash, &index, ctx.state);
 
         // Register timer for the affected session
         if let Some(session) = index.get(session_id) {
@@ -736,12 +819,18 @@ where
                     if let Some(evt) = self.create_output(session, &acc) {
                         output.push(Output::Event(evt));
                     }
+                    if let Some(s) = index.get_mut(session_id) {
+                        s.emitted = true;
+                    }
                 }
                 EmitStrategy::Changelog => {
                     if let Some(evt) = self.create_output(session, &acc) {
                         let record =
                             ChangelogRecord::insert(evt, ctx.processing_time);
                         output.push(Output::Changelog(record));
+                    }
+                    if let Some(s) = index.get_mut(session_id) {
+                        s.emitted = true;
                     }
                 }
                 // Other strategies: no intermediate emission
@@ -751,6 +840,9 @@ where
                 | EmitStrategy::Final => {}
             }
         }
+
+        // Persist session index after emit (so emitted flag is saved)
+        let _ = self.store_session_index(key_hash, &index, ctx.state);
 
         // Emit watermark if generated
         if let Some(wm) = emitted_watermark {
@@ -1837,5 +1929,350 @@ mod tests {
         let sid = index.sessions[0].id;
         let acc = operator.load_accumulator(sid, &state);
         assert_eq!(acc.result(), 2);
+    }
+
+    // ---------------------------------------------------------------
+    //  F017C: Session merging tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_two_way_session_merge() {
+        // gap=1000. Create 2 sessions: [100, 1100) and [1200, 2200).
+        // Bridge event at 1050 → potential [1050, 2050) overlaps both → merge.
+        let aggregator = CountAggregator::new();
+        let mut operator = SessionWindowOperator::with_id(
+            Duration::from_millis(1000),
+            aggregator,
+            Duration::from_millis(0),
+            "test_merge".to_string(),
+        );
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Create first session [100, 1100)
+        let event1 = create_test_event(100, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+
+        // Create second session [1200, 2200) (gap of 100ms between sessions)
+        let event2 = create_test_event(1200, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event2, &mut ctx);
+        }
+        assert_eq!(operator.active_session_count(), 2);
+
+        // Bridge at 1050 → [1050, 2050) overlaps [100,1100) and [1200,2200)
+        let bridge = create_test_event(1050, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge, &mut ctx);
+        }
+
+        // Should have merged into a single session
+        assert_eq!(operator.active_session_count(), 1);
+
+        let key_hash = SessionWindowOperator::<CountAggregator>::key_hash(&[]);
+        let index = operator.load_session_index(key_hash, &state);
+        assert_eq!(index.len(), 1);
+
+        // Merged bounds: start=100, end=max(1100, 2200, 2050)=2200
+        assert_eq!(index.sessions[0].start, 100);
+        assert_eq!(index.sessions[0].end, 2200);
+
+        // Accumulator: 3 events total
+        let sid = index.sessions[0].id;
+        let acc = operator.load_accumulator(sid, &state);
+        assert_eq!(acc.result(), 3);
+    }
+
+    #[test]
+    fn test_three_way_session_merge() {
+        // gap=500. Create 3 sessions with small gaps between them.
+        // Use large allowed_lateness to prevent late data dropping on bridge events.
+        // Session 1: [100, 600), Session 2: [700, 1200), Session 3: [1300, 1800)
+        // Bridge at 550 → [550, 1050) overlaps sessions 1 and 2 → merge to [100, 1200)
+        // Bridge at 1150 → [1150, 1650) overlaps [100, 1200) and [1300, 1800) → merge all
+        let aggregator = CountAggregator::new();
+        let mut operator = SessionWindowOperator::with_id(
+            Duration::from_millis(500),
+            aggregator,
+            Duration::from_millis(5000),
+            "test_merge3".to_string(),
+        );
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Create 3 sessions with 100ms gaps between them
+        for ts in [100, 700, 1300] {
+            let event = create_test_event(ts, 1);
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event, &mut ctx);
+        }
+        assert_eq!(operator.active_session_count(), 3);
+
+        // Bridge at 550 → [550, 1050) overlaps [100,600) and [700,1200)
+        let bridge1 = create_test_event(550, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge1, &mut ctx);
+        }
+        assert_eq!(operator.active_session_count(), 2);
+
+        // Check intermediate state
+        let key_hash = SessionWindowOperator::<CountAggregator>::key_hash(&[]);
+        let index = operator.load_session_index(key_hash, &state);
+        assert_eq!(index.len(), 2);
+
+        // Bridge at 1150 → [1150, 1650) overlaps merged [100,1200) and [1300,1800)
+        let bridge2 = create_test_event(1150, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge2, &mut ctx);
+        }
+        assert_eq!(operator.active_session_count(), 1);
+
+        let index = operator.load_session_index(key_hash, &state);
+        assert_eq!(index.len(), 1);
+
+        // Merged bounds: [100, 1800)
+        assert_eq!(index.sessions[0].start, 100);
+        assert_eq!(index.sessions[0].end, 1800);
+
+        // 5 events total
+        let sid = index.sessions[0].id;
+        let acc = operator.load_accumulator(sid, &state);
+        assert_eq!(acc.result(), 5);
+    }
+
+    #[test]
+    fn test_merge_emits_changelog_retractions() {
+        // Use Changelog strategy. Create 2 sessions (2 inserts emitted).
+        // Merge them → should emit deletes for both old states + insert for merged.
+        // gap=1000, sessions [100, 1100) and [1200, 2200) — 100ms gap between them.
+        let aggregator = CountAggregator::new();
+        let mut operator = SessionWindowOperator::with_id(
+            Duration::from_millis(1000),
+            aggregator,
+            Duration::from_millis(0),
+            "test_cl_merge".to_string(),
+        );
+        operator.set_emit_strategy(EmitStrategy::Changelog);
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Create first session [100, 1100) — emits Changelog insert
+        let event1 = create_test_event(100, 1);
+        let out1 = {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx)
+        };
+        let insert_count_1 = out1
+            .iter()
+            .filter(|o| matches!(o, Output::Changelog(r) if r.weight == 1))
+            .count();
+        assert_eq!(insert_count_1, 1);
+
+        // Create second session [1200, 2200) — emits Changelog insert
+        let event2 = create_test_event(1200, 1);
+        let out2 = {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event2, &mut ctx)
+        };
+        let insert_count_2 = out2
+            .iter()
+            .filter(|o| matches!(o, Output::Changelog(r) if r.weight == 1))
+            .count();
+        assert_eq!(insert_count_2, 1);
+        assert_eq!(operator.active_session_count(), 2);
+
+        // Bridge at 1050 → [1050, 2050) overlaps both sessions → merge
+        let bridge = create_test_event(1050, 1);
+        let out3 = {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge, &mut ctx)
+        };
+
+        // Expect: 2 deletes (one for winner's old state, one for loser) + 1 insert (merged)
+        let deletes: Vec<_> = out3
+            .iter()
+            .filter(|o| matches!(o, Output::Changelog(r) if r.weight == -1))
+            .collect();
+        let inserts: Vec<_> = out3
+            .iter()
+            .filter(|o| matches!(o, Output::Changelog(r) if r.weight == 1))
+            .collect();
+
+        assert_eq!(deletes.len(), 2, "Expected 2 delete retractions");
+        assert_eq!(inserts.len(), 1, "Expected 1 insert for merged result");
+
+        // Session count should be 1 after merge
+        assert_eq!(operator.active_session_count(), 1);
+    }
+
+    #[test]
+    fn test_merge_accumulator_correctness_sum() {
+        // Use SumAggregator. Session A: events 10, 20 (sum=30).
+        // Session B: event 50 (sum=50). Bridge with value 5.
+        // gap=500 to keep sessions tight.
+        // Session A: events at 100 and 300 → extends to [100, 800).
+        // Session B: event at 900 → [900, 1400). Gap of 100ms.
+        // Bridge at 750 → [750, 1250) overlaps both → merge.
+        // Merged sum = 10 + 20 + 50 + 5 = 85.
+        let aggregator = SumAggregator::new(0);
+        let mut operator = SessionWindowOperator::with_id(
+            Duration::from_millis(500),
+            aggregator,
+            Duration::from_millis(0),
+            "test_sum_merge".to_string(),
+        );
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Session A: [100, 800) with sum=30
+        for (ts, val) in [(100, 10), (300, 20)] {
+            let event = create_test_event(ts, val);
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event, &mut ctx);
+        }
+
+        // Session B: [900, 1400) with sum=50
+        let event_b = create_test_event(900, 50);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event_b, &mut ctx);
+        }
+        assert_eq!(operator.active_session_count(), 2);
+
+        // Bridge at 750 with value 5 → [750, 1250) overlaps both → merge
+        let bridge = create_test_event(750, 5);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge, &mut ctx);
+        }
+        assert_eq!(operator.active_session_count(), 1);
+
+        // Verify merged sum
+        let key_hash = SessionWindowOperator::<SumAggregator>::key_hash(&[]);
+        let index = operator.load_session_index(key_hash, &state);
+        let sid = index.sessions[0].id;
+        let acc = operator.load_accumulator(sid, &state);
+        assert_eq!(acc.result(), 85); // 10 + 20 + 50 + 5
+    }
+
+    #[test]
+    fn test_merge_cleans_up_loser_timers() {
+        // Create 2 sessions with pending timers. Merge them.
+        // gap=1000, sessions [100, 1100) and [1200, 2200). Bridge at 1050.
+        let aggregator = CountAggregator::new();
+        let mut operator = SessionWindowOperator::with_id(
+            Duration::from_millis(1000),
+            aggregator,
+            Duration::from_millis(0),
+            "test_timer_merge".to_string(),
+        );
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Create first session [100, 1100)
+        let event1 = create_test_event(100, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+
+        // Create second session [1200, 2200)
+        let event2 = create_test_event(1200, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event2, &mut ctx);
+        }
+        assert_eq!(operator.pending_timers.len(), 2);
+
+        // Bridge at 1050 → [1050, 2050) merges both sessions
+        let bridge = create_test_event(1050, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge, &mut ctx);
+        }
+
+        // Only 1 timer should remain (for the winner)
+        assert_eq!(operator.pending_timers.len(), 1);
+        assert_eq!(operator.active_session_count(), 1);
+    }
+
+    #[test]
+    fn test_merge_no_retractions_for_on_watermark() {
+        // OnWatermark strategy should NOT emit retractions on merge
+        // (no intermediate output was emitted).
+        // gap=1000, sessions [100, 1100) and [1200, 2200). Bridge at 1050.
+        let aggregator = CountAggregator::new();
+        let mut operator = SessionWindowOperator::with_id(
+            Duration::from_millis(1000),
+            aggregator,
+            Duration::from_millis(0),
+            "test_wm_merge".to_string(),
+        );
+        // Default strategy is OnWatermark
+
+        let mut timers = TimerService::new();
+        let mut state = InMemoryStore::new();
+        let mut watermark_gen = BoundedOutOfOrdernessGenerator::new(100);
+
+        // Create 2 sessions
+        let event1 = create_test_event(100, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event1, &mut ctx);
+        }
+        let event2 = create_test_event(1200, 1);
+        {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&event2, &mut ctx);
+        }
+
+        // Bridge at 1050 → merge. No changelog outputs expected.
+        let bridge = create_test_event(1050, 1);
+        let outputs = {
+            let mut ctx =
+                create_test_context(&mut timers, &mut state, &mut watermark_gen);
+            operator.process(&bridge, &mut ctx)
+        };
+
+        let changelog_count = outputs
+            .iter()
+            .filter(|o| matches!(o, Output::Changelog(_)))
+            .count();
+        assert_eq!(changelog_count, 0);
+        assert_eq!(operator.active_session_count(), 1);
     }
 }
