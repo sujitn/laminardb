@@ -6,34 +6,17 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::metrics::LakehouseSinkMetrics;
 use crate::metrics::ConnectorMetrics;
 
 /// Atomic counters for Delta Lake sink connector statistics.
 #[derive(Debug)]
 pub struct DeltaLakeSinkMetrics {
-    /// Total rows flushed to Parquet files.
-    pub rows_flushed: AtomicU64,
-
-    /// Total bytes written to storage (estimated from `RecordBatch` sizes).
-    pub bytes_written: AtomicU64,
-
-    /// Total number of Parquet flush operations.
-    pub flush_count: AtomicU64,
-
-    /// Total number of Delta Lake commits (epoch commits).
-    pub commits: AtomicU64,
-
-    /// Total errors encountered.
-    pub errors_total: AtomicU64,
-
-    /// Total epochs rolled back.
-    pub epochs_rolled_back: AtomicU64,
+    /// Common metrics (rows flushed, bytes written, commits, etc.).
+    pub common: LakehouseSinkMetrics,
 
     /// Total MERGE operations (upsert mode).
     pub merge_operations: AtomicU64,
-
-    /// Total changelog deletes applied (Z-set weight -1).
-    pub changelog_deletes: AtomicU64,
 
     /// Last Delta Lake table version committed.
     pub last_delta_version: AtomicU64,
@@ -44,40 +27,32 @@ impl DeltaLakeSinkMetrics {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            rows_flushed: AtomicU64::new(0),
-            bytes_written: AtomicU64::new(0),
-            flush_count: AtomicU64::new(0),
-            commits: AtomicU64::new(0),
-            errors_total: AtomicU64::new(0),
-            epochs_rolled_back: AtomicU64::new(0),
+            common: LakehouseSinkMetrics::new(),
             merge_operations: AtomicU64::new(0),
-            changelog_deletes: AtomicU64::new(0),
             last_delta_version: AtomicU64::new(0),
         }
     }
 
     /// Records a successful flush of `records` rows totaling `bytes`.
     pub fn record_flush(&self, records: u64, bytes: u64) {
-        self.rows_flushed.fetch_add(records, Ordering::Relaxed);
-        self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
-        self.flush_count.fetch_add(1, Ordering::Relaxed);
+        self.common.record_flush(records, bytes);
     }
 
     /// Records a successful epoch commit.
     pub fn record_commit(&self, delta_version: u64) {
-        self.commits.fetch_add(1, Ordering::Relaxed);
+        self.common.record_commit();
         self.last_delta_version
             .store(delta_version, Ordering::Relaxed);
     }
 
     /// Records a write or I/O error.
     pub fn record_error(&self) {
-        self.errors_total.fetch_add(1, Ordering::Relaxed);
+        self.common.record_error();
     }
 
     /// Records an epoch rollback.
     pub fn record_rollback(&self) {
-        self.epochs_rolled_back.fetch_add(1, Ordering::Relaxed);
+        self.common.record_rollback();
     }
 
     /// Records a MERGE operation (upsert mode).
@@ -87,36 +62,19 @@ impl DeltaLakeSinkMetrics {
 
     /// Records changelog DELETE operations.
     pub fn record_deletes(&self, count: u64) {
-        self.changelog_deletes.fetch_add(count, Ordering::Relaxed);
+        self.common.record_deletes(count);
     }
 
     /// Converts to the SDK's [`ConnectorMetrics`].
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn to_connector_metrics(&self) -> ConnectorMetrics {
-        let mut m = ConnectorMetrics {
-            records_total: self.rows_flushed.load(Ordering::Relaxed),
-            bytes_total: self.bytes_written.load(Ordering::Relaxed),
-            errors_total: self.errors_total.load(Ordering::Relaxed),
-            lag: 0,
-            custom: Vec::new(),
-        };
-        m.add_custom(
-            "delta.flush_count",
-            self.flush_count.load(Ordering::Relaxed) as f64,
-        );
-        m.add_custom("delta.commits", self.commits.load(Ordering::Relaxed) as f64);
-        m.add_custom(
-            "delta.epochs_rolled_back",
-            self.epochs_rolled_back.load(Ordering::Relaxed) as f64,
-        );
+        let mut m = ConnectorMetrics::new();
+        self.common.populate_metrics(&mut m, "delta");
+
         m.add_custom(
             "delta.merge_operations",
             self.merge_operations.load(Ordering::Relaxed) as f64,
-        );
-        m.add_custom(
-            "delta.changelog_deletes",
-            self.changelog_deletes.load(Ordering::Relaxed) as f64,
         );
         m.add_custom(
             "delta.last_version",
