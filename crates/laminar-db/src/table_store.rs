@@ -440,6 +440,72 @@ impl TableStore {
             .map(|lru| collect_cache_metrics(lru, &state.xor_filter))
     }
 
+    /// Collect all rows into multiple `RecordBatch` chunks.
+    ///
+    /// Returns `None` if the table does not exist. Returns a single empty batch
+    /// (with correct schema) if the table has no rows.
+    pub fn to_record_batches(&self, name: &str) -> Option<Vec<RecordBatch>> {
+        let state = self.tables.get(name)?;
+        let schema = state.schema.clone();
+
+        // For in-memory tables, we can fetch all references quickly.
+        if !state.backend.is_persistent() {
+            let row_batches = state.backend.to_all_row_batches().ok()?;
+            if row_batches.is_empty() {
+                return Some(vec![RecordBatch::new_empty(schema)]);
+            }
+
+            let mut chunks = Vec::new();
+            for chunk in row_batches.chunks(crate::table_backend::DEFAULT_CHUNK_SIZE) {
+                let batch = arrow::compute::concat_batches(&schema, chunk.iter())
+                    .map_err(|e| DbError::Storage(format!("concat batches: {e}")))
+                    .ok()?;
+                chunks.push(batch);
+            }
+            return Some(chunks);
+        }
+
+        // For persistent tables, we loop and collect.
+        // NOTE: The caller should ideally use streaming scans for persistent tables
+        // to avoid holding the lock for too long, but this maintains compatibility.
+        let mut chunks = Vec::new();
+        let mut offset = crate::table_backend::ScanOffset::Start;
+
+        loop {
+            let (batch, next_offset) = state.backend.to_record_batch_paged(&schema, offset, crate::table_backend::DEFAULT_CHUNK_SIZE).ok()?;
+            chunks.push(batch);
+            if next_offset == crate::table_backend::ScanOffset::End {
+                break;
+            }
+            offset = next_offset;
+        }
+
+        if chunks.is_empty() {
+            Some(vec![RecordBatch::new_empty(schema)])
+        } else {
+            Some(chunks)
+        }
+    }
+
+    /// Collect all individual row batches for an in-memory table.
+    pub fn to_all_row_batches(&self, name: &str) -> Option<Vec<arrow::array::RecordBatch>> {
+        let state = self.tables.get(name)?;
+        state.backend.to_all_row_batches().ok()
+    }
+
+    /// Fetch a single page of rows as a `RecordBatch`.
+    ///
+    /// Returns the batch and the offset for the next page.
+    pub fn to_record_batch_paged(
+        &self,
+        name: &str,
+        offset: crate::table_backend::ScanOffset,
+        limit: usize,
+    ) -> Option<(arrow::array::RecordBatch, crate::table_backend::ScanOffset)> {
+        let state = self.tables.get(name)?;
+        state.backend.to_record_batch_paged(&state.schema, offset, limit).ok()
+    }
+
     /// Concatenate all rows into a single `RecordBatch`.
     ///
     /// Returns `None` if the table does not exist. Returns an empty batch

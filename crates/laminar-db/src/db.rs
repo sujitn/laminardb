@@ -3141,23 +3141,35 @@ impl LaminarDB {
             return Ok(());
         }
 
-        let batch = self
-            .table_store
-            .lock()
-            .to_record_batch(name)
-            .ok_or_else(|| DbError::TableNotFound(name.to_string()))?;
+        // For in-memory tables, we collect all row batches while holding the lock briefly,
+        // then chunk and concatenate them outside the lock to minimize Ring 0 blockage.
+        let (row_batches, schema) = {
+            let ts = self.table_store.lock();
+            let row_batches = ts
+                .to_all_row_batches(name)
+                .ok_or_else(|| DbError::TableNotFound(name.to_string()))?;
+            let schema = ts
+                .table_schema(name)
+                .ok_or_else(|| DbError::TableNotFound(name.to_string()))?;
+            (row_batches, schema)
+        };
 
-        let schema = batch.schema();
+        let mut batches = Vec::new();
+        if row_batches.is_empty() {
+            batches.push(RecordBatch::new_empty(schema.clone()));
+        } else {
+            for chunk in row_batches.chunks(crate::table_backend::DEFAULT_CHUNK_SIZE) {
+                let batch = arrow::compute::concat_batches(&schema, chunk.iter())
+                    .map_err(|e| DbError::Storage(format!("concat batches: {e}")))?;
+                batches.push(batch);
+            }
+        }
 
         // Deregister old
         let _ = self.ctx.deregister_table(name);
 
         // Register new
-        let data = if batch.num_rows() > 0 {
-            vec![vec![batch]]
-        } else {
-            vec![vec![]]
-        };
+        let data = vec![batches];
 
         let mem_table = datafusion::datasource::MemTable::try_new(schema, data)
             .map_err(|e| DbError::InsertError(format!("Failed to create table: {e}")))?;

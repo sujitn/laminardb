@@ -44,6 +44,20 @@ pub(crate) fn deserialize_record_batch(data: &[u8]) -> Result<RecordBatch, DbErr
 
 // ── TableBackend enum ──
 
+/// Default number of rows per `RecordBatch` chunk when collecting all rows.
+pub const DEFAULT_CHUNK_SIZE: usize = 1024;
+
+/// Progress offset for paged table scans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanOffset {
+    /// Start from the first row.
+    Start,
+    /// Resume after the given stringified primary key.
+    After(String),
+    /// No more rows.
+    End,
+}
+
 /// Backend storage for a single reference table.
 #[allow(dead_code)]
 pub(crate) enum TableBackend {
@@ -249,17 +263,81 @@ impl TableBackend {
         }
     }
 
-    /// Concatenate all rows into a single `RecordBatch`.
-    pub fn to_record_batch(&self, schema: &SchemaRef) -> Result<Option<RecordBatch>, DbError> {
+    /// Collect all rows into multiple `RecordBatch` chunks.
+    pub fn to_record_batches(&self, schema: &SchemaRef) -> Result<Vec<RecordBatch>, DbError> {
+        let mut chunks = Vec::new();
+        let mut offset = ScanOffset::Start;
+        loop {
+            let (batch, next_offset) = self.to_record_batch_paged(schema, offset, DEFAULT_CHUNK_SIZE)?;
+            chunks.push(batch);
+            if next_offset == ScanOffset::End {
+                break;
+            }
+            offset = next_offset;
+        }
+        Ok(chunks)
+    }
+
+    /// Collect all individual row batches for an in-memory backend.
+    ///
+    /// This is a fast $O(N)$ operation that just clones `Arc` references.
+    pub fn to_all_row_batches(&self) -> Result<Vec<RecordBatch>, DbError> {
+        match self {
+            Self::InMemory { rows } => Ok(rows.values().cloned().collect()),
+            #[cfg(feature = "rocksdb")]
+            Self::Persistent { .. } => Err(DbError::InvalidOperation(
+                "to_all_row_batches not supported for persistent backend".to_string(),
+            )),
+        }
+    }
+
+    /// Fetch a single page of rows as a `RecordBatch`.
+    ///
+    /// Returns the batch and the offset for the next page.
+    pub fn to_record_batch_paged(
+        &self,
+        schema: &SchemaRef,
+        offset: ScanOffset,
+        limit: usize,
+    ) -> Result<(RecordBatch, ScanOffset), DbError> {
         match self {
             Self::InMemory { rows } => {
+                // NOTE: This remains for compatibility but paged scans for InMemory
+                // are better handled via to_all_row_batches if the caller can handle it.
                 if rows.is_empty() {
-                    return Ok(Some(RecordBatch::new_empty(schema.clone())));
+                    return Ok((RecordBatch::new_empty(schema.clone()), ScanOffset::End));
                 }
-                let batches: Vec<&RecordBatch> = rows.values().collect();
-                arrow::compute::concat_batches(schema, batches.iter().copied())
-                    .map(Some)
-                    .map_err(|e| DbError::Storage(format!("concat batches: {e}")))
+
+                let mut keys: Vec<&String> = rows.keys().collect();
+                keys.sort();
+
+                let start_idx = match &offset {
+                    ScanOffset::Start => 0,
+                    ScanOffset::After(k) => match keys.binary_search(&k) {
+                        Ok(idx) => idx + 1,
+                        Err(idx) => idx,
+                    },
+                    ScanOffset::End => return Ok((RecordBatch::new_empty(schema.clone()), ScanOffset::End)),
+                };
+
+                if start_idx >= keys.len() {
+                    return Ok((RecordBatch::new_empty(schema.clone()), ScanOffset::End));
+                }
+
+                let end_idx = (start_idx + limit).min(keys.len());
+                let page_keys = &keys[start_idx..end_idx];
+                let batches: Vec<&RecordBatch> = page_keys.iter().map(|k| &rows[**k]).collect();
+
+                let batch = arrow::compute::concat_batches(schema, batches.into_iter())
+                    .map_err(|e| DbError::Storage(format!("concat batches: {e}")))?;
+
+                let next_offset = if end_idx < keys.len() {
+                    ScanOffset::After(keys[end_idx - 1].clone())
+                } else {
+                    ScanOffset::End
+                };
+
+                Ok((batch, next_offset))
             }
             #[cfg(feature = "rocksdb")]
             Self::Persistent {
@@ -272,23 +350,70 @@ impl TableBackend {
                 let cf = db.cf_handle(cf_name).ok_or_else(|| {
                     DbError::Storage(format!("column family '{cf_name}' not found"))
                 })?;
-                let iter = db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-                let mut batches = Vec::new();
+
+                let mode = match &offset {
+                    ScanOffset::Start => rocksdb::IteratorMode::Start,
+                    ScanOffset::After(k) => rocksdb::IteratorMode::From(k.as_bytes(), rocksdb::Direction::Forward),
+                    ScanOffset::End => return Ok((RecordBatch::new_empty(s.clone()), ScanOffset::End)),
+                };
+
+                let mut iter = db.iterator_cf(&cf, mode);
+                let mut current_chunk = Vec::new();
+                let mut last_key_processed = None;
+
                 for item in iter {
-                    let (_, v) =
+                    let (k, v) =
                         item.map_err(|e| DbError::Storage(format!("RocksDB iter: {e}")))?;
+
+                    // Skip the exact key if we are resuming after it.
+                    // IteratorMode::From starts AT the key if it exists.
+                    if let ScanOffset::After(ref ak) = offset {
+                        if last_key_processed.is_none() && k.as_ref() == ak.as_bytes() {
+                            continue;
+                        }
+                    }
+
                     let batch = deserialize_record_batch(&v)?;
-                    batches.push(batch);
+                    current_chunk.push(batch);
+                    let key_str = String::from_utf8_lossy(&k).to_string();
+                    last_key_processed = Some(key_str);
+
+                    if current_chunk.len() >= limit {
+                        break;
+                    }
                 }
-                if batches.is_empty() {
-                    return Ok(Some(RecordBatch::new_empty(s.clone())));
+
+                if current_chunk.is_empty() {
+                    return Ok((RecordBatch::new_empty(s.clone()), ScanOffset::End));
                 }
-                let refs: Vec<&RecordBatch> = batches.iter().collect();
-                arrow::compute::concat_batches(s, refs)
-                    .map(Some)
-                    .map_err(|e| DbError::Storage(format!("concat batches: {e}")))
+
+                let batch = arrow::compute::concat_batches(s, current_chunk.iter())
+                    .map_err(|e| DbError::Storage(format!("concat batches: {e}")))?;
+
+                let next_offset = if let Some(lk) = last_key_processed {
+                    if current_chunk.len() == limit {
+                        ScanOffset::After(lk)
+                    } else {
+                        ScanOffset::End
+                    }
+                } else {
+                    ScanOffset::End
+                };
+
+                Ok((batch, next_offset))
             }
         }
+    }
+
+    /// Concatenate all rows into a single `RecordBatch`.
+    pub fn to_record_batch(&self, schema: &SchemaRef) -> Result<Option<RecordBatch>, DbError> {
+        let chunks = self.to_record_batches(schema)?;
+        if chunks.is_empty() {
+            return Ok(Some(RecordBatch::new_empty(schema.clone())));
+        }
+        arrow::compute::concat_batches(schema, chunks.iter())
+            .map(Some)
+            .map_err(|e| DbError::Storage(format!("concat batches: {e}")))
     }
 
     /// Whether this backend is persistent.
