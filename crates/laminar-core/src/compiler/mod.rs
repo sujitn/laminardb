@@ -7,6 +7,9 @@
 //!
 //! - [`row`]: Fixed-layout [`EventRow`] format with zero-copy field access
 //! - [`bridge`]: [`RowBatchBridge`] for converting rows back to Arrow `RecordBatch`
+//! - [`policy`]: [`BatchPolicy`] and [`BackpressureStrategy`] for bridge configuration
+//! - [`pipeline_bridge`]: Ring 0 / Ring 1 SPSC bridge with watermark-aware batching
+//! - [`metrics`]: Query lifecycle types (always available, not JIT-gated)
 //!
 //! ## JIT Compilation (requires `jit` feature)
 //!
@@ -19,8 +22,12 @@
 //! - [`pipeline_compiler`]: Cranelift codegen for fused pipelines
 //! - [`cache`]: Compiler cache for compiled pipelines
 //! - [`fallback`]: Fallback mechanism for uncompilable pipelines
+//! - [`query`]: [`StreamingQuery`](query::StreamingQuery) lifecycle management
 
 pub mod bridge;
+pub mod metrics;
+pub mod pipeline_bridge;
+pub mod policy;
 pub mod row;
 
 #[cfg(feature = "jit")]
@@ -41,8 +48,19 @@ pub mod jit;
 pub mod pipeline;
 #[cfg(feature = "jit")]
 pub mod pipeline_compiler;
+#[cfg(feature = "jit")]
+pub mod query;
 
 pub use bridge::{BridgeError, RowBatchBridge};
+pub use metrics::{
+    QueryConfig, QueryError, QueryId, QueryMetadata, QueryMetrics, QueryState, StateStoreConfig,
+    SubmitResult,
+};
+pub use pipeline_bridge::{
+    BridgeConsumer, BridgeMessage, BridgeStats, BridgeStatsSnapshot, PipelineBridge,
+    PipelineBridgeError, Ring1Action, create_pipeline_bridge,
+};
+pub use policy::{BackpressureStrategy, BatchPolicy};
 pub use row::{EventRow, FieldLayout, FieldType, MutableEventRow, RowError, RowSchema};
 
 #[cfg(feature = "jit")]
@@ -66,3 +84,7 @@ pub use pipeline::{
 };
 #[cfg(feature = "jit")]
 pub use pipeline_compiler::PipelineCompiler;
+
+// F082: Streaming Query Lifecycle
+#[cfg(feature = "jit")]
+pub use query::{StreamingQuery, StreamingQueryBuilder};

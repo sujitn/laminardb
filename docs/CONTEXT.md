@@ -6,43 +6,62 @@
 
 ## Last Session
 
-**Date**: 2026-02-10
+**Date**: 2026-02-11
 
 ### What Was Accomplished
-- **F079: Compiled Expression Evaluator** — Cranelift JIT for DataFusion Expr trees
-  - New `jit` feature in laminar-core gating Cranelift 0.128 + datafusion-expr/common
-  - `ExprCompiler` compiles filter (`FilterFn`) and scalar (`ScalarFn`) expressions to native x86-64
-  - Supports: column refs, literals (i8–u64, f32/f64, bool), arithmetic (+−×÷%), all 6 comparisons, AND/OR with short-circuit, NOT, IS NULL/IS NOT NULL, CAST, CASE/WHEN
-  - Full SQL null propagation (NULL in arithmetic → NULL)
-  - Constant folding pre-pass (`fold_constants`) eliminates literal sub-expressions before codegen
-  - 48 new tests, all passing; clippy clean with `-D warnings`
-  - 4 new files: `error.rs`, `jit.rs`, `fold.rs`, `expr.rs` in `compiler/` module
-  - Phase 2.5 Plan Compiler: 2/5 features complete (40%)
+- **F082: Streaming Query Lifecycle** — Unified runtime object wiring compiled/fallback pipelines to bridges with lifecycle management
+  - 2 new files: `metrics.rs` (NOT jit-gated), `query.rs` (jit-gated)
+  - `QueryId`, `QueryState`, `QueryConfig`, `QueryError`, `SubmitResult`, `QueryMetadata`, `QueryMetrics` — always-available types
+  - `StreamingQueryBuilder`: add_pipeline triplets (ExecutablePipeline + PipelineBridge + BridgeConsumer), build() validates equal lengths
+  - `StreamingQuery`: lifecycle (start/pause/resume/stop), submit_row (compiled JIT + fallback passthrough), advance_watermark, checkpoint, send_eof
+  - `poll_ring1()` / `check_latency_flush()` drain all consumers for Ring 1 actions
+  - `swap()` hot-swap: validates same pipeline count, swaps internals, old query goes Stopped
+  - `metrics()` aggregates PipelineStats + BridgeStatsSnapshot across all pipelines/consumers
+  - 1 file modified: `mod.rs` (wiring + re-exports)
+  - 35 tests (8 metrics + 27 query), clippy clean with `-D warnings`
+  - Phase 2.5 Plan Compiler: **5/5 features COMPLETE (100%)** ✅
+
+Previous session (2026-02-11):
+- **F081: Ring 0/Ring 1 Pipeline Bridge** — Lock-free SPSC bridge from compiled Ring 0 to Ring 1 stateful operators
+  - 2 new files: `policy.rs`, `pipeline_bridge.rs`
+  - `BatchPolicy` (max_rows, max_latency, flush_on_watermark) + `BackpressureStrategy` (DropNewest, PauseSource, SpillToDisk)
+  - `PipelineBridge` (producer): sends Event/Watermark/CheckpointBarrier/Eof via `SmallVec<[u8; 128]>`
+  - `BridgeConsumer` (consumer): drains SPSC queue, accumulates rows via `RowBatchBridge`, emits `Ring1Action`s
+  - Watermark-aware flushing prevents partial-batch emissions (Issue #55)
+  - `BridgeStats` with `AtomicU64` counters shared between producer/consumer
+  - `create_pipeline_bridge()` factory for paired construction
+  - 1 file modified: `mod.rs` (wiring + re-exports, NOT gated behind `jit` feature)
+  - 36 tests (6 policy + 30 bridge), clippy clean with `-D warnings`
+  - Phase 2.5 Plan Compiler: 4/5 features complete (80%)
+
+Previous session (2026-02-11):
+- **F080: Plan Compiler Core** — Compile entire DataFusion LogicalPlan pipeline segments into single native Cranelift JIT functions
+  - 5 new files: `pipeline.rs`, `extractor.rs`, `pipeline_compiler.rs`, `cache.rs`, `fallback.rs`
+  - `PipelineExtractor` walks LogicalPlan top-down, splitting at stateful operators (Aggregate/Sort/Join) into compilable pipeline chains
+  - `PipelineCompiler` generates Cranelift codegen fusing Filter→Project→KeyExtract stages into a single `fn(input_row, output_row) -> u8` native function
+  - `CompilerCache` with FxHashMap + FIFO eviction avoids redundant compilation
+  - `ExecutablePipeline` Compiled/Fallback for graceful degradation to DataFusion interpreted execution
+  - 3 files modified: `expr.rs` (7 items pub(crate)), `error.rs` (+ExtractError), `mod.rs` (wiring)
+  - 75 new tests (123 total compiler tests), clippy clean with `-D warnings`
+  - Phase 2.5 Plan Compiler: 3/5 features complete (60%)
 
 Previous session (2026-02-10):
+- **F079: Compiled Expression Evaluator** — Cranelift JIT for DataFusion Expr trees
 - **F017D+E: Session Emit Strategies + Timer Persistence** — Completes Issue #55
-- **F017B: Session State Refactoring** — Multi-session per key support
-- **F017C: Session Merging & Overlap Detection** — Core fix for Issue #55
 
 Previous session (2026-02-08):
 - **pgwire-replication integration for PostgreSQL CDC WAL streaming** (PR #74, closes #58)
-- **FFI API Surface Update** — Exposed full LaminarDB API through `api::Connection` (PR #49)
 - **Unified Checkpoint System (F-CKP-001 through F-CKP-009)** — ALL 9 FEATURES COMPLETE
 
 ### Where We Left Off
 
 **Phase 2: 38/38 features COMPLETE (100%)** ✅
-**Phase 2.5: 2/5 features COMPLETE (40%)** — F078 ✅, F079 ✅
+**Phase 2.5: 5/5 features COMPLETE (100%)** ✅ — F078 ✅, F079 ✅, F080 ✅, F081 ✅, F082 ✅
 **Phase 3: 67/76 features COMPLETE (88%)**
 
-**Test counts**: ~1,530 laminar-core (with jit), ~3,100+ with all feature flags
+**Test counts**: ~1,635 laminar-core (with jit), ~3,100+ with all feature flags
 
 ### Immediate Next Steps
-
-**Phase 2.5 Plan Compiler** (next priority):
-1. F080: Plan Compiler Core — compile full DataFusion LogicalPlan to native pipeline
-2. F081: Ring 0/Ring 1 Pipeline Bridge
-3. F082: Streaming Query Lifecycle
 
 **Phase 3 remaining work**:
 1. F027 follow-ups: TLS cert path support for pgwire-replication, initial snapshot, auto-reconnect
@@ -76,7 +95,9 @@ laminar-core/src/
   io_uring/       # io_uring + three-ring I/O
   xdp/            # XDP/eBPF network optimization
   budget/         # Task budget enforcement
-  compiler/       # Plan compiler: EventRow, JIT expr compiler (Cranelift), constant folding
+  compiler/       # Plan compiler: EventRow, JIT expr compiler (Cranelift), constant folding,
+                  #   pipeline extraction, pipeline compilation, cache, fallback,
+                  #   metrics (always-available types), query (StreamingQuery lifecycle)
 
 laminar-sql/src/
   parser/         # Streaming SQL: windows, emit, late data, joins, aggregation, analytics, ranking
