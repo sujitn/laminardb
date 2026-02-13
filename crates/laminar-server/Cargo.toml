@@ -42,4 +42,4 @@ anyhow = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = "0.9"
+toml = "1.0"
