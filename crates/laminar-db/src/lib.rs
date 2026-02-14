@@ -27,6 +27,7 @@
 #[allow(dead_code)]
 mod adaptive;
 mod asof_batch;
+mod batch_filter;
 mod builder;
 mod catalog;
 /// Unified checkpoint coordination (F-CKP-003).

@@ -127,141 +127,19 @@ fn infer_timestamp_format(
 /// Returns `None` if all rows are late (i.e., filtered result is empty).
 /// For sources without a watermark column, callers should skip this function
 /// and pass the batch through unfiltered.
-#[allow(clippy::too_many_lines)]
 fn filter_late_rows(
     batch: &RecordBatch,
     column: &str,
     watermark: i64,
     format: laminar_core::time::TimestampFormat,
 ) -> Option<RecordBatch> {
-    use arrow::array::{Array, BooleanArray, Int64Array};
-    use arrow::compute::filter_record_batch;
-    use arrow::datatypes::TimeUnit;
-
-    let Ok(idx) = batch.schema().index_of(column) else {
-        return Some(batch.clone());
-    };
-
-    let col = batch.column(idx);
-    let num_rows = batch.num_rows();
-
-    // Helper closure to build the boolean mask for an Int64 column
-    let i64_mask = |arr: &Int64Array, threshold: i64| -> BooleanArray {
-        (0..num_rows)
-            .map(|i| {
-                if arr.is_null(i) {
-                    Some(false)
-                } else {
-                    Some(arr.value(i) >= threshold)
-                }
-            })
-            .collect()
-    };
-
-    // Build boolean mask: true = on-time (timestamp >= watermark)
-    let mask: BooleanArray = match format {
-        laminar_core::time::TimestampFormat::UnixMillis => {
-            if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                i64_mask(arr, watermark)
-            } else {
-                return Some(batch.clone());
-            }
-        }
-        laminar_core::time::TimestampFormat::ArrowNative => match col.data_type() {
-            DataType::Timestamp(TimeUnit::Millisecond, _) => {
-                let arr = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::TimestampMillisecondArray>()?;
-                (0..num_rows)
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            Some(false)
-                        } else {
-                            Some(arr.value(i) >= watermark)
-                        }
-                    })
-                    .collect()
-            }
-            DataType::Timestamp(TimeUnit::Second, _) => {
-                let arr = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::TimestampSecondArray>()?;
-                let wm_secs = watermark / 1000;
-                (0..num_rows)
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            Some(false)
-                        } else {
-                            Some(arr.value(i) >= wm_secs)
-                        }
-                    })
-                    .collect()
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                let arr = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::TimestampMicrosecondArray>()?;
-                let wm_micros = watermark.saturating_mul(1000);
-                (0..num_rows)
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            Some(false)
-                        } else {
-                            Some(arr.value(i) >= wm_micros)
-                        }
-                    })
-                    .collect()
-            }
-            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
-                let arr = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::TimestampNanosecondArray>()?;
-                let wm_nanos = watermark.saturating_mul(1_000_000);
-                (0..num_rows)
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            Some(false)
-                        } else {
-                            Some(arr.value(i) >= wm_nanos)
-                        }
-                    })
-                    .collect()
-            }
-            _ => return Some(batch.clone()),
-        },
-        laminar_core::time::TimestampFormat::UnixSeconds => {
-            if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                i64_mask(arr, watermark / 1000)
-            } else {
-                return Some(batch.clone());
-            }
-        }
-        laminar_core::time::TimestampFormat::UnixMicros => {
-            if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                i64_mask(arr, watermark.saturating_mul(1000))
-            } else {
-                return Some(batch.clone());
-            }
-        }
-        laminar_core::time::TimestampFormat::UnixNanos => {
-            if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                i64_mask(arr, watermark.saturating_mul(1_000_000))
-            } else {
-                return Some(batch.clone());
-            }
-        }
-        // Iso8601 would require parsing each row; skip filtering for string timestamps
-        laminar_core::time::TimestampFormat::Iso8601 => {
-            return Some(batch.clone());
-        }
-    };
-
-    let filtered = filter_record_batch(batch, &mask).ok()?;
-    if filtered.num_rows() == 0 {
-        None
-    } else {
-        Some(filtered)
-    }
+    crate::batch_filter::filter_batch_by_timestamp(
+        batch,
+        column,
+        watermark,
+        format,
+        crate::batch_filter::ThresholdOp::GreaterEq,
+    )
 }
 
 impl LaminarDB {
@@ -1001,8 +879,8 @@ impl LaminarDB {
         // Register in catalog as a stream
         self.catalog.register_stream(&name_str)?;
 
-        // Register in planner
-        {
+        // Plan the statement to extract emit_clause and window_config
+        let (plan_emit, plan_window) = {
             let mut planner = self.planner.lock();
             let stmt = StreamingStatement::CreateStream {
                 name: name.clone(),
@@ -1011,8 +889,13 @@ impl LaminarDB {
                 or_replace: false,
                 if_not_exists: false,
             };
-            let _ = planner.plan(&stmt);
-        }
+            match planner.plan(&stmt) {
+                Ok(laminar_sql::planner::StreamingPlan::Query(ref qp)) => {
+                    (qp.emit_clause.clone(), qp.window_config.clone())
+                }
+                _ => (emit_clause.cloned(), None),
+            }
+        };
 
         // Store the query SQL for stream execution at start()
         {
@@ -1020,6 +903,8 @@ impl LaminarDB {
             mgr.register_stream(crate::connector_manager::StreamRegistration {
                 name: name_str.clone(),
                 query_sql: streaming_statement_to_sql(query),
+                emit_clause: plan_emit,
+                window_config: plan_window,
             });
         }
 
@@ -1845,7 +1730,12 @@ impl LaminarDB {
         let mut executor = StreamExecutor::new(ctx);
 
         for reg in stream_regs.values() {
-            executor.add_query(reg.name.clone(), reg.query_sql.clone());
+            executor.add_query(
+                reg.name.clone(),
+                reg.query_sql.clone(),
+                reg.emit_clause.clone(),
+                reg.window_config.clone(),
+            );
         }
 
         // Subscribe to every source's sink so we can read pushed data.
@@ -2021,7 +1911,8 @@ impl LaminarDB {
                 }
 
                 // Execute stream queries
-                match executor.execute_cycle(&source_batches).await {
+                let current_wm = pipeline_watermark.load(std::sync::atomic::Ordering::Relaxed);
+                match executor.execute_cycle(&source_batches, current_wm).await {
                     Ok(results) => {
                         // Push results to stream sources for subscriber delivery
                         for (stream_name, src) in &stream_sources {
@@ -2103,7 +1994,12 @@ impl LaminarDB {
         }
 
         for reg in stream_regs.values() {
-            executor.add_query(reg.name.clone(), reg.query_sql.clone());
+            executor.add_query(
+                reg.name.clone(),
+                reg.query_sql.clone(),
+                reg.emit_clause.clone(),
+                reg.window_config.clone(),
+            );
         }
 
         // Build sources via registry (generic — no connector-specific code)
@@ -2523,7 +2419,8 @@ impl LaminarDB {
                             src_summary.join(", "),
                         );
                     }
-                    match executor.execute_cycle(&source_batches).await {
+                    let current_wm = pipeline_watermark.load(std::sync::atomic::Ordering::Relaxed);
+                    match executor.execute_cycle(&source_batches, current_wm).await {
                         Ok(results) => {
                             // Push results to stream sources for
                             // db.subscribe() delivery (same as

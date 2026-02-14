@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::prelude::SessionContext;
 use sqlparser::ast::{
     Expr, SelectItem, SetExpr, Statement, TableFactor, WildcardAdditionalOptions,
@@ -21,7 +21,10 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use laminar_sql::parser::join_parser::analyze_joins;
-use laminar_sql::translator::{AsofJoinTranslatorConfig, JoinOperatorConfig};
+use laminar_sql::parser::EmitClause;
+use laminar_sql::translator::{
+    AsofJoinTranslatorConfig, JoinOperatorConfig, WindowOperatorConfig, WindowType,
+};
 
 use crate::error::DbError;
 
@@ -99,6 +102,34 @@ pub(crate) struct StreamQuery {
     /// Rewritten projection SQL to apply aliases/expressions after the ASOF
     /// join result is registered as `__asof_tmp`.
     pub projection_sql: Option<String>,
+    /// EMIT clause from the planner (e.g., `OnWindowClose`, `Final`).
+    pub emit_clause: Option<EmitClause>,
+    /// Window configuration from the planner (window type, size, gap, etc.).
+    pub window_config: Option<WindowOperatorConfig>,
+}
+
+impl StreamQuery {
+    /// Returns `true` if this query suppresses intermediate results
+    /// (i.e., uses `EMIT ON WINDOW CLOSE` or `EMIT FINAL`).
+    fn suppresses_intermediate(&self) -> bool {
+        self.emit_clause
+            .as_ref()
+            .is_some_and(|ec| matches!(ec, EmitClause::OnWindowClose | EmitClause::Final))
+    }
+}
+
+/// Per-query EOWC accumulation state.
+///
+/// For queries with `EMIT ON WINDOW CLOSE` or `EMIT FINAL`, source batches
+/// are accumulated across cycles and only aggregated when the watermark
+/// indicates new windows have closed.
+struct EowcState {
+    /// Accumulated source batches keyed by source table name.
+    accumulated_sources: HashMap<String, Vec<RecordBatch>>,
+    /// The last closed-window boundary that was emitted.
+    last_closed_boundary: i64,
+    /// Total rows currently accumulated (for diagnostics).
+    accumulated_rows: usize,
 }
 
 /// DataFusion-based micro-batch stream executor.
@@ -118,6 +149,8 @@ pub(crate) struct StreamExecutor {
     /// Known source schemas — used to register empty tables when a source
     /// has no data in a given cycle, preventing `DataFusion` planning errors.
     source_schemas: HashMap<String, SchemaRef>,
+    /// Per-query EOWC accumulation state, keyed by query index.
+    eowc_states: HashMap<usize, EowcState>,
 }
 
 impl StreamExecutor {
@@ -130,6 +163,7 @@ impl StreamExecutor {
             topo_order: Vec::new(),
             topo_dirty: true,
             source_schemas: HashMap::new(),
+            eowc_states: HashMap::new(),
         }
     }
 
@@ -144,14 +178,35 @@ impl StreamExecutor {
     /// If the query contains an ASOF JOIN, it is detected at registration time
     /// and routed to a custom execution path in `execute_cycle()` (since
     /// `DataFusion` cannot parse ASOF syntax).
-    pub fn add_query(&mut self, name: String, sql: String) {
+    pub fn add_query(
+        &mut self,
+        name: String,
+        sql: String,
+        emit_clause: Option<EmitClause>,
+        window_config: Option<WindowOperatorConfig>,
+    ) {
         let (asof_config, projection_sql) = detect_asof_query(&sql);
-        self.queries.push(StreamQuery {
+        let idx = self.queries.len();
+        let query = StreamQuery {
             name,
             sql,
             asof_config,
             projection_sql,
-        });
+            emit_clause,
+            window_config,
+        };
+        // Initialize EOWC state for queries that suppress intermediate results
+        if query.suppresses_intermediate() {
+            self.eowc_states.insert(
+                idx,
+                EowcState {
+                    accumulated_sources: HashMap::new(),
+                    last_closed_boundary: i64::MIN,
+                    accumulated_rows: 0,
+                },
+            );
+        }
+        self.queries.push(query);
         self.topo_dirty = true;
     }
 
@@ -237,9 +292,15 @@ impl StreamExecutor {
     ///
     /// Registers `source_batches` as temporary tables, runs all stream queries,
     /// and returns a map from stream name to result batches.
+    ///
+    /// `current_watermark` is the current pipeline watermark in milliseconds.
+    /// For EOWC queries, this drives the closed-window boundary computation.
+    /// Pass `i64::MAX` to disable EOWC gating (all data passes through).
+    #[allow(clippy::too_many_lines)]
     pub async fn execute_cycle(
         &mut self,
         source_batches: &HashMap<String, Vec<RecordBatch>>,
+        current_watermark: i64,
     ) -> Result<HashMap<String, Vec<RecordBatch>>, DbError> {
         // 1. Recompute topological order if queries changed
         if self.topo_dirty {
@@ -259,8 +320,24 @@ impl StreamExecutor {
             let query_sql = query.sql.clone();
             let asof_config = query.asof_config.clone();
             let projection_sql = query.projection_sql.clone();
+            let is_eowc = query.suppresses_intermediate();
+            let window_config = query.window_config.clone();
 
-            let batches = if let Some(ref cfg) = asof_config {
+            // ── EOWC branch: accumulate and gate on watermark ──
+            let batches = if is_eowc {
+                self.execute_eowc_query(
+                    idx,
+                    &query_name,
+                    &query_sql,
+                    window_config.as_ref(),
+                    asof_config.as_ref(),
+                    projection_sql.as_deref(),
+                    source_batches,
+                    &results,
+                    current_watermark,
+                )
+                .await?
+            } else if let Some(ref cfg) = asof_config {
                 self.execute_asof_query(
                     &query_name,
                     cfg,
@@ -367,6 +444,207 @@ impl StreamExecutor {
         self.queries.len()
     }
 
+    /// Execute an EOWC (Emit On Window Close) query.
+    ///
+    /// Accumulates source batches across cycles, filters to closed-window data
+    /// when the watermark advances past a window boundary, and runs the aggregate
+    /// query only on closed-window data. Non-closed data is retained for the
+    /// next cycle.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    async fn execute_eowc_query(
+        &mut self,
+        idx: usize,
+        query_name: &str,
+        query_sql: &str,
+        window_config: Option<&WindowOperatorConfig>,
+        asof_config: Option<&AsofJoinTranslatorConfig>,
+        projection_sql: Option<&str>,
+        source_batches: &HashMap<String, Vec<RecordBatch>>,
+        intermediate_results: &HashMap<String, Vec<RecordBatch>>,
+        current_watermark: i64,
+    ) -> Result<Vec<RecordBatch>, DbError> {
+        // Determine which source tables feed this query
+        let table_refs = extract_table_references(query_sql);
+
+        // Accumulate current source batches into EOWC state
+        if let Some(eowc) = self.eowc_states.get_mut(&idx) {
+            for table_name in &table_refs {
+                // Check source_batches first, then intermediate_results
+                let batches_to_add = if let Some(batches) = source_batches.get(table_name.as_str())
+                {
+                    Some(batches)
+                } else {
+                    intermediate_results.get(table_name.as_str())
+                };
+
+                if let Some(batches) = batches_to_add {
+                    for batch in batches {
+                        if batch.num_rows() > 0 {
+                            eowc.accumulated_rows += batch.num_rows();
+                            eowc.accumulated_sources
+                                .entry(table_name.clone())
+                                .or_default()
+                                .push(batch.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Compute closed-window boundary
+        let closed_cut = window_config.map_or(current_watermark, |cfg| {
+            compute_closed_boundary(current_watermark, cfg)
+        });
+
+        // Check if any new windows have closed since last emission
+        let last_boundary = self
+            .eowc_states
+            .get(&idx)
+            .map_or(i64::MIN, |s| s.last_closed_boundary);
+
+        if closed_cut <= last_boundary {
+            // No new windows closed — suppress output
+            return Ok(Vec::new());
+        }
+
+        // Get the time column from the window config for filtering
+        let time_column = window_config.map(|cfg| cfg.time_column.clone());
+
+        // Filter accumulated data to rows in closed windows (ts < closed_cut)
+        let Some(eowc) = self.eowc_states.get(&idx) else {
+            return Ok(Vec::new());
+        };
+
+        let mut filtered_sources: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+        let mut has_data = false;
+
+        if let Some(ref ts_col) = time_column {
+            for (table_name, batches) in &eowc.accumulated_sources {
+                let mut filtered_batches = Vec::new();
+                for batch in batches {
+                    // Infer timestamp format from the batch schema
+                    let format = infer_ts_format_from_batch(batch, ts_col);
+                    if let Some(filtered) = crate::batch_filter::filter_batch_by_timestamp(
+                        batch,
+                        ts_col,
+                        closed_cut,
+                        format,
+                        crate::batch_filter::ThresholdOp::Less,
+                    ) {
+                        has_data = true;
+                        filtered_batches.push(filtered);
+                    }
+                }
+                if !filtered_batches.is_empty() {
+                    // Coalesce small batches to reduce DataFusion overhead
+                    let schema = filtered_batches[0].schema();
+                    if let Ok(coalesced) =
+                        arrow::compute::concat_batches(&schema, &filtered_batches)
+                    {
+                        filtered_sources.insert(table_name.clone(), vec![coalesced]);
+                    } else {
+                        filtered_sources.insert(table_name.clone(), filtered_batches);
+                    }
+                }
+            }
+        } else {
+            // No time column — pass through all accumulated data
+            for (table_name, batches) in &eowc.accumulated_sources {
+                if !batches.is_empty() {
+                    has_data = true;
+                    filtered_sources.insert(table_name.clone(), batches.clone());
+                }
+            }
+        }
+
+        if !has_data {
+            return Ok(Vec::new());
+        }
+
+        // Register filtered data as temp tables and run the query
+        let mut eowc_temp_tables: Vec<String> = Vec::new();
+        for (name, batches) in &filtered_sources {
+            if batches.is_empty() {
+                continue;
+            }
+            let schema = batches[0].schema();
+            let mem_table = datafusion::datasource::MemTable::try_new(
+                schema,
+                vec![batches.clone()],
+            )
+            .map_err(|e| {
+                DbError::Pipeline(format!("EOWC: Failed to create temp table '{name}': {e}"))
+            })?;
+            let _ = self.ctx.deregister_table(name);
+            self.ctx
+                .register_table(name, Arc::new(mem_table))
+                .map_err(|e| {
+                    DbError::Pipeline(format!("EOWC: Failed to register temp table '{name}': {e}"))
+                })?;
+            eowc_temp_tables.push(name.clone());
+        }
+
+        // Execute the query
+        let batches = if let Some(cfg) = asof_config {
+            self.execute_asof_query(
+                query_name,
+                cfg,
+                projection_sql,
+                &filtered_sources,
+                intermediate_results,
+            )
+            .await?
+        } else {
+            let df = self.ctx.sql(query_sql).await.map_err(|e| {
+                DbError::Pipeline(format!("EOWC stream '{query_name}' planning failed: {e}"))
+            })?;
+            df.collect().await.map_err(|e| {
+                DbError::Pipeline(format!("EOWC stream '{query_name}' execution failed: {e}"))
+            })?
+        };
+
+        // Cleanup EOWC temp tables
+        for name in &eowc_temp_tables {
+            let _ = self.ctx.deregister_table(name);
+        }
+
+        // Purge emitted data: keep only rows where ts >= closed_cut
+        if let Some(eowc) = self.eowc_states.get_mut(&idx) {
+            if let Some(ref ts_col) = time_column {
+                let mut new_accumulated: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+                let mut new_rows = 0usize;
+                for (table_name, acc_batches) in &eowc.accumulated_sources {
+                    let mut kept = Vec::new();
+                    for batch in acc_batches {
+                        let format = infer_ts_format_from_batch(batch, ts_col);
+                        if let Some(remaining) = crate::batch_filter::filter_batch_by_timestamp(
+                            batch,
+                            ts_col,
+                            closed_cut,
+                            format,
+                            crate::batch_filter::ThresholdOp::GreaterEq,
+                        ) {
+                            new_rows += remaining.num_rows();
+                            kept.push(remaining);
+                        }
+                    }
+                    if !kept.is_empty() {
+                        new_accumulated.insert(table_name.clone(), kept);
+                    }
+                }
+                eowc.accumulated_sources = new_accumulated;
+                eowc.accumulated_rows = new_rows;
+            } else {
+                // No time column — clear everything after emission
+                eowc.accumulated_sources.clear();
+                eowc.accumulated_rows = 0;
+            }
+            eowc.last_closed_boundary = closed_cut;
+        }
+
+        Ok(batches)
+    }
+
     /// Execute an ASOF join query by fetching left/right batches and performing
     /// the join in-process. Optionally applies a projection SQL for aliases and
     /// computed columns.
@@ -456,6 +734,48 @@ impl StreamExecutor {
 /// `AsofJoinTranslatorConfig` and build a projection SQL string.
 ///
 /// Returns `(None, None)` for non-ASOF queries.
+/// Compute the closed-window boundary from the current watermark and window config.
+///
+/// All input data with `ts < boundary` belongs to closed windows.
+fn compute_closed_boundary(watermark_ms: i64, config: &WindowOperatorConfig) -> i64 {
+    match config.window_type {
+        WindowType::Tumbling => {
+            #[allow(clippy::cast_possible_truncation)]
+            let size = config.size.as_millis() as i64;
+            if size <= 0 {
+                return watermark_ms;
+            }
+            // Floor to nearest window boundary
+            (watermark_ms / size) * size
+        }
+        WindowType::Session => {
+            #[allow(clippy::cast_possible_truncation)]
+            let gap = config.gap.map_or(0, |g| g.as_millis() as i64);
+            watermark_ms.saturating_sub(gap)
+        }
+        WindowType::Sliding => {
+            #[allow(clippy::cast_possible_truncation)]
+            let size = config.size.as_millis() as i64;
+            watermark_ms.saturating_sub(size)
+        }
+    }
+}
+
+/// Infer the `TimestampFormat` from a `RecordBatch` column's `DataType`.
+fn infer_ts_format_from_batch(
+    batch: &RecordBatch,
+    column: &str,
+) -> laminar_core::time::TimestampFormat {
+    if let Ok(idx) = batch.schema().index_of(column) {
+        match batch.schema().field(idx).data_type() {
+            DataType::Timestamp(_, _) => laminar_core::time::TimestampFormat::ArrowNative,
+            _ => laminar_core::time::TimestampFormat::UnixMillis,
+        }
+    } else {
+        laminar_core::time::TimestampFormat::UnixMillis
+    }
+}
+
 fn detect_asof_query(sql: &str) -> (Option<AsofJoinTranslatorConfig>, Option<String>) {
     // Parse using the streaming parser which understands ASOF syntax
     let Ok(statements) = laminar_sql::parse_streaming_sql(sql) else {
@@ -691,12 +1011,17 @@ mod tests {
         executor.add_query(
             "test_stream".to_string(),
             "SELECT name, SUM(value) as total FROM events GROUP BY name".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("test_stream"));
         let batches = &results["test_stream"];
         assert!(!batches.is_empty());
@@ -714,12 +1039,14 @@ mod tests {
         executor.add_query(
             "test_stream".to_string(),
             "SELECT * FROM events".to_string(),
+            None,
+            None,
         );
 
         let source_batches = HashMap::new();
         // When no source data is registered, the query references a missing table —
         // this should surface as an error, not silently produce empty results.
-        let result = executor.execute_cycle(&source_batches).await;
+        let result = executor.execute_cycle(&source_batches, i64::MAX).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -737,16 +1064,23 @@ mod tests {
         executor.add_query(
             "count_stream".to_string(),
             "SELECT COUNT(*) as cnt FROM events".to_string(),
+            None,
+            None,
         );
         executor.add_query(
             "sum_stream".to_string(),
             "SELECT SUM(value) as total FROM events".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("count_stream"));
         assert!(results.contains_key("sum_stream"));
     }
@@ -760,12 +1094,17 @@ mod tests {
         executor.add_query(
             "filtered".to_string(),
             "SELECT * FROM events WHERE value > 1.5".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("filtered"));
         let total_rows: usize = results["filtered"].iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 2); // value 2.0 and 3.0
@@ -777,17 +1116,25 @@ mod tests {
         register_streaming_functions(&ctx);
         let mut executor = StreamExecutor::new(ctx);
 
-        executor.add_query("pass".to_string(), "SELECT * FROM events".to_string());
+        executor.add_query(
+            "pass".to_string(),
+            "SELECT * FROM events".to_string(),
+            None,
+            None,
+        );
 
         // First cycle
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
-        let r1 = executor.execute_cycle(&source_batches).await.unwrap();
+        let r1 = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(r1.contains_key("pass"));
 
         // Second cycle with no data — table was cleaned up, so query fails
         let empty = HashMap::new();
-        let r2 = executor.execute_cycle(&empty).await;
+        let r2 = executor.execute_cycle(&empty, i64::MAX).await;
         assert!(
             r2.is_err(),
             "query referencing cleaned-up table should fail"
@@ -818,12 +1165,17 @@ mod tests {
         executor.add_query(
             "joined".to_string(),
             "SELECT e.name, d.label FROM events e JOIN dim d ON e.id = d.id".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("joined"));
         let total_rows: usize = results["joined"].iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 2); // ids 1 and 2 match
@@ -867,17 +1219,24 @@ mod tests {
         executor.add_query(
             "level1".to_string(),
             "SELECT name, SUM(value) as total FROM events GROUP BY name".to_string(),
+            None,
+            None,
         );
         // level2: filter level1 results
         executor.add_query(
             "level2".to_string(),
             "SELECT name, total FROM level1 WHERE total > 1.0".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
 
         // Both queries should produce output
         assert!(results.contains_key("level1"), "level1 should have results");
@@ -902,22 +1261,31 @@ mod tests {
         executor.add_query(
             "level1".to_string(),
             "SELECT name, value FROM events".to_string(),
+            None,
+            None,
         );
         // level2: filter
         executor.add_query(
             "level2".to_string(),
             "SELECT name, value FROM level1 WHERE value >= 2.0".to_string(),
+            None,
+            None,
         );
         // level3: aggregate
         executor.add_query(
             "level3".to_string(),
             "SELECT COUNT(*) as cnt FROM level2".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
 
         assert!(results.contains_key("level1"));
         assert!(results.contains_key("level2"));
@@ -946,22 +1314,31 @@ mod tests {
         executor.add_query(
             "agg".to_string(),
             "SELECT name, SUM(value) as total FROM events GROUP BY name".to_string(),
+            None,
+            None,
         );
         executor.add_query(
             "filtered".to_string(),
             "SELECT name, value FROM events WHERE value > 1.5".to_string(),
+            None,
+            None,
         );
         // Third query joins results of both
         executor.add_query(
             "combined".to_string(),
             "SELECT a.name, a.total, f.value FROM agg a JOIN filtered f ON a.name = f.name"
                 .to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
 
         assert!(results.contains_key("agg"));
         assert!(results.contains_key("filtered"));
@@ -982,16 +1359,23 @@ mod tests {
         executor.add_query(
             "downstream".to_string(),
             "SELECT name, total FROM upstream WHERE total > 1.0".to_string(),
+            None,
+            None,
         );
         executor.add_query(
             "upstream".to_string(),
             "SELECT name, SUM(value) as total FROM events GROUP BY name".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
 
         // Both should produce output despite reversed insertion order
         assert!(
@@ -1016,12 +1400,19 @@ mod tests {
         executor.add_query(
             "level1".to_string(),
             "SELECT name, value FROM events".to_string(),
+            None,
+            None,
         );
-        executor.add_query("level2".to_string(), "SELECT name FROM level1".to_string());
+        executor.add_query(
+            "level2".to_string(),
+            "SELECT name FROM level1".to_string(),
+            None,
+            None,
+        );
 
         // No source data — first query references missing table, so cycle fails
         let source_batches = HashMap::new();
-        let result = executor.execute_cycle(&source_batches).await;
+        let result = executor.execute_cycle(&source_batches, i64::MAX).await;
         assert!(result.is_err());
     }
 
@@ -1035,12 +1426,14 @@ mod tests {
         executor.add_query(
             "bad_query".to_string(),
             "SELECTTTT * FROMM nowhere".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let result = executor.execute_cycle(&source_batches).await;
+        let result = executor.execute_cycle(&source_batches, i64::MAX).await;
         assert!(result.is_err(), "invalid SQL should surface as error");
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1059,12 +1452,14 @@ mod tests {
         executor.add_query(
             "missing_col".to_string(),
             "SELECT nonexistent_column FROM events".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let result = executor.execute_cycle(&source_batches).await;
+        let result = executor.execute_cycle(&source_batches, i64::MAX).await;
         assert!(result.is_err(), "missing column should surface as error");
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1164,13 +1559,18 @@ mod tests {
              FROM trades t ASOF JOIN quotes q \
              MATCH_CONDITION(t.ts >= q.ts) ON t.symbol = q.symbol"
                 .to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("trades".to_string(), vec![trades_batch_for_asof()]);
         source_batches.insert("quotes".to_string(), vec![quotes_batch_for_asof()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(
             results.contains_key("enriched"),
             "ASOF query should produce results"
@@ -1197,13 +1597,18 @@ mod tests {
              FROM trades t ASOF JOIN quotes q \
              MATCH_CONDITION(t.ts >= q.ts) ON t.symbol = q.symbol"
                 .to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("trades".to_string(), vec![trades_batch_for_asof()]);
         source_batches.insert("quotes".to_string(), vec![quotes_batch_for_asof()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("spread_stream"));
         let batches = &results["spread_stream"];
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -1236,6 +1641,8 @@ mod tests {
              FROM trades t ASOF JOIN quotes q \
              MATCH_CONDITION(t.ts >= q.ts) ON t.symbol = q.symbol"
                 .to_string(),
+            None,
+            None,
         );
 
         // Only trades, no quotes → should still work (left join with nulls)
@@ -1246,7 +1653,10 @@ mod tests {
             vec![RecordBatch::new_empty(quotes_schema())],
         );
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         // ASOF join with empty right produces 3 rows with null bids
         assert!(results.contains_key("enriched"));
     }
@@ -1264,19 +1674,26 @@ mod tests {
              FROM trades t ASOF JOIN quotes q \
              MATCH_CONDITION(t.ts >= q.ts) ON t.symbol = q.symbol"
                 .to_string(),
+            None,
+            None,
         );
 
         // Downstream query filters ASOF results
         executor.add_query(
             "filtered".to_string(),
             "SELECT symbol, price, bid FROM enriched WHERE price > 151.0".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("trades".to_string(), vec![trades_batch_for_asof()]);
         source_batches.insert("quotes".to_string(), vec![quotes_batch_for_asof()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("enriched"));
         assert!(results.contains_key("filtered"));
 
@@ -1295,14 +1712,331 @@ mod tests {
         executor.add_query(
             "simple".to_string(),
             "SELECT name, SUM(value) as total FROM events GROUP BY name".to_string(),
+            None,
+            None,
         );
 
         let mut source_batches = HashMap::new();
         source_batches.insert("events".to_string(), vec![test_batch()]);
 
-        let results = executor.execute_cycle(&source_batches).await.unwrap();
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
         assert!(results.contains_key("simple"));
         let total_rows: usize = results["simple"].iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 3);
+    }
+
+    // ── EOWC (Emit On Window Close) tests ──
+
+    fn eowc_test_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("symbol", DataType::Utf8, false),
+            Field::new("price", DataType::Float64, false),
+            Field::new("ts", DataType::Int64, false),
+        ]))
+    }
+
+    fn eowc_batch(symbols: Vec<&str>, prices: Vec<f64>, timestamps: Vec<i64>) -> RecordBatch {
+        RecordBatch::try_new(
+            eowc_test_schema(),
+            vec![
+                Arc::new(StringArray::from(symbols)),
+                Arc::new(Float64Array::from(prices)),
+                Arc::new(Int64Array::from(timestamps)),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn tumbling_window_config(size_ms: u64) -> WindowOperatorConfig {
+        use laminar_sql::parser::EmitStrategy;
+        WindowOperatorConfig {
+            window_type: WindowType::Tumbling,
+            time_column: "ts".to_string(),
+            size: std::time::Duration::from_millis(size_ms),
+            slide: None,
+            gap: None,
+            allowed_lateness: std::time::Duration::ZERO,
+            emit_strategy: EmitStrategy::OnWindowClose,
+            late_data_side_output: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eowc_suppresses_until_watermark_advances() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        // Register with EOWC emit clause and a 1000ms tumbling window
+        executor.add_query(
+            "avg_price".to_string(),
+            "SELECT symbol, AVG(price) as avg_price FROM trades GROUP BY symbol".to_string(),
+            Some(EmitClause::OnWindowClose),
+            Some(tumbling_window_config(1000)),
+        );
+
+        let mut source_batches = HashMap::new();
+        source_batches.insert(
+            "trades".to_string(),
+            vec![eowc_batch(vec!["AAPL"], vec![150.0], vec![500])],
+        );
+
+        // Watermark at 500 → window [0, 1000) not closed yet
+        let results = executor.execute_cycle(&source_batches, 500).await.unwrap();
+        assert!(
+            !results.contains_key("avg_price"),
+            "EOWC should suppress output before window closes"
+        );
+
+        // Advance watermark to 1000 → window [0, 1000) is now closed
+        let empty: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+        let results = executor.execute_cycle(&empty, 1000).await.unwrap();
+        assert!(
+            results.contains_key("avg_price"),
+            "EOWC should emit when watermark crosses window boundary"
+        );
+        let total_rows: usize = results["avg_price"].iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn test_eowc_accumulates_across_cycles() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        executor.add_query(
+            "total".to_string(),
+            "SELECT symbol, SUM(price) as total FROM trades GROUP BY symbol".to_string(),
+            Some(EmitClause::OnWindowClose),
+            Some(tumbling_window_config(1000)),
+        );
+
+        // Cycle 1: push data at ts=100
+        let mut batches1 = HashMap::new();
+        batches1.insert(
+            "trades".to_string(),
+            vec![eowc_batch(vec!["AAPL"], vec![100.0], vec![100])],
+        );
+        let r1 = executor.execute_cycle(&batches1, 200).await.unwrap();
+        assert!(!r1.contains_key("total"), "window not closed at wm=200");
+
+        // Cycle 2: push more data at ts=400
+        let mut batches2 = HashMap::new();
+        batches2.insert(
+            "trades".to_string(),
+            vec![eowc_batch(vec!["AAPL"], vec![200.0], vec![400])],
+        );
+        let r2 = executor.execute_cycle(&batches2, 600).await.unwrap();
+        assert!(!r2.contains_key("total"), "window not closed at wm=600");
+
+        // Cycle 3: watermark crosses 1000 → emit accumulated
+        let empty: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+        let r3 = executor.execute_cycle(&empty, 1000).await.unwrap();
+        assert!(r3.contains_key("total"), "window closed at wm=1000");
+        let batches = &r3["total"];
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1);
+
+        // Verify the sum is 100 + 200 = 300
+        let total_col = batches[0]
+            .column_by_name("total")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!((total_col.value(0) - 300.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_eowc_purges_old_data() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        executor.add_query(
+            "cnt".to_string(),
+            "SELECT COUNT(*) as cnt FROM trades".to_string(),
+            Some(EmitClause::OnWindowClose),
+            Some(tumbling_window_config(1000)),
+        );
+
+        // Push data spanning two windows: [0,1000) and [1000,2000)
+        let mut batches = HashMap::new();
+        batches.insert(
+            "trades".to_string(),
+            vec![eowc_batch(
+                vec!["AAPL", "AAPL", "AAPL"],
+                vec![100.0, 200.0, 300.0],
+                vec![500, 800, 1500],
+            )],
+        );
+
+        // Watermark at 1000 → window [0,1000) closes, 2 rows (ts=500,800)
+        let r1 = executor.execute_cycle(&batches, 1000).await.unwrap();
+        assert!(r1.contains_key("cnt"));
+        let cnt = r1["cnt"][0]
+            .column_by_name("cnt")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(cnt, 2, "first window should have 2 rows");
+
+        // Watermark at 2000 → window [1000,2000) closes, 1 row (ts=1500)
+        let empty: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+        let r2 = executor.execute_cycle(&empty, 2000).await.unwrap();
+        assert!(r2.contains_key("cnt"));
+        let cnt2 = r2["cnt"][0]
+            .column_by_name("cnt")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(cnt2, 1, "second window should have 1 row (purged old data)");
+    }
+
+    #[tokio::test]
+    async fn test_non_eowc_unaffected() {
+        // Verify that non-EOWC queries still emit every cycle
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        executor.add_query(
+            "passthrough".to_string(),
+            "SELECT symbol, price FROM trades".to_string(),
+            None, // no emit clause → non-EOWC
+            None,
+        );
+
+        let mut source_batches = HashMap::new();
+        source_batches.insert(
+            "trades".to_string(),
+            vec![eowc_batch(vec!["AAPL"], vec![150.0], vec![500])],
+        );
+
+        // Should emit immediately, even with low watermark
+        let results = executor.execute_cycle(&source_batches, 0).await.unwrap();
+        assert!(
+            results.contains_key("passthrough"),
+            "non-EOWC query should emit every cycle"
+        );
+        let total_rows: usize = results["passthrough"].iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_eowc_and_non_eowc() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        // Register source schema so empty placeholder tables can be created
+        executor.register_source_schema("trades".to_string(), eowc_test_schema());
+
+        // Non-EOWC query
+        executor.add_query(
+            "realtime".to_string(),
+            "SELECT symbol, price FROM trades".to_string(),
+            None,
+            None,
+        );
+
+        // EOWC query
+        executor.add_query(
+            "windowed".to_string(),
+            "SELECT symbol, AVG(price) as avg_price FROM trades GROUP BY symbol".to_string(),
+            Some(EmitClause::Final),
+            Some(tumbling_window_config(1000)),
+        );
+
+        let mut source_batches = HashMap::new();
+        source_batches.insert(
+            "trades".to_string(),
+            vec![eowc_batch(vec!["AAPL"], vec![150.0], vec![500])],
+        );
+
+        // Non-EOWC emits, EOWC suppresses
+        let results = executor.execute_cycle(&source_batches, 500).await.unwrap();
+        assert!(results.contains_key("realtime"), "non-EOWC should emit");
+        assert!(!results.contains_key("windowed"), "EOWC should suppress");
+
+        // Advance watermark → EOWC now emits
+        // Provide an empty batch so the "trades" table is still registered
+        let mut empty_source = HashMap::new();
+        empty_source.insert(
+            "trades".to_string(),
+            vec![RecordBatch::new_empty(eowc_test_schema())],
+        );
+        let results = executor.execute_cycle(&empty_source, 1000).await.unwrap();
+        assert!(
+            results.contains_key("windowed"),
+            "EOWC should emit when window closes"
+        );
+    }
+
+    #[test]
+    fn test_compute_closed_boundary_tumbling() {
+        use laminar_sql::parser::EmitStrategy;
+
+        let config = WindowOperatorConfig {
+            window_type: WindowType::Tumbling,
+            time_column: "ts".to_string(),
+            size: std::time::Duration::from_millis(1000),
+            slide: None,
+            gap: None,
+            allowed_lateness: std::time::Duration::ZERO,
+            emit_strategy: EmitStrategy::OnWindowClose,
+            late_data_side_output: None,
+        };
+
+        assert_eq!(compute_closed_boundary(999, &config), 0);
+        assert_eq!(compute_closed_boundary(1000, &config), 1000);
+        assert_eq!(compute_closed_boundary(1500, &config), 1000);
+        assert_eq!(compute_closed_boundary(2000, &config), 2000);
+    }
+
+    #[test]
+    fn test_compute_closed_boundary_session() {
+        use laminar_sql::parser::EmitStrategy;
+
+        let config = WindowOperatorConfig {
+            window_type: WindowType::Session,
+            time_column: "ts".to_string(),
+            size: std::time::Duration::ZERO,
+            slide: None,
+            gap: Some(std::time::Duration::from_millis(500)),
+            allowed_lateness: std::time::Duration::ZERO,
+            emit_strategy: EmitStrategy::OnWindowClose,
+            late_data_side_output: None,
+        };
+
+        assert_eq!(compute_closed_boundary(1000, &config), 500);
+        assert_eq!(compute_closed_boundary(500, &config), 0);
+    }
+
+    #[test]
+    fn test_compute_closed_boundary_sliding() {
+        use laminar_sql::parser::EmitStrategy;
+
+        let config = WindowOperatorConfig {
+            window_type: WindowType::Sliding,
+            time_column: "ts".to_string(),
+            size: std::time::Duration::from_millis(2000),
+            slide: Some(std::time::Duration::from_millis(500)),
+            gap: None,
+            allowed_lateness: std::time::Duration::ZERO,
+            emit_strategy: EmitStrategy::OnWindowClose,
+            late_data_side_output: None,
+        };
+
+        assert_eq!(compute_closed_boundary(2000, &config), 0);
+        assert_eq!(compute_closed_boundary(3000, &config), 1000);
     }
 }
