@@ -1788,6 +1788,37 @@ impl LaminarDB {
             }
         }
 
+        // Also create watermark state for sources that declared event_time_column
+        // programmatically (via source.set_event_time_column()) but have no SQL WATERMARK
+        for name in self.catalog.list_sources() {
+            if watermark_states.contains_key(&name) {
+                continue;
+            }
+            if let Some(entry) = self.catalog.get_source(&name) {
+                if let Some(col) = entry.source.event_time_column() {
+                    let format = infer_timestamp_format(&entry.schema, &col);
+                    let extractor =
+                        laminar_core::time::EventTimeExtractor::from_column(&col, format)
+                            .with_mode(laminar_core::time::ExtractionMode::Max);
+                    let generator =
+                        laminar_core::time::BoundedOutOfOrdernessGenerator::from_duration(
+                            std::time::Duration::ZERO,
+                        );
+                    let id = source_ids.len();
+                    source_ids.insert(name.clone(), id);
+                    watermark_states.insert(
+                        name.clone(),
+                        SourceWatermarkState {
+                            extractor,
+                            generator,
+                            column: col,
+                            format,
+                        },
+                    );
+                }
+            }
+        }
+
         let mut tracker = if source_ids.is_empty() {
             None
         } else {
@@ -2241,6 +2272,37 @@ impl LaminarDB {
                     );
                 }
                 source_entries_for_wm.insert(name, entry);
+            }
+        }
+
+        // Also create watermark state for sources that declared event_time_column
+        // programmatically (via source.set_event_time_column()) but have no SQL WATERMARK
+        for name in self.catalog.list_sources() {
+            if watermark_states.contains_key(&name) {
+                continue;
+            }
+            if let Some(entry) = self.catalog.get_source(&name) {
+                if let Some(col) = entry.source.event_time_column() {
+                    let format = infer_timestamp_format(&entry.schema, &col);
+                    let extractor =
+                        laminar_core::time::EventTimeExtractor::from_column(&col, format)
+                            .with_mode(laminar_core::time::ExtractionMode::Max);
+                    let generator =
+                        laminar_core::time::BoundedOutOfOrdernessGenerator::from_duration(
+                            std::time::Duration::ZERO,
+                        );
+                    let id = source_ids.len();
+                    source_ids.insert(name.clone(), id);
+                    watermark_states.insert(
+                        name.clone(),
+                        SourceWatermarkState {
+                            extractor,
+                            generator,
+                            column: col,
+                            format,
+                        },
+                    );
+                }
             }
         }
 
@@ -5713,5 +5775,170 @@ mod tests {
         );
         let result = result.expect("should pass through when column not found");
         assert_eq!(result.num_rows(), 2);
+    }
+
+    /// Helper: creates a RecordBatch with (id: BIGINT, ts: BIGINT).
+    fn make_bigint_ts_batch(
+        schema: &arrow::datatypes::SchemaRef,
+        timestamps: &[i64],
+    ) -> RecordBatch {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow::array::Int64Array::from(
+                    (1..=i64::try_from(timestamps.len()).expect("len fits i64"))
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(arrow::array::Int64Array::from(timestamps.to_vec())),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_programmatic_watermark_filters_late_rows() {
+        // Source with set_event_time_column("ts"), no SQL WATERMARK clause.
+        // Push data, advance watermark, push late data, verify late data filtered.
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE events (id BIGINT, ts BIGINT)")
+            .await
+            .unwrap();
+        db.execute("CREATE STREAM out AS SELECT id, ts FROM events")
+            .await
+            .unwrap();
+
+        let sub = db.catalog.get_stream_subscription("out").unwrap();
+
+        let handle = db.source_untyped("events").unwrap();
+        handle.set_event_time_column("ts");
+
+        db.start().await.unwrap();
+
+        let schema = handle.schema().clone();
+
+        // Step 1: Push on-time data
+        let batch1 = make_bigint_ts_batch(&schema, &[1000, 2000, 3000]);
+        handle.push_arrow(batch1).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Drain on-time results
+        let mut on_time_rows = 0;
+        for _ in 0..256 {
+            match sub.poll() {
+                Some(b) => on_time_rows += b.num_rows(),
+                None => break,
+            }
+        }
+        assert!(on_time_rows > 0, "should have on-time rows");
+
+        // Step 2: Advance watermark to 200_000 (external signal)
+        handle.watermark(200_000);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Step 3: Push late data (all timestamps < 200_000)
+        let late_batch = make_bigint_ts_batch(&schema, &[100, 200, 300]);
+        handle.push_arrow(late_batch).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Step 4: Check that late data was filtered out
+        let mut late_rows = 0;
+        for _ in 0..256 {
+            match sub.poll() {
+                Some(b) => late_rows += b.num_rows(),
+                None => break,
+            }
+        }
+        assert_eq!(late_rows, 0, "late data behind watermark should be dropped");
+    }
+
+    #[tokio::test]
+    async fn test_sql_watermark_for_col_filters_late_rows() {
+        // Source with WATERMARK FOR ts (no AS expr), should use zero delay.
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE events (id BIGINT, ts BIGINT, WATERMARK FOR ts)")
+            .await
+            .unwrap();
+        db.execute("CREATE STREAM out AS SELECT id, ts FROM events")
+            .await
+            .unwrap();
+
+        let sub = db.catalog.get_stream_subscription("out").unwrap();
+        db.start().await.unwrap();
+
+        let handle = db.source_untyped("events").unwrap();
+        let schema = handle.schema().clone();
+
+        // Push on-time data
+        let batch1 = make_bigint_ts_batch(&schema, &[1000, 2000, 3000]);
+        handle.push_arrow(batch1).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let mut on_time_rows = 0;
+        for _ in 0..256 {
+            match sub.poll() {
+                Some(b) => on_time_rows += b.num_rows(),
+                None => break,
+            }
+        }
+        assert!(on_time_rows > 0, "should have on-time rows");
+
+        // Advance watermark externally
+        handle.watermark(200_000);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Push late data
+        let late_batch = make_bigint_ts_batch(&schema, &[100, 200, 300]);
+        handle.push_arrow(late_batch).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let mut late_rows = 0;
+        for _ in 0..256 {
+            match sub.poll() {
+                Some(b) => late_rows += b.num_rows(),
+                None => break,
+            }
+        }
+        assert_eq!(late_rows, 0, "late data behind watermark should be dropped");
+    }
+
+    #[tokio::test]
+    async fn test_no_watermark_passes_all_data() {
+        // Source without any watermark config — all data should pass through.
+        let db = LaminarDB::open().unwrap();
+        db.execute("CREATE SOURCE events (id BIGINT, ts BIGINT)")
+            .await
+            .unwrap();
+        db.execute("CREATE STREAM out AS SELECT id, ts FROM events")
+            .await
+            .unwrap();
+
+        let sub = db.catalog.get_stream_subscription("out").unwrap();
+        db.start().await.unwrap();
+
+        let handle = db.source_untyped("events").unwrap();
+        let schema = handle.schema().clone();
+
+        // Push two batches — no watermark filtering should happen
+        let batch1 = make_bigint_ts_batch(&schema, &[1000, 2000, 3000]);
+        handle.push_arrow(batch1).unwrap();
+        handle.watermark(200_000); // watermark without event_time_column is a no-op for filtering
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let batch2 = make_bigint_ts_batch(&schema, &[100, 200, 300]);
+        handle.push_arrow(batch2).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // All rows from both batches should appear
+        let mut total_rows = 0;
+        for _ in 0..256 {
+            match sub.poll() {
+                Some(b) => total_rows += b.num_rows(),
+                None => break,
+            }
+        }
+        assert_eq!(
+            total_rows, 6,
+            "all data should pass through without watermark config"
+        );
     }
 }

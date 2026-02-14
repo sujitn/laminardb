@@ -470,20 +470,27 @@ fn parse_watermark(
             ))
         })?;
 
-    // Check column is a timestamp type
+    // Check column is a timestamp or integer type (BIGINT is common for Unix millis)
     if !matches!(
         col.data_type,
-        DataType::Timestamp(_, _) | DataType::Date32 | DataType::Date64
+        DataType::Timestamp(_, _)
+            | DataType::Date32
+            | DataType::Date64
+            | DataType::Int64
+            | DataType::Int32
     ) {
         return Err(ParseError::ValidationError(format!(
-            "watermark column '{}' must be a timestamp type, found {:?}",
+            "watermark column '{}' must be a timestamp or integer type, found {:?}",
             column_name, col.data_type
         )));
     }
 
-    // Parse the watermark expression to extract out-of-orderness
-    // Expression should be: column - INTERVAL 'N' UNIT
-    let max_out_of_orderness = parse_watermark_expression(&wm.expression);
+    // Parse the watermark expression to extract out-of-orderness.
+    // When expression is None (WATERMARK FOR col without AS), use zero delay.
+    let max_out_of_orderness = match &wm.expression {
+        Some(expr) => parse_watermark_expression(expr),
+        None => Duration::ZERO,
+    };
 
     Ok(WatermarkSpec {
         column: column_name,
@@ -753,13 +760,16 @@ mod tests {
     fn test_watermark_wrong_type() {
         let result = parse_and_translate(
             "CREATE SOURCE events (
-                id BIGINT,
-                WATERMARK FOR id AS id - INTERVAL '1' SECOND
+                name VARCHAR,
+                WATERMARK FOR name AS name - INTERVAL '1' SECOND
             )",
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("timestamp type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("timestamp or integer type"));
     }
 
     #[test]
@@ -833,5 +843,37 @@ mod tests {
 
         // Only buffer_size should affect config
         assert_eq!(def.config.buffer_size, 8192);
+    }
+
+    #[test]
+    fn test_source_watermark_no_expression() {
+        let def = parse_and_translate(
+            "CREATE SOURCE events (
+                ts TIMESTAMP,
+                WATERMARK FOR ts
+            )",
+        )
+        .unwrap();
+
+        assert!(def.watermark.is_some());
+        let wm = def.watermark.unwrap();
+        assert_eq!(wm.column, "ts");
+        assert_eq!(wm.max_out_of_orderness, Duration::ZERO);
+    }
+
+    #[test]
+    fn test_source_watermark_bigint_column() {
+        let def = parse_and_translate(
+            "CREATE SOURCE events (
+                ts BIGINT,
+                WATERMARK FOR ts
+            )",
+        )
+        .unwrap();
+
+        assert!(def.watermark.is_some());
+        let wm = def.watermark.unwrap();
+        assert_eq!(wm.column, "ts");
+        assert_eq!(wm.max_out_of_orderness, Duration::ZERO);
     }
 }

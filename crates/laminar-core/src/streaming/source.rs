@@ -28,7 +28,7 @@
 //! ```
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
@@ -183,6 +183,10 @@ struct SourceInner<T: Record> {
     /// Monotonic sequence counter, incremented on each successful push.
     /// Wrapped in `Arc` so the checkpoint manager can read it without locking.
     sequence: Arc<AtomicU64>,
+
+    /// Event-time column name set via programmatic API.
+    /// Read once at pipeline startup, not on the hot path.
+    event_time_column: Mutex<Option<String>>,
 }
 
 /// A streaming data source.
@@ -228,6 +232,7 @@ impl<T: Record> Source<T> {
             schema: schema.clone(),
             name: config.name,
             sequence: Arc::new(AtomicU64::new(0)),
+            event_time_column: Mutex::new(None),
         });
 
         let source = Self { inner };
@@ -465,6 +470,28 @@ impl<T: Record> Source<T> {
     pub fn watermark_atomic(&self) -> Arc<AtomicI64> {
         self.inner.watermark.arc()
     }
+
+    /// Declare which column in the source data represents event time.
+    ///
+    /// When set, `source.watermark()` enables late-row filtering
+    /// without a SQL `WATERMARK FOR` clause.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    pub fn set_event_time_column(&self, column: &str) {
+        *self.inner.event_time_column.lock().unwrap() = Some(column.to_owned());
+    }
+
+    /// Returns the configured event-time column, if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    #[must_use]
+    pub fn event_time_column(&self) -> Option<String> {
+        self.inner.event_time_column.lock().unwrap().clone()
+    }
 }
 
 impl<T: Record> Clone for Source<T> {
@@ -485,6 +512,7 @@ impl<T: Record> Clone for Source<T> {
         // Create new inner with cloned producer.
         // Sequence and watermark are shared across clones so the checkpoint
         // manager sees a single, consistent counter per logical source.
+        let event_time_col = self.inner.event_time_column.lock().unwrap().clone();
         Self {
             inner: Arc::new(SourceInner {
                 producer,
@@ -492,6 +520,7 @@ impl<T: Record> Clone for Source<T> {
                 schema: Arc::clone(&self.inner.schema),
                 name: self.inner.name.clone(),
                 sequence: Arc::clone(&self.inner.sequence),
+                event_time_column: Mutex::new(event_time_col),
             }),
         }
     }
@@ -765,5 +794,24 @@ mod tests {
         let debug = format!("{source:?}");
         assert!(debug.contains("Source"));
         assert!(debug.contains("Spsc"));
+    }
+
+    #[test]
+    fn test_set_event_time_column() {
+        let (source, _sink) = create::<TestEvent>(16);
+
+        assert!(source.event_time_column().is_none());
+
+        source.set_event_time_column("timestamp");
+        assert_eq!(source.event_time_column(), Some("timestamp".to_string()));
+    }
+
+    #[test]
+    fn test_event_time_column_preserved_on_clone() {
+        let (source, _sink) = create::<TestEvent>(16);
+        source.set_event_time_column("ts");
+
+        let source2 = source.clone();
+        assert_eq!(source2.event_time_column(), Some("ts".to_string()));
     }
 }

@@ -146,11 +146,14 @@ fn parse_source_body(
     Ok((columns, watermark))
 }
 
-/// Parse WATERMARK FOR column AS expression.
+/// Parse WATERMARK FOR column [AS expression].
 ///
 /// Assumes the WATERMARK keyword has already been consumed.
 /// Uses sqlparser's `parse_identifier()` for the column name and
 /// `parse_expr()` for the watermark expression.
+///
+/// When `AS expr` is omitted, the watermark uses `source.watermark()`
+/// directly with zero delay.
 fn parse_watermark_def(parser: &mut Parser) -> Result<WatermarkDef, ParseError> {
     // FOR
     parser
@@ -162,14 +165,12 @@ fn parse_watermark_def(parser: &mut Parser) -> Result<WatermarkDef, ParseError> 
         .parse_identifier()
         .map_err(ParseError::SqlParseError)?;
 
-    // AS
-    parser
-        .expect_keyword(Keyword::AS)
-        .map_err(ParseError::SqlParseError)?;
-
-    // Expression (e.g., ts - INTERVAL '5' SECOND)
-    // parse_expr will consume tokens until it hits a comma, closing paren, or EOF
-    let expression = parser.parse_expr().map_err(ParseError::SqlParseError)?;
+    // AS is optional — if missing, watermark uses source.watermark() directly
+    let expression = if parser.parse_keyword(Keyword::AS) {
+        Some(parser.parse_expr().map_err(ParseError::SqlParseError)?)
+    } else {
+        None
+    };
 
     Ok(WatermarkDef { column, expression })
 }
@@ -302,7 +303,7 @@ mod tests {
         assert!(source.watermark.is_some());
         let wm = source.watermark.as_ref().unwrap();
         assert_eq!(wm.column.to_string(), "order_time");
-        assert!(matches!(wm.expression, Expr::BinaryOp { .. }));
+        assert!(matches!(wm.expression, Some(Expr::BinaryOp { .. })));
     }
 
     #[test]
@@ -405,7 +406,7 @@ mod tests {
         assert!(source.watermark.is_some());
         let wm = source.watermark.as_ref().unwrap();
         assert_eq!(wm.column.to_string(), "ts");
-        assert!(matches!(wm.expression, Expr::BinaryOp { .. }));
+        assert!(matches!(wm.expression, Some(Expr::BinaryOp { .. })));
     }
 
     #[test]
@@ -542,6 +543,21 @@ mod tests {
         );
         assert_eq!(source.connector_type, Some("KAFKA".to_string()));
         assert_eq!(source.columns.len(), 0);
+    }
+
+    #[test]
+    fn test_create_source_watermark_no_expression() {
+        let source = parse(
+            "CREATE SOURCE events (
+                id BIGINT,
+                ts TIMESTAMP,
+                WATERMARK FOR ts
+            )",
+        );
+        assert!(source.watermark.is_some());
+        let wm = source.watermark.as_ref().unwrap();
+        assert_eq!(wm.column.to_string(), "ts");
+        assert!(wm.expression.is_none());
     }
 
     #[test]

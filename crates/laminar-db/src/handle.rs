@@ -335,6 +335,14 @@ impl<T: Record> SourceHandle<T> {
     pub fn max_out_of_orderness(&self) -> Option<Duration> {
         self.entry.max_out_of_orderness
     }
+
+    /// Declare which column in the source data represents event time.
+    ///
+    /// When set, `source.watermark()` enables late-row filtering
+    /// without a SQL `WATERMARK FOR` clause.
+    pub fn set_event_time_column(&self, column: &str) {
+        self.entry.source.set_event_time_column(column);
+    }
 }
 
 impl<T: Record> std::fmt::Debug for SourceHandle<T> {
@@ -414,6 +422,14 @@ impl UntypedSourceHandle {
     #[must_use]
     pub fn max_out_of_orderness(&self) -> Option<Duration> {
         self.entry.max_out_of_orderness
+    }
+
+    /// Declare which column in the source data represents event time.
+    ///
+    /// When set, `source.watermark()` enables late-row filtering
+    /// without a SQL `WATERMARK FOR` clause.
+    pub fn set_event_time_column(&self, column: &str) {
+        self.entry.source.set_event_time_column(column);
     }
 }
 
