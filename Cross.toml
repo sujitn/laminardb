@@ -1,0 +1,14 @@
+# Cross-compilation configuration for cross-rs
+# See: https://github.com/cross-rs/cross
+
+[target.aarch64-unknown-linux-gnu]
+# rdkafka-sys needs target-arch zlib headers/library for CMake FindZLIB
+pre-build = [
+    "dpkg --add-architecture arm64 && apt-get update && apt-get install -y zlib1g-dev:arm64"
+]
+
+[target.x86_64-unknown-linux-musl]
+# musl target: install zlib-dev for the native (x86_64) architecture
+pre-build = [
+    "apt-get update && apt-get install -y zlib1g-dev"
+]
