@@ -658,7 +658,7 @@ mod tests {
         let mut source = MySqlCdcSource::new(test_config());
         source.connected = true;
         source.config.heartbeat_interval = Duration::from_millis(1);
-        source.last_activity = Some(Instant::now() - Duration::from_secs(10));
+        source.last_activity = Instant::now().checked_sub(Duration::from_secs(10));
 
         match source.health_check() {
             HealthStatus::Degraded(message) => {
