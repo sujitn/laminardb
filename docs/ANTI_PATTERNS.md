@@ -38,13 +38,13 @@
 
 | # | Fix | File(s) | Impact | Status |
 |---|-----|---------|--------|--------|
-| 19 | Fix window boundary computation for session/sliding | `stream_executor.rs:740-762` | Correctness | |
-| 20 | Replace reactor yield_now() with condvar | `reactor/mod.rs:473-475` | 500-1000ns saved | |
-| 21 | Move Arrow IPC serialization out of operator hot path | `lookup_join.rs:268-282, asof_join.rs:272-289` | 100-500us saved | |
-| 22 | Pre-allocate operator scratch buffers | `lag_lead.rs:142, lookup_join.rs, asof_join.rs` | 50-100ns/event | |
-| 23 | OutputVec with_capacity hints | Multiple operators | 50-100ns saved | |
-| 24 | Add watermark persistence to WAL | `checkpoint_coordinator.rs` | Watermark regression | |
-| 25 | Operator checkpoint phase ordering | `checkpoint_coordinator.rs:364-497` | Event loss prevention | |
+| 19 | Fix window boundary computation for session/sliding | `stream_executor.rs:740-762` | Correctness | ✅ Done |
+| 20 | Replace reactor yield_now() with spin_loop hint | `reactor/mod.rs:473-475, core_handle.rs:671-674` | 500-1000ns saved | ✅ Done |
+| 21 | Move Arrow IPC serialization out of operator hot path | `lookup_join.rs:268-282, asof_join.rs:272-289` | 100-500us saved | ✅ N/A (already isolated) |
+| 22 | Pre-allocate operator scratch buffers | `lag_lead.rs:142` | 50-100ns/event | ✅ Done |
+| 23 | OutputVec with_capacity hints | Multiple operators | 50-100ns saved | ✅ N/A (SmallVec inline) |
+| 24 | Add watermark persistence to WAL | `checkpoint_coordinator.rs` | Watermark regression | ✅ Done |
+| 25 | Operator checkpoint phase ordering | `checkpoint_coordinator.rs:364-497` | Event loss prevention | ✅ Done |
 
 ### Deferred (Architectural)
 

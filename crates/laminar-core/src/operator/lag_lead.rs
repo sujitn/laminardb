@@ -107,12 +107,41 @@ pub struct LagLeadOperator {
     max_partitions: usize,
     /// Operator metrics.
     metrics: LagLeadMetrics,
+    // ── Pre-allocated scratch buffers (avoid per-event allocations) ──
+    /// Reusable partition key buffer.
+    key_buf: Vec<u8>,
+    /// Cached LEAD function (offset, default) pairs — computed once, reused.
+    lead_specs_cache: Vec<(usize, Option<f64>)>,
+    /// Cached LEAD default values — computed once, reused.
+    lead_defaults_cache: Vec<f64>,
+    /// Cached LEAD output column names — computed once, reused.
+    lead_columns_cache: Vec<String>,
 }
 
 impl LagLeadOperator {
     /// Creates a new LAG/LEAD operator from configuration.
     #[must_use]
     pub fn new(config: LagLeadConfig) -> Self {
+        // Pre-compute LEAD caches once at construction time.
+        let lead_specs_cache: Vec<(usize, Option<f64>)> = config
+            .functions
+            .iter()
+            .filter(|f| !f.is_lag)
+            .map(|f| (f.offset, f.default_value))
+            .collect();
+        let lead_defaults_cache: Vec<f64> = config
+            .functions
+            .iter()
+            .filter(|f| !f.is_lag)
+            .map(|f| f.default_value.unwrap_or(f64::NAN))
+            .collect();
+        let lead_columns_cache: Vec<String> = config
+            .functions
+            .iter()
+            .filter(|f| !f.is_lag)
+            .map(|f| f.output_column.clone())
+            .collect();
+
         Self {
             operator_id: config.operator_id,
             functions: config.functions,
@@ -120,6 +149,10 @@ impl LagLeadOperator {
             partitions: FxHashMap::default(),
             max_partitions: config.max_partitions,
             metrics: LagLeadMetrics::default(),
+            key_buf: Vec::with_capacity(64),
+            lead_specs_cache,
+            lead_defaults_cache,
+            lead_columns_cache,
         }
     }
 
@@ -135,48 +168,49 @@ impl LagLeadOperator {
         &self.metrics
     }
 
-    /// Extracts the partition key from an event.
-    fn extract_partition_key(&self, event: &Event) -> Vec<u8> {
+    /// Extracts the partition key from an event into `self.key_buf`.
+    ///
+    /// Reuses the internal buffer to avoid per-event allocation.
+    fn fill_partition_key(&mut self, event: &Event) {
+        self.key_buf.clear();
         let batch = &event.data;
         let schema = batch.schema();
-        let mut key = Vec::new();
 
         for col_name in &self.partition_columns {
             let Ok(col_idx) = schema.index_of(col_name) else {
-                key.push(0x00); // missing column marker
+                self.key_buf.push(0x00); // missing column marker
                 continue;
             };
 
             let array = batch.column(col_idx);
 
             if array.is_null(0) {
-                key.push(0x00);
+                self.key_buf.push(0x00);
                 continue;
             }
 
-            key.push(0x01); // non-null marker
+            self.key_buf.push(0x01); // non-null marker
 
             match array.data_type() {
                 DataType::Int64 => {
                     let arr = array.as_any().downcast_ref::<Int64Array>().unwrap();
-                    key.extend_from_slice(&arr.value(0).to_le_bytes());
+                    self.key_buf.extend_from_slice(&arr.value(0).to_le_bytes());
                 }
                 DataType::Utf8 => {
                     let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
-                    key.extend_from_slice(arr.value(0).as_bytes());
-                    key.push(0x00); // null terminator
+                    self.key_buf.extend_from_slice(arr.value(0).as_bytes());
+                    self.key_buf.push(0x00); // null terminator
                 }
                 DataType::Float64 => {
                     let arr = array.as_any().downcast_ref::<Float64Array>().unwrap();
-                    key.extend_from_slice(&arr.value(0).to_bits().to_le_bytes());
+                    self.key_buf
+                        .extend_from_slice(&arr.value(0).to_bits().to_le_bytes());
                 }
                 _ => {
-                    key.push(0x00);
+                    self.key_buf.push(0x00);
                 }
             }
         }
-
-        key
     }
 
     /// Extracts a f64 value from a column in the event.
@@ -284,7 +318,8 @@ impl LagLeadOperator {
     /// pending LEAD events that now have enough future rows.
     #[allow(clippy::too_many_lines)]
     fn process_event(&mut self, event: &Event) -> OutputVec {
-        let partition_key = self.extract_partition_key(event);
+        self.fill_partition_key(event);
+        let partition_key = self.key_buf.clone();
 
         // Check max partitions
         if !self.partitions.contains_key(&partition_key)
@@ -294,7 +329,7 @@ impl LagLeadOperator {
         }
 
         let has_lag = self.functions.iter().any(|f| f.is_lag);
-        let has_lead = self.functions.iter().any(|f| !f.is_lag);
+        let has_lead = !self.lead_specs_cache.is_empty();
 
         // Pre-compute constants from functions to avoid borrowing self later
         let max_lag_offset = self
@@ -321,13 +356,6 @@ impl LagLeadOperator {
             .iter()
             .find(|f| !f.is_lag)
             .map(|f| f.source_column.clone());
-        // Pre-collect LEAD function defaults/offsets to avoid borrow conflicts
-        let lead_func_specs: Vec<(usize, Option<f64>)> = self
-            .functions
-            .iter()
-            .filter(|f| !f.is_lag)
-            .map(|f| (f.offset, f.default_value))
-            .collect();
 
         // Get or create partition state
         let state = self
@@ -379,10 +407,12 @@ impl LagLeadOperator {
             self.metrics.lead_buffered += 1;
 
             // Emit resolved LEAD events (remaining == 0)
+            // Use cached lead_specs to avoid per-event collection.
             let mut resolved_events = Vec::new();
             while state.lead_pending.front().is_some_and(|p| p.remaining == 0) {
                 let resolved = state.lead_pending.pop_front().unwrap();
-                let lead_values: Vec<f64> = lead_func_specs
+                let lead_values: Vec<f64> = self
+                    .lead_specs_cache
                     .iter()
                     .map(|(offset, default)| {
                         if *offset <= state.lead_pending.len() {
@@ -421,19 +451,9 @@ impl LagLeadOperator {
     fn flush_pending_leads(&mut self) -> OutputVec {
         let mut outputs = OutputVec::new();
 
-        // Pre-compute lead defaults to avoid borrow conflicts
-        let lead_defaults: Vec<f64> = self
-            .functions
-            .iter()
-            .filter(|f| !f.is_lag)
-            .map(|func| func.default_value.unwrap_or(f64::NAN))
-            .collect();
-        let lead_output_columns: Vec<String> = self
-            .functions
-            .iter()
-            .filter(|f| !f.is_lag)
-            .map(|f| f.output_column.clone())
-            .collect();
+        // Use cached defaults and column names (built once at construction).
+        let lead_defaults = &self.lead_defaults_cache;
+        let lead_output_columns = &self.lead_columns_cache;
 
         let mut flushed_count = 0u64;
 

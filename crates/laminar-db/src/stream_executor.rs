@@ -778,7 +778,13 @@ impl StreamExecutor {
 /// Returns `(None, None)` for non-ASOF queries.
 /// Compute the closed-window boundary from the current watermark and window config.
 ///
-/// All input data with `ts < boundary` belongs to closed windows.
+/// All input data with `ts < boundary` belongs to **only** closed windows.
+///
+/// - **Tumbling**: floor to nearest window boundary.
+/// - **Session**: `watermark - gap` (best approximation without session state).
+/// - **Sliding**: align to slide interval — the earliest open window starts at
+///   `((watermark - size) / slide + 1) * slide`, so data below that threshold
+///   belongs only to closed windows.
 fn compute_closed_boundary(watermark_ms: i64, config: &WindowOperatorConfig) -> i64 {
     match config.window_type {
         WindowType::Tumbling => {
@@ -798,7 +804,16 @@ fn compute_closed_boundary(watermark_ms: i64, config: &WindowOperatorConfig) -> 
         WindowType::Sliding => {
             #[allow(clippy::cast_possible_truncation)]
             let size = config.size.as_millis() as i64;
-            watermark_ms.saturating_sub(size)
+            #[allow(clippy::cast_possible_truncation)]
+            let slide = config.slide.map_or(size, |s| s.as_millis() as i64);
+            if slide <= 0 || size <= 0 {
+                return watermark_ms;
+            }
+            // The earliest open window starts at the first slide-aligned
+            // boundary after (watermark - size). Data below that start
+            // belongs only to fully closed windows.
+            let base = watermark_ms.saturating_sub(size);
+            (base / slide + 1) * slide
         }
     }
 }
@@ -2078,7 +2093,12 @@ mod tests {
             late_data_side_output: None,
         };
 
-        assert_eq!(compute_closed_boundary(2000, &config), 0);
-        assert_eq!(compute_closed_boundary(3000, &config), 1000);
+        // size=2000, slide=500
+        // At watermark=2000: closed=[0,2000), open=[500,2500)…
+        // Earliest open window starts at 500 → boundary=500
+        assert_eq!(compute_closed_boundary(2000, &config), 500);
+        // At watermark=3000: closed=…[1000,3000), open=[1500,3500)…
+        // Earliest open window starts at 1500 → boundary=1500
+        assert_eq!(compute_closed_boundary(3000, &config), 1500);
     }
 }

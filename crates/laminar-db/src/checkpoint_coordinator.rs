@@ -386,7 +386,7 @@ impl CheckpointCoordinator {
     /// # Errors
     ///
     /// Returns `DbError::Checkpoint` if any phase fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn checkpoint(
         &mut self,
         operator_states: HashMap<String, Vec<u8>>,
@@ -400,6 +400,17 @@ impl CheckpointCoordinator {
         let epoch = self.epoch;
 
         info!(checkpoint_id, epoch, "starting checkpoint");
+
+        // ── Step 2b: Defense-in-depth changelog drain ──
+        // Flush any straggler changelog entries that arrived between
+        // prepare_wal_for_checkpoint() and this call. This ensures the
+        // operator state snapshot and source offsets are consistent.
+        for drainer in &mut self.changelog_drainers {
+            let extra = drainer.drain();
+            if extra > 0 {
+                debug!(extra_drained = extra, "drained straggler changelog entries");
+            }
+        }
 
         // ── Step 3: Source snapshot ──
         self.phase = CheckpointPhase::Snapshotting;
@@ -431,6 +442,11 @@ impl CheckpointCoordinator {
         // Mark all exactly-once sinks as Pending before commit phase.
         manifest.sink_commit_statuses = self.initial_sink_commit_statuses();
         manifest.watermark = watermark;
+        // Persist per-source watermarks to prevent watermark regression on
+        // recovery. Uses the global watermark as a lower bound for all sources.
+        if let Some(wm) = watermark {
+            manifest.source_watermarks = self.collect_source_watermarks(wm);
+        }
         manifest.wal_position = wal_position;
         manifest.per_core_wal_positions = per_core_wal_positions;
         manifest.table_store_checkpoint_path = table_store_checkpoint_path;
@@ -644,6 +660,19 @@ impl CheckpointCoordinator {
         epochs
     }
 
+    /// Collects per-source watermarks for the manifest.
+    ///
+    /// Uses the global watermark as a conservative lower bound for all
+    /// registered sources. This ensures watermark progress is not lost
+    /// on recovery (prevents watermark regression).
+    fn collect_source_watermarks(&self, global_watermark: i64) -> HashMap<String, i64> {
+        let mut watermarks = HashMap::new();
+        for source in &self.sources {
+            watermarks.insert(source.name.clone(), global_watermark);
+        }
+        watermarks
+    }
+
     /// Returns the current phase.
     #[must_use]
     pub fn phase(&self) -> CheckpointPhase {
@@ -715,6 +744,14 @@ impl CheckpointCoordinator {
             epoch, "starting checkpoint (with extra tables)"
         );
 
+        // ── Step 2b: Defense-in-depth changelog drain ──
+        for drainer in &mut self.changelog_drainers {
+            let extra = drainer.drain();
+            if extra > 0 {
+                debug!(extra_drained = extra, "drained straggler changelog entries");
+            }
+        }
+
         // ── Step 3: Source snapshot ──
         self.phase = CheckpointPhase::Snapshotting;
         let source_offsets = self.snapshot_sources(&self.sources).await?;
@@ -749,6 +786,9 @@ impl CheckpointCoordinator {
         manifest.sink_epochs = self.collect_sink_epochs();
         manifest.sink_commit_statuses = self.initial_sink_commit_statuses();
         manifest.watermark = watermark;
+        if let Some(wm) = watermark {
+            manifest.source_watermarks = self.collect_source_watermarks(wm);
+        }
         manifest.wal_position = wal_position;
         manifest.per_core_wal_positions = per_core_wal_positions;
         manifest.table_store_checkpoint_path = table_store_checkpoint_path;
