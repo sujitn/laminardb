@@ -469,9 +469,12 @@ impl Reactor {
                 }
             }
 
-            // If no events to process, yield to avoid busy-waiting
+            // If no events to process, emit a CPU spin hint (PAUSE on x86,
+            // YIELD on ARM) instead of the heavier yield_now() syscall.
+            // In a thread-per-core design the reactor owns its CPU, so a
+            // lightweight spin hint is preferred over a kernel-mediated yield.
             if self.event_queue.is_empty() {
-                std::thread::yield_now();
+                std::hint::spin_loop();
             }
 
             // Periodically check for shutdown signal

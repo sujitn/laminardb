@@ -106,6 +106,9 @@ pub(crate) struct StreamQuery {
     pub emit_clause: Option<EmitClause>,
     /// Window configuration from the planner (window type, size, gap, etc.).
     pub window_config: Option<WindowOperatorConfig>,
+    /// Pre-computed table references (extracted once at registration).
+    /// Avoids re-parsing SQL for dependency analysis every cycle.
+    table_refs: HashSet<String>,
 }
 
 impl StreamQuery {
@@ -117,6 +120,11 @@ impl StreamQuery {
             .is_some_and(|ec| matches!(ec, EmitClause::OnWindowClose | EmitClause::Final))
     }
 }
+
+/// Maximum rows an EOWC accumulator may hold before forcing emission.
+/// Prevents unbounded memory growth when windows fail to close or late
+/// data keeps arriving.
+const MAX_EOWC_ACCUMULATED_ROWS: usize = 1_000_000;
 
 /// Per-query EOWC accumulation state.
 ///
@@ -186,6 +194,7 @@ impl StreamExecutor {
         window_config: Option<WindowOperatorConfig>,
     ) {
         let (asof_config, projection_sql) = detect_asof_query(&sql);
+        let table_refs = extract_table_references(&sql);
         let idx = self.queries.len();
         let query = StreamQuery {
             name,
@@ -194,6 +203,7 @@ impl StreamExecutor {
             projection_sql,
             emit_clause,
             window_config,
+            table_refs,
         };
         // Initialize EOWC state for queries that suppress intermediate results
         if query.suppresses_intermediate() {
@@ -245,8 +255,7 @@ impl StreamExecutor {
         let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); self.queries.len()];
 
         for (i, query) in self.queries.iter().enumerate() {
-            let refs = extract_table_references(&query.sql);
-            for table_ref in &refs {
+            for table_ref in &query.table_refs {
                 if let Some(&dep_idx) = name_to_idx.get(table_ref.as_str()) {
                     if dep_idx != i {
                         in_degree[i] += 1;
@@ -314,21 +323,22 @@ impl StreamExecutor {
         let mut results = HashMap::new();
         let mut intermediate_tables: Vec<String> = Vec::new();
 
-        for &idx in &self.topo_order.clone() {
-            let query = &self.queries[idx];
-            let query_name = query.name.clone();
-            let query_sql = query.sql.clone();
-            let asof_config = query.asof_config.clone();
-            let projection_sql = query.projection_sql.clone();
-            let is_eowc = query.suppresses_intermediate();
-            let window_config = query.window_config.clone();
+        let topo_len = self.topo_order.len();
+        for i in 0..topo_len {
+            let idx = self.topo_order[i];
+            let is_eowc = self.queries[idx].suppresses_intermediate();
+            let has_asof = self.queries[idx].asof_config.is_some();
 
             // ── EOWC branch: accumulate and gate on watermark ──
+            // Clone query fields only in branches needing &mut self.
             let batches = if is_eowc {
+                let query_name = self.queries[idx].name.clone();
+                let window_config = self.queries[idx].window_config.clone();
+                let asof_config = self.queries[idx].asof_config.clone();
+                let projection_sql = self.queries[idx].projection_sql.clone();
                 self.execute_eowc_query(
                     idx,
                     &query_name,
-                    &query_sql,
                     window_config.as_ref(),
                     asof_config.as_ref(),
                     projection_sql.as_deref(),
@@ -337,17 +347,22 @@ impl StreamExecutor {
                     current_watermark,
                 )
                 .await?
-            } else if let Some(ref cfg) = asof_config {
+            } else if has_asof {
+                let query_name = self.queries[idx].name.clone();
+                let cfg = self.queries[idx].asof_config.clone().unwrap();
+                let projection_sql = self.queries[idx].projection_sql.clone();
                 self.execute_asof_query(
                     &query_name,
-                    cfg,
+                    &cfg,
                     projection_sql.as_deref(),
                     source_batches,
                     &results,
                 )
                 .await?
             } else {
-                let df = self.ctx.sql(&query_sql).await.map_err(|e| {
+                let query_name = &self.queries[idx].name;
+                let query_sql = &self.queries[idx].sql;
+                let df = self.ctx.sql(query_sql).await.map_err(|e| {
                     DbError::Pipeline(format!("Stream '{query_name}' planning failed: {e}"))
                 })?;
                 df.collect().await.map_err(|e| {
@@ -356,6 +371,7 @@ impl StreamExecutor {
             };
 
             if !batches.is_empty() {
+                let query_name = self.queries[idx].name.clone();
                 // Register results as a temp MemTable for downstream queries
                 let schema = batches[0].schema();
                 if let Ok(mem_table) =
@@ -444,6 +460,21 @@ impl StreamExecutor {
         self.queries.len()
     }
 
+    /// Returns the current EOWC backpressure level (0.0 = no pressure,
+    /// 1.0 = at memory limit). Callers can use this to throttle ingestion.
+    #[allow(dead_code)] // Public API for flow control
+    pub fn backpressure_level(&self) -> f64 {
+        let max_rows = self
+            .eowc_states
+            .values()
+            .map(|s| s.accumulated_rows)
+            .max()
+            .unwrap_or(0);
+        #[allow(clippy::cast_precision_loss)]
+        let level = max_rows as f64 / MAX_EOWC_ACCUMULATED_ROWS as f64;
+        level.min(1.0)
+    }
+
     /// Execute an EOWC (Emit On Window Close) query.
     ///
     /// Accumulates source batches across cycles, filters to closed-window data
@@ -455,7 +486,6 @@ impl StreamExecutor {
         &mut self,
         idx: usize,
         query_name: &str,
-        query_sql: &str,
         window_config: Option<&WindowOperatorConfig>,
         asof_config: Option<&AsofJoinTranslatorConfig>,
         projection_sql: Option<&str>,
@@ -463,8 +493,8 @@ impl StreamExecutor {
         intermediate_results: &HashMap<String, Vec<RecordBatch>>,
         current_watermark: i64,
     ) -> Result<Vec<RecordBatch>, DbError> {
-        // Determine which source tables feed this query
-        let table_refs = extract_table_references(query_sql);
+        // Use pre-computed table references (extracted once at registration)
+        let table_refs = self.queries[idx].table_refs.clone();
 
         // Accumulate current source batches into EOWC state
         if let Some(eowc) = self.eowc_states.get_mut(&idx) {
@@ -496,35 +526,57 @@ impl StreamExecutor {
             compute_closed_boundary(current_watermark, cfg)
         });
 
+        // Check if accumulated rows exceed memory bounds (prevent OOM)
+        let force_emit = self
+            .eowc_states
+            .get(&idx)
+            .is_some_and(|s| s.accumulated_rows > MAX_EOWC_ACCUMULATED_ROWS);
+
         // Check if any new windows have closed since last emission
         let last_boundary = self
             .eowc_states
             .get(&idx)
             .map_or(i64::MIN, |s| s.last_closed_boundary);
 
-        if closed_cut <= last_boundary {
-            // No new windows closed — suppress output
+        if closed_cut <= last_boundary && !force_emit {
+            // No new windows closed and not over memory limit — suppress output
             return Ok(Vec::new());
         }
+
+        // When force-emitting due to memory bounds, advance the cutoff to
+        // the current watermark to flush all data older than the watermark.
+        let closed_cut = if force_emit && closed_cut <= last_boundary {
+            current_watermark
+        } else {
+            closed_cut
+        };
 
         // Get the time column from the window config for filtering
         let time_column = window_config.map(|cfg| cfg.time_column.clone());
 
-        // Filter accumulated data to rows in closed windows (ts < closed_cut)
+        // Single-pass: split accumulated data into closed-window rows (for query)
+        // and retained rows (for next cycle), avoiding a second filter pass.
         let Some(eowc) = self.eowc_states.get(&idx) else {
             return Ok(Vec::new());
         };
 
         let mut filtered_sources: HashMap<String, Vec<RecordBatch>> = HashMap::new();
+        let mut retained_sources: HashMap<String, Vec<RecordBatch>> = HashMap::new();
         let mut has_data = false;
+        let mut retained_rows = 0usize;
 
         if let Some(ref ts_col) = time_column {
             for (table_name, batches) in &eowc.accumulated_sources {
                 let mut filtered_batches = Vec::new();
+                let mut retained_batches = Vec::new();
+                let format = batches
+                    .first()
+                    .map_or(laminar_core::time::TimestampFormat::UnixMillis, |b| {
+                        infer_ts_format_from_batch(b, ts_col)
+                    });
                 for batch in batches {
-                    // Infer timestamp format from the batch schema
-                    let format = infer_ts_format_from_batch(batch, ts_col);
-                    if let Some(filtered) = crate::batch_filter::filter_batch_by_timestamp(
+                    // Closed-window rows (ts < closed_cut) — for query execution
+                    if let Some(closed) = crate::batch_filter::filter_batch_by_timestamp(
                         batch,
                         ts_col,
                         closed_cut,
@@ -532,11 +584,21 @@ impl StreamExecutor {
                         crate::batch_filter::ThresholdOp::Less,
                     ) {
                         has_data = true;
-                        filtered_batches.push(filtered);
+                        filtered_batches.push(closed);
+                    }
+                    // Open-window rows (ts >= closed_cut) — retained for next cycle
+                    if let Some(open) = crate::batch_filter::filter_batch_by_timestamp(
+                        batch,
+                        ts_col,
+                        closed_cut,
+                        format,
+                        crate::batch_filter::ThresholdOp::GreaterEq,
+                    ) {
+                        retained_rows += open.num_rows();
+                        retained_batches.push(open);
                     }
                 }
                 if !filtered_batches.is_empty() {
-                    // Coalesce small batches to reduce DataFusion overhead
                     let schema = filtered_batches[0].schema();
                     if let Ok(coalesced) =
                         arrow::compute::concat_batches(&schema, &filtered_batches)
@@ -545,6 +607,9 @@ impl StreamExecutor {
                     } else {
                         filtered_sources.insert(table_name.clone(), filtered_batches);
                     }
+                }
+                if !retained_batches.is_empty() {
+                    retained_sources.insert(table_name.clone(), retained_batches);
                 }
             }
         } else {
@@ -585,6 +650,7 @@ impl StreamExecutor {
         }
 
         // Execute the query
+        let query_sql = &self.queries[idx].sql;
         let batches = if let Some(cfg) = asof_config {
             self.execute_asof_query(
                 query_name,
@@ -608,34 +674,12 @@ impl StreamExecutor {
             let _ = self.ctx.deregister_table(name);
         }
 
-        // Purge emitted data: keep only rows where ts >= closed_cut
+        // Apply pre-computed retained data (already split during single-pass above)
         if let Some(eowc) = self.eowc_states.get_mut(&idx) {
-            if let Some(ref ts_col) = time_column {
-                let mut new_accumulated: HashMap<String, Vec<RecordBatch>> = HashMap::new();
-                let mut new_rows = 0usize;
-                for (table_name, acc_batches) in &eowc.accumulated_sources {
-                    let mut kept = Vec::new();
-                    for batch in acc_batches {
-                        let format = infer_ts_format_from_batch(batch, ts_col);
-                        if let Some(remaining) = crate::batch_filter::filter_batch_by_timestamp(
-                            batch,
-                            ts_col,
-                            closed_cut,
-                            format,
-                            crate::batch_filter::ThresholdOp::GreaterEq,
-                        ) {
-                            new_rows += remaining.num_rows();
-                            kept.push(remaining);
-                        }
-                    }
-                    if !kept.is_empty() {
-                        new_accumulated.insert(table_name.clone(), kept);
-                    }
-                }
-                eowc.accumulated_sources = new_accumulated;
-                eowc.accumulated_rows = new_rows;
+            if time_column.is_some() {
+                eowc.accumulated_sources = retained_sources;
+                eowc.accumulated_rows = retained_rows;
             } else {
-                // No time column — clear everything after emission
                 eowc.accumulated_sources.clear();
                 eowc.accumulated_rows = 0;
             }
@@ -736,7 +780,13 @@ impl StreamExecutor {
 /// Returns `(None, None)` for non-ASOF queries.
 /// Compute the closed-window boundary from the current watermark and window config.
 ///
-/// All input data with `ts < boundary` belongs to closed windows.
+/// All input data with `ts < boundary` belongs to **only** closed windows.
+///
+/// - **Tumbling**: floor to nearest window boundary.
+/// - **Session**: `watermark - gap` (best approximation without session state).
+/// - **Sliding**: align to slide interval — the earliest open window starts at
+///   `((watermark - size) / slide + 1) * slide`, so data below that threshold
+///   belongs only to closed windows.
 fn compute_closed_boundary(watermark_ms: i64, config: &WindowOperatorConfig) -> i64 {
     match config.window_type {
         WindowType::Tumbling => {
@@ -756,7 +806,16 @@ fn compute_closed_boundary(watermark_ms: i64, config: &WindowOperatorConfig) -> 
         WindowType::Sliding => {
             #[allow(clippy::cast_possible_truncation)]
             let size = config.size.as_millis() as i64;
-            watermark_ms.saturating_sub(size)
+            #[allow(clippy::cast_possible_truncation)]
+            let slide = config.slide.map_or(size, |s| s.as_millis() as i64);
+            if slide <= 0 || size <= 0 {
+                return watermark_ms;
+            }
+            // The earliest open window starts at the first slide-aligned
+            // boundary after (watermark - size). Data below that start
+            // belongs only to fully closed windows.
+            let base = watermark_ms.saturating_sub(size);
+            (base / slide + 1) * slide
         }
     }
 }
@@ -2036,7 +2095,93 @@ mod tests {
             late_data_side_output: None,
         };
 
-        assert_eq!(compute_closed_boundary(2000, &config), 0);
-        assert_eq!(compute_closed_boundary(3000, &config), 1000);
+        // size=2000, slide=500
+        // At watermark=2000: closed=[0,2000), open=[500,2500)…
+        // Earliest open window starts at 500 → boundary=500
+        assert_eq!(compute_closed_boundary(2000, &config), 500);
+        // At watermark=3000: closed=…[1000,3000), open=[1500,3500)…
+        // Earliest open window starts at 1500 → boundary=1500
+        assert_eq!(compute_closed_boundary(3000, &config), 1500);
+    }
+
+    // ── Pre-computed table refs tests ──
+
+    #[test]
+    fn test_precomputed_table_refs() {
+        let ctx = SessionContext::new();
+        let mut executor = StreamExecutor::new(ctx);
+
+        executor.add_query(
+            "level1".to_string(),
+            "SELECT name, value FROM events".to_string(),
+            None,
+            None,
+        );
+        executor.add_query(
+            "level2".to_string(),
+            "SELECT name FROM level1 WHERE name = 'a'".to_string(),
+            None,
+            None,
+        );
+        executor.add_query(
+            "joined".to_string(),
+            "SELECT a.name, b.name FROM level1 a JOIN level2 b ON a.name = b.name".to_string(),
+            None,
+            None,
+        );
+
+        // Table refs should be pre-computed at registration time
+        assert!(
+            executor.queries[0].table_refs.contains("events"),
+            "level1 should reference 'events'"
+        );
+        assert!(
+            executor.queries[1].table_refs.contains("level1"),
+            "level2 should reference 'level1'"
+        );
+        assert!(
+            executor.queries[2].table_refs.contains("level1"),
+            "joined should reference 'level1'"
+        );
+        assert!(
+            executor.queries[2].table_refs.contains("level2"),
+            "joined should reference 'level2'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_precomputed_table_refs_used_in_topo_order() {
+        let ctx = SessionContext::new();
+        register_streaming_functions(&ctx);
+        let mut executor = StreamExecutor::new(ctx);
+
+        // Register downstream BEFORE upstream (reversed order)
+        executor.add_query(
+            "downstream".to_string(),
+            "SELECT name, total FROM upstream WHERE total > 1.0".to_string(),
+            None,
+            None,
+        );
+        executor.add_query(
+            "upstream".to_string(),
+            "SELECT name, SUM(value) as total FROM events GROUP BY name".to_string(),
+            None,
+            None,
+        );
+
+        // Pre-computed refs should enable correct topo ordering
+        assert!(executor.queries[0].table_refs.contains("upstream"));
+        assert!(executor.queries[1].table_refs.contains("events"));
+
+        let mut source_batches = HashMap::new();
+        source_batches.insert("events".to_string(), vec![test_batch()]);
+
+        let results = executor
+            .execute_cycle(&source_batches, i64::MAX)
+            .await
+            .unwrap();
+
+        assert!(results.contains_key("upstream"));
+        assert!(results.contains_key("downstream"));
     }
 }

@@ -668,9 +668,12 @@ fn core_thread_main(
             had_work = true;
         }
 
-        // If no work was done, yield to avoid busy-waiting
+        // If no work was done, emit a CPU spin hint (PAUSE on x86,
+        // YIELD on ARM) instead of the heavier yield_now() syscall.
+        // Each core thread owns its CPU, so a lightweight hint is
+        // preferred over a kernel-mediated yield.
         if !had_work {
-            thread::yield_now();
+            std::hint::spin_loop();
         }
     }
 

@@ -72,6 +72,10 @@ const SESSION_ACC_PREFIX: &[u8; 4] = b"sac:";
 /// Timer key prefix for session closure (1 byte)
 const SESSION_TIMER_PREFIX: u8 = 0x01;
 
+/// Default maximum number of session indices to cache in-memory.
+/// Beyond this, the cache is cleared to prevent unbounded memory growth.
+const DEFAULT_MAX_CACHED_INDICES: usize = 16_384;
+
 /// Static counter for generating unique operator IDs.
 static SESSION_OPERATOR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -285,8 +289,14 @@ pub struct SessionWindowOperator<A: Aggregator> {
     allowed_lateness_ms: i64,
     /// Monotonic counter for generating unique session IDs
     session_id_counter: AtomicU64,
-    /// Per-key session indices (in-memory cache, backed by state store)
+    /// Per-key session indices (in-memory cache, backed by state store).
+    ///
+    /// Bounded by `max_cached_indices` to prevent unbounded memory growth
+    /// in high-cardinality key spaces. Evicted entries are reloaded from
+    /// the state store on demand.
     session_indices: FxHashMap<u64, SessionIndex>,
+    /// Maximum number of session indices to keep in-memory.
+    max_cached_indices: usize,
     /// Pending timers: `session_id` -> (`timer_time`, `key_hash`)
     pending_timers: FxHashMap<u64, (i64, u64)>,
     /// Emit strategy
@@ -335,6 +345,7 @@ where
                 .expect("Allowed lateness must fit in i64"),
             session_id_counter: AtomicU64::new(0),
             session_indices: FxHashMap::default(),
+            max_cached_indices: DEFAULT_MAX_CACHED_INDICES,
             pending_timers: FxHashMap::default(),
             emit_strategy: EmitStrategy::default(),
             late_data_config: LateDataConfig::default(),
@@ -366,6 +377,7 @@ where
                 .expect("Allowed lateness must fit in i64"),
             session_id_counter: AtomicU64::new(0),
             session_indices: FxHashMap::default(),
+            max_cached_indices: DEFAULT_MAX_CACHED_INDICES,
             pending_timers: FxHashMap::default(),
             emit_strategy: EmitStrategy::default(),
             late_data_config: LateDataConfig::default(),
@@ -377,6 +389,14 @@ where
             needs_timer_reregistration: false,
             _phantom: PhantomData,
         }
+    }
+
+    /// Sets the maximum number of session indices to cache in-memory.
+    ///
+    /// When the cache exceeds this limit, it is cleared and entries are
+    /// reloaded from the persistent state store on demand. Default: 16,384.
+    pub fn set_max_cached_indices(&mut self, max: usize) {
+        self.max_cached_indices = max;
     }
 
     /// Sets the key column for per-key session tracking.
@@ -521,10 +541,20 @@ where
 
     /// Loads the session index for a key, checking the in-memory cache first
     /// and falling back to the persistent state store.
+    ///
+    /// If the cache exceeds `max_cached_indices`, it is cleared before
+    /// inserting the new entry. This prevents unbounded memory growth
+    /// in high-cardinality key spaces while keeping hot entries fast.
     fn load_session_index(&mut self, key_hash: u64, state: &dyn StateStore) -> SessionIndex {
         // Check in-memory cache first
         if let Some(index) = self.session_indices.get(&key_hash) {
             return index.clone();
+        }
+
+        // Evict the cache if it exceeds the limit. All entries are backed
+        // by the persistent state store, so they can be reloaded on demand.
+        if self.session_indices.len() >= self.max_cached_indices {
+            self.session_indices.clear();
         }
 
         // Check persistent state

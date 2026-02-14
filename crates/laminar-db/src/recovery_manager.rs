@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use laminar_storage::checkpoint_manifest::CheckpointManifest;
+use laminar_storage::checkpoint_manifest::{CheckpointManifest, SinkCommitStatus};
 use laminar_storage::checkpoint_store::CheckpointStore;
 use tracing::{debug, info, warn};
 
@@ -117,6 +117,7 @@ impl<'a> RecoveryManager<'a> {
     /// # Errors
     ///
     /// Returns `DbError::Checkpoint` only if the checkpoint store itself fails.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn recover(
         &self,
         sources: &[RegisteredSource],
@@ -134,9 +135,22 @@ impl<'a> RecoveryManager<'a> {
             return Ok(None);
         };
 
+        // Validate manifest consistency before restoring state.
+        let validation_errors = manifest.validate();
+        if !validation_errors.is_empty() {
+            for err in &validation_errors {
+                warn!(
+                    checkpoint_id = manifest.checkpoint_id,
+                    error = %err,
+                    "manifest validation warning"
+                );
+            }
+        }
+
         info!(
             checkpoint_id = manifest.checkpoint_id,
             epoch = manifest.epoch,
+            validation_warnings = validation_errors.len(),
             "recovering from checkpoint"
         );
 
@@ -187,9 +201,27 @@ impl<'a> RecoveryManager<'a> {
             }
         }
 
-        // Step 5: Rollback sinks for exactly-once semantics
+        // Step 5: Rollback sinks for exactly-once semantics.
+        // Only roll back sinks that did NOT successfully commit (Pending or Failed).
+        // Sinks with SinkCommitStatus::Committed already completed their commit
+        // and should not be rolled back.
         for sink in sinks {
             if sink.exactly_once {
+                // Check per-sink commit status — if the sink committed, skip rollback.
+                let already_committed = manifest
+                    .sink_commit_statuses
+                    .get(&sink.name)
+                    .is_some_and(|s| matches!(s, SinkCommitStatus::Committed));
+
+                if already_committed {
+                    debug!(
+                        sink = %sink.name,
+                        epoch = manifest.epoch,
+                        "sink already committed, skipping rollback"
+                    );
+                    continue;
+                }
+
                 let mut connector = sink.connector.lock().await;
                 match connector.rollback_epoch(manifest.epoch).await {
                     Ok(()) => {

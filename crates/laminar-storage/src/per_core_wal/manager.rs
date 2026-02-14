@@ -205,10 +205,25 @@ impl PerCoreWalManager {
         Ok(())
     }
 
-    /// Returns the positions of all writers.
+    /// Returns the current write positions of all writers (includes un-synced data).
+    ///
+    /// For checkpoint manifests, prefer [`synced_positions()`](Self::synced_positions)
+    /// which only reports durable data.
     #[must_use]
     pub fn positions(&self) -> Vec<u64> {
         self.writers.iter().map(CoreWalWriter::position).collect()
+    }
+
+    /// Returns the last synced (durable) positions of all writers.
+    ///
+    /// Only data up to these positions is guaranteed to survive a crash.
+    /// Use this for checkpoint manifests.
+    #[must_use]
+    pub fn synced_positions(&self) -> Vec<u64> {
+        self.writers
+            .iter()
+            .map(CoreWalWriter::synced_position)
+            .collect()
     }
 
     /// Truncates all segments at the specified positions.

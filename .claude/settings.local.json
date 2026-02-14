@@ -87,7 +87,8 @@
       "Bash(gh issue view:*)",
       "Bash(Select-String \"test result:\")",
       "Bash(ForEach-Object { $_Line })",
-      "Bash(where:*)"
+      "Bash(where:*)",
+      "Bash(git reset:*)"
     ]
   }
 }

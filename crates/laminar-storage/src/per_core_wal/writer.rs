@@ -25,8 +25,13 @@ pub struct CoreWalWriter {
     writer: BufWriter<File>,
     /// Path to the segment file.
     path: PathBuf,
-    /// Current write position in bytes.
+    /// Current write position in bytes (includes buffered, un-synced data).
     position: u64,
+    /// Last synced position (data confirmed durable via `fdatasync`).
+    ///
+    /// Only this position is safe for checkpoint manifests — data beyond
+    /// it may be lost on crash.
+    synced_position: u64,
     /// Current epoch (set by manager during checkpoint).
     epoch: u64,
     /// Core-local sequence number (monotonically increasing).
@@ -58,6 +63,7 @@ impl CoreWalWriter {
             writer: BufWriter::with_capacity(64 * 1024, file), // 64KB buffer
             path: path.to_path_buf(),
             position,
+            synced_position: position,
             epoch: 0,
             sequence: 0,
             last_sync: Instant::now(),
@@ -85,6 +91,7 @@ impl CoreWalWriter {
             writer: BufWriter::with_capacity(64 * 1024, file),
             path: path.to_path_buf(),
             position,
+            synced_position: position,
             epoch: 0,
             sequence: 0,
             last_sync: Instant::now(),
@@ -98,10 +105,19 @@ impl CoreWalWriter {
         self.core_id
     }
 
-    /// Returns the current write position in bytes.
+    /// Returns the current write position in bytes (includes un-synced data).
     #[must_use]
     pub fn position(&self) -> u64 {
         self.position
+    }
+
+    /// Returns the last synced position (durable after `fdatasync`).
+    ///
+    /// Only data up to this position is guaranteed to survive a crash.
+    /// Use this for checkpoint manifests instead of [`position()`](Self::position).
+    #[must_use]
+    pub fn synced_position(&self) -> u64 {
+        self.synced_position
     }
 
     /// Returns the current epoch.
@@ -257,6 +273,7 @@ impl CoreWalWriter {
         self.writer.flush()?;
         // Use sync_data() (fdatasync) instead of sync_all() (fsync)
         self.writer.get_ref().sync_data()?;
+        self.synced_position = self.position;
         self.last_sync = Instant::now();
         self.entries_since_sync = 0;
         Ok(())
@@ -285,6 +302,7 @@ impl CoreWalWriter {
 
         self.writer = BufWriter::with_capacity(64 * 1024, file);
         self.position = position;
+        self.synced_position = position;
 
         Ok(())
     }
@@ -309,6 +327,7 @@ impl std::fmt::Debug for CoreWalWriter {
             .field("core_id", &self.core_id)
             .field("path", &self.path)
             .field("position", &self.position)
+            .field("synced_position", &self.synced_position)
             .field("epoch", &self.epoch)
             .field("sequence", &self.sequence)
             .field("entries_since_sync", &self.entries_since_sync)
@@ -439,6 +458,30 @@ mod tests {
         let pos = writer.append_commit(offsets, Some(12345)).unwrap();
         assert_eq!(pos, 0);
         assert!(writer.position() > 0);
+    }
+
+    #[test]
+    fn test_synced_position_tracks_sync() {
+        let (mut writer, _temp_dir) = create_temp_writer(0);
+
+        // Initially both positions are 0
+        assert_eq!(writer.position(), 0);
+        assert_eq!(writer.synced_position(), 0);
+
+        // After write, position advances but synced_position stays
+        writer.append_put(b"key1", b"value1").unwrap();
+        assert!(writer.position() > 0);
+        assert_eq!(writer.synced_position(), 0);
+
+        // After sync, synced_position catches up
+        let pos_before_sync = writer.position();
+        writer.sync().unwrap();
+        assert_eq!(writer.synced_position(), pos_before_sync);
+
+        // Another write without sync
+        writer.append_put(b"key2", b"value2").unwrap();
+        assert!(writer.position() > writer.synced_position());
+        assert_eq!(writer.synced_position(), pos_before_sync);
     }
 
     #[test]

@@ -1325,12 +1325,17 @@ fn test_executor_metrics_tracking() {
     // Three nodes processed: src, op, snk.
     // src and op each process 1 event = 2 events_processed.
     // snk gets collected directly, not processed through operator.
+    #[cfg(feature = "dag-metrics")]
     assert!(m.events_processed >= 2);
     // src routes to op, op routes to snk.
+    #[cfg(feature = "dag-metrics")]
     assert!(m.events_routed >= 1);
     // snk has no input queue events to skip (it gets events).
     // The executor processes in topological order, some nodes have empty queues.
     // In a linear DAG with one event, all nodes receive it, so nodes_skipped may be 0.
+    // Without dag-metrics feature, counters are always 0.
+    #[cfg(not(feature = "dag-metrics"))]
+    let _ = m;
 }
 
 #[test]
@@ -1347,6 +1352,7 @@ fn test_executor_metrics_reset() {
     let mut executor = DagExecutor::from_dag(&dag);
     executor.process_event(src_id, test_event(1000, 1)).unwrap();
 
+    #[cfg(feature = "dag-metrics")]
     assert!(executor.metrics().events_processed > 0);
     executor.reset_metrics();
     assert_eq!(executor.metrics().events_processed, 0);
@@ -1377,7 +1383,10 @@ fn test_executor_empty_queue_skip() {
 
     // src_b had no events, so it should have been skipped.
     let m = executor.metrics();
+    #[cfg(feature = "dag-metrics")]
     assert!(m.nodes_skipped > 0);
+    #[cfg(not(feature = "dag-metrics"))]
+    let _ = m;
 }
 
 #[test]
@@ -1545,6 +1554,7 @@ fn test_executor_multicast_metrics() {
     executor.process_event(src_id, test_event(1000, 1)).unwrap();
 
     // shared -> {a, b} is a multicast.
+    #[cfg(feature = "dag-metrics")]
     assert!(executor.metrics().multicast_publishes > 0);
 }
 
@@ -2935,10 +2945,12 @@ fn test_process_watermark_advances_generators() {
 
     // Process watermark
     executor.process_watermark(src_id, 5000).unwrap();
+    #[cfg(feature = "dag-metrics")]
     assert_eq!(executor.metrics().watermarks_processed, 1);
 
     // Process another watermark
     executor.process_watermark(src_id, 8000).unwrap();
+    #[cfg(feature = "dag-metrics")]
     assert_eq!(executor.metrics().watermarks_processed, 2);
 }
 
@@ -3307,4 +3319,101 @@ fn test_fire_timers_routes_outputs() {
         1,
         "Expected 1 window emission from timer fire"
     );
+}
+
+// -- Per-operator node metrics tests (#28B) --
+
+#[test]
+#[cfg(feature = "dag-metrics")]
+fn test_operator_node_metrics_accumulate() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("op", schema.clone())
+        .sink_for("op", "snk", schema.clone())
+        .connect("src", "op")
+        .build()
+        .unwrap();
+
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let op_id = dag.node_id_by_name("op").unwrap();
+
+    let mut executor = DagExecutor::from_dag(&dag);
+
+    // Process 3 events
+    for i in 0..3 {
+        executor
+            .process_event(src_id, test_event(1000 + i, i))
+            .unwrap();
+    }
+
+    let nm = executor.node_metrics();
+
+    // Source node (passthrough): receives and forwards 3 events
+    let src_m = &nm[src_id.0 as usize];
+    assert_eq!(src_m.events_in, 3, "src events_in");
+    assert_eq!(src_m.events_out, 3, "src events_out");
+
+    // Operator node (passthrough, no operator registered): receives and forwards 3 events
+    let op_m = &nm[op_id.0 as usize];
+    assert_eq!(op_m.events_in, 3, "op events_in");
+    assert_eq!(op_m.events_out, 3, "op events_out");
+    assert_eq!(op_m.invocations, 3, "op invocations");
+}
+
+#[test]
+#[cfg(feature = "dag-metrics")]
+fn test_operator_node_metrics_timing() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("op", schema.clone())
+        .sink_for("op", "snk", schema.clone())
+        .connect("src", "op")
+        .build()
+        .unwrap();
+
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let op_id = dag.node_id_by_name("op").unwrap();
+
+    let mut executor = DagExecutor::from_dag(&dag);
+    executor
+        .process_event(src_id, test_event(1000, 42))
+        .unwrap();
+
+    let nm = executor.node_metrics();
+    let op_m = &nm[op_id.0 as usize];
+
+    // Timing should be > 0 after processing at least one event
+    assert!(op_m.total_time_ns > 0, "total_time_ns should be > 0");
+    assert_eq!(op_m.invocations, 1);
+}
+
+#[test]
+#[cfg(feature = "dag-metrics")]
+fn test_operator_node_metrics_reset() {
+    let schema = int_schema();
+    let dag = DagBuilder::new()
+        .source("src", schema.clone())
+        .operator("op", schema.clone())
+        .sink_for("op", "snk", schema.clone())
+        .connect("src", "op")
+        .build()
+        .unwrap();
+
+    let src_id = dag.node_id_by_name("src").unwrap();
+    let op_id = dag.node_id_by_name("op").unwrap();
+
+    let mut executor = DagExecutor::from_dag(&dag);
+    executor.process_event(src_id, test_event(1000, 1)).unwrap();
+
+    assert!(executor.node_metrics()[op_id.0 as usize].events_in > 0);
+
+    executor.reset_metrics();
+
+    let op_m = &executor.node_metrics()[op_id.0 as usize];
+    assert_eq!(op_m.events_in, 0);
+    assert_eq!(op_m.events_out, 0);
+    assert_eq!(op_m.total_time_ns, 0);
+    assert_eq!(op_m.invocations, 0);
 }
