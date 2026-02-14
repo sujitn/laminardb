@@ -9,6 +9,21 @@
 **Date**: 2026-02-14
 
 ### What Was Accomplished
+- **Fix: Late-Row Filtering for Programmatic Watermarks** (PR #90, closes #86)
+  - `source.watermark(ts)` had no effect on late-row filtering unless the source also had a SQL `WATERMARK FOR col AS expr` clause
+  - Two APIs now declare event-time columns:
+    - **SQL**: `WATERMARK FOR ts` (without `AS expr`) — defaults to `Duration::ZERO`
+    - **Programmatic**: `source.set_event_time_column("ts")` — zero delay
+  - Changes across 6 files:
+    - **`statements.rs`**: `WatermarkDef.expression` → `Option<Expr>`
+    - **`source_parser.rs`**: `AS expr` now optional in `parse_watermark_def()`
+    - **`streaming_ddl.rs`**: `None` expr → `Duration::ZERO`, allow Int64/Int32 watermark columns
+    - **`source.rs`**: Added `event_time_column` field + set/get methods
+    - **`handle.rs`**: Exposed `set_event_time_column()` on both handle types
+    - **`db.rs`**: Build `SourceWatermarkState` from programmatic API in both pipelines
+  - 8 new tests (parser, translator, source unit, integration); 307 laminar-db tests pass
+  - Also fixed pre-existing clippy lint (`unchecked_time_subtraction`, `cast_possible_wrap`)
+
 - **Fix: EMIT ON WINDOW CLOSE in Embedded SQL Executor** (PR #90, closes #85)
   - `EMIT ON WINDOW CLOSE` was parsed and planned correctly but lost at the `StreamRegistration` boundary — `handle_create_stream()` discarded the planner result (`let _ = planner.plan()`)
   - Implemented watermark-gated source accumulation for EOWC/Final streams:

@@ -5777,7 +5777,7 @@ mod tests {
         assert_eq!(result.num_rows(), 2);
     }
 
-    /// Helper: creates a RecordBatch with (id: BIGINT, ts: BIGINT).
+    /// Helper: creates a `RecordBatch` with (id: BIGINT, ts: BIGINT).
     fn make_bigint_ts_batch(
         schema: &arrow::datatypes::SchemaRef,
         timestamps: &[i64],
