@@ -24,8 +24,10 @@ use std::sync::atomic::Ordering;
 use laminar_connectors::checkpoint::SourceCheckpoint;
 use laminar_connectors::connector::{SinkConnector, SourceConnector};
 use laminar_storage::changelog_drainer::ChangelogDrainer;
-use laminar_storage::checkpoint_manifest::{CheckpointManifest, ConnectorCheckpoint};
-use laminar_storage::checkpoint_store::{CheckpointStore, CheckpointStoreError};
+use laminar_storage::checkpoint_manifest::{
+    CheckpointManifest, ConnectorCheckpoint, SinkCommitStatus,
+};
+use laminar_storage::checkpoint_store::CheckpointStore;
 use laminar_storage::per_core_wal::PerCoreWalManager;
 use tracing::{debug, error, info, warn};
 
@@ -41,6 +43,11 @@ pub struct CheckpointConfig {
     pub max_retained: usize,
     /// Maximum time to wait for barrier alignment at fan-in nodes.
     pub alignment_timeout: Duration,
+    /// Maximum time to wait for all sinks to pre-commit.
+    ///
+    /// A stuck sink will not block checkpointing indefinitely.
+    /// Defaults to 30 seconds.
+    pub pre_commit_timeout: Duration,
     /// Whether to use incremental checkpoints (future use with `RocksDB`).
     pub incremental: bool,
 }
@@ -51,6 +58,7 @@ impl Default for CheckpointConfig {
             interval: Some(Duration::from_secs(60)),
             max_retained: 3,
             alignment_timeout: Duration::from_secs(30),
+            pre_commit_timeout: Duration::from_secs(30),
             incremental: false,
         }
     }
@@ -309,7 +317,8 @@ impl CheckpointCoordinator {
             wal.sync_all()
                 .map_err(|e| DbError::Checkpoint(format!("WAL sync failed: {e}")))?;
 
-            let positions = wal.positions();
+            // Use synced positions — only durable data is safe for the manifest.
+            let positions = wal.synced_positions();
             debug!(epoch, positions = ?positions, "WAL prepared for checkpoint");
             positions
         } else {
@@ -419,6 +428,8 @@ impl CheckpointCoordinator {
         manifest.source_offsets = source_offsets;
         manifest.table_offsets = table_offsets;
         manifest.sink_epochs = self.collect_sink_epochs();
+        // Mark all exactly-once sinks as Pending before commit phase.
+        manifest.sink_commit_statuses = self.initial_sink_commit_statuses();
         manifest.watermark = watermark;
         manifest.wal_position = wal_position;
         manifest.per_core_wal_positions = per_core_wal_positions;
@@ -433,24 +444,13 @@ impl CheckpointCoordinator {
             );
         }
 
-        // ── Step 5: Persist manifest ──
+        // ── Step 5: Persist manifest (decision record — sinks are Pending) ──
         self.phase = CheckpointPhase::Persisting;
-        let store = Arc::clone(&self.store);
-        let task_result = tokio::task::spawn_blocking(move || store.save(&manifest)).await;
-
-        let save_result = match task_result {
-            Ok(inner) => inner,
-            Err(join_err) => Err(CheckpointStoreError::Io(std::io::Error::other(
-                join_err.to_string(),
-            ))),
-        };
-
-        if let Err(e) = save_result {
+        if let Err(e) = self.save_manifest(&manifest).await {
             self.phase = CheckpointPhase::Idle;
             self.checkpoints_failed += 1;
             let duration = start.elapsed();
             self.emit_checkpoint_metrics(false, epoch, duration);
-            // Rollback sinks
             let _ = self.rollback_sinks(epoch).await;
             error!(checkpoint_id, epoch, error = %e, "manifest persist failed");
             return Ok(CheckpointResult {
@@ -462,13 +462,29 @@ impl CheckpointCoordinator {
             });
         }
 
-        // ── Step 6: Sink commit ──
+        // ── Step 6: Sink commit (per-sink tracking) ──
         self.phase = CheckpointPhase::Committing;
-        if let Err(e) = self.commit_sinks(epoch).await {
-            // Manifest is already persisted, but some sinks failed to commit.
-            // The recovery manager will handle rollback on restart.
+        let sink_statuses = self.commit_sinks_tracked(epoch).await;
+        let has_failures = sink_statuses
+            .values()
+            .any(|s| matches!(s, SinkCommitStatus::Failed(_)));
+
+        // ── Step 6b: Save manifest again with final sink commit statuses ──
+        if !sink_statuses.is_empty() {
+            manifest.sink_commit_statuses = sink_statuses;
+            if let Err(e) = self.save_manifest(&manifest).await {
+                warn!(
+                    checkpoint_id,
+                    epoch,
+                    error = %e,
+                    "post-commit manifest update failed"
+                );
+            }
+        }
+
+        if has_failures {
             self.checkpoints_failed += 1;
-            warn!(checkpoint_id, epoch, error = %e, "sink commit partially failed");
+            warn!(checkpoint_id, epoch, "sink commit partially failed");
         }
 
         // ── Step 7: Clear changelog drainer pending buffers ──
@@ -521,8 +537,24 @@ impl CheckpointCoordinator {
         Ok(offsets)
     }
 
-    /// Pre-commits all exactly-once sinks (phase 1).
+    /// Pre-commits all exactly-once sinks (phase 1) with a timeout.
+    ///
+    /// A stuck sink will not block checkpointing indefinitely. The timeout
+    /// is configured via [`CheckpointConfig::pre_commit_timeout`].
     async fn pre_commit_sinks(&self, epoch: u64) -> Result<(), DbError> {
+        let timeout_dur = self.config.pre_commit_timeout;
+
+        match tokio::time::timeout(timeout_dur, self.pre_commit_sinks_inner(epoch)).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(DbError::Checkpoint(format!(
+                "pre-commit timed out after {}s",
+                timeout_dur.as_secs()
+            ))),
+        }
+    }
+
+    /// Inner pre-commit loop (no timeout).
+    async fn pre_commit_sinks_inner(&self, epoch: u64) -> Result<(), DbError> {
         for sink in &self.sinks {
             if sink.exactly_once {
                 let mut connector = sink.connector.lock().await;
@@ -535,30 +567,56 @@ impl CheckpointCoordinator {
         Ok(())
     }
 
-    /// Commits all exactly-once sinks (phase 2).
-    async fn commit_sinks(&self, epoch: u64) -> Result<(), DbError> {
-        let mut first_error: Option<DbError> = None;
+    /// Commits all exactly-once sinks with per-sink status tracking.
+    ///
+    /// Returns a map of sink name → commit status. Sinks that committed
+    /// successfully are `Committed`; failures are `Failed(message)`.
+    /// All sinks are attempted even if some fail.
+    async fn commit_sinks_tracked(&self, epoch: u64) -> HashMap<String, SinkCommitStatus> {
+        let mut statuses = HashMap::new();
 
         for sink in &self.sinks {
             if sink.exactly_once {
                 let mut connector = sink.connector.lock().await;
-                if let Err(e) = connector.commit_epoch(epoch).await {
-                    let err =
-                        DbError::Checkpoint(format!("sink '{}' commit failed: {e}", sink.name));
-                    error!(sink = %sink.name, epoch, error = %e, "sink commit failed");
-                    if first_error.is_none() {
-                        first_error = Some(err);
+                match connector.commit_epoch(epoch).await {
+                    Ok(()) => {
+                        statuses.insert(sink.name.clone(), SinkCommitStatus::Committed);
+                        debug!(sink = %sink.name, epoch, "sink committed");
                     }
-                } else {
-                    debug!(sink = %sink.name, epoch, "sink committed");
+                    Err(e) => {
+                        let msg = format!("sink '{}' commit failed: {e}", sink.name);
+                        error!(sink = %sink.name, epoch, error = %e, "sink commit failed");
+                        statuses.insert(sink.name.clone(), SinkCommitStatus::Failed(msg));
+                    }
                 }
             }
         }
 
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
+        statuses
+    }
+
+    /// Saves a manifest to the checkpoint store (blocking I/O on a task).
+    async fn save_manifest(&self, manifest: &CheckpointManifest) -> Result<(), DbError> {
+        let store = Arc::clone(&self.store);
+        let manifest = manifest.clone();
+        let task_result = tokio::task::spawn_blocking(move || store.save(&manifest)).await;
+
+        match task_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(DbError::Checkpoint(format!("manifest persist failed: {e}"))),
+            Err(join_err) => Err(DbError::Checkpoint(format!(
+                "manifest persist task failed: {join_err}"
+            ))),
         }
+    }
+
+    /// Returns initial sink commit statuses (all `Pending`) for the manifest.
+    fn initial_sink_commit_statuses(&self) -> HashMap<String, SinkCommitStatus> {
+        self.sinks
+            .iter()
+            .filter(|s| s.exactly_once)
+            .map(|s| (s.name.clone(), SinkCommitStatus::Pending))
+            .collect()
     }
 
     /// Rolls back all exactly-once sinks.
@@ -638,7 +696,7 @@ impl CheckpointCoordinator {
     /// # Errors
     ///
     /// Returns `DbError::Checkpoint` if any phase fails.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn checkpoint_with_extra_tables(
         &mut self,
         operator_states: HashMap<String, Vec<u8>>,
@@ -689,6 +747,7 @@ impl CheckpointCoordinator {
         manifest.source_offsets = source_offsets;
         manifest.table_offsets = table_offsets;
         manifest.sink_epochs = self.collect_sink_epochs();
+        manifest.sink_commit_statuses = self.initial_sink_commit_statuses();
         manifest.watermark = watermark;
         manifest.wal_position = wal_position;
         manifest.per_core_wal_positions = per_core_wal_positions;
@@ -702,19 +761,9 @@ impl CheckpointCoordinator {
             );
         }
 
-        // ── Step 5: Persist manifest ──
+        // ── Step 5: Persist manifest (decision record — sinks are Pending) ──
         self.phase = CheckpointPhase::Persisting;
-        let store = Arc::clone(&self.store);
-        let task_result = tokio::task::spawn_blocking(move || store.save(&manifest)).await;
-
-        let save_result = match task_result {
-            Ok(inner) => inner,
-            Err(join_err) => Err(CheckpointStoreError::Io(std::io::Error::other(
-                join_err.to_string(),
-            ))),
-        };
-
-        if let Err(e) = save_result {
+        if let Err(e) = self.save_manifest(&manifest).await {
             self.phase = CheckpointPhase::Idle;
             self.checkpoints_failed += 1;
             let duration = start.elapsed();
@@ -730,11 +779,29 @@ impl CheckpointCoordinator {
             });
         }
 
-        // ── Step 6: Sink commit ──
+        // ── Step 6: Sink commit (per-sink tracking) ──
         self.phase = CheckpointPhase::Committing;
-        if let Err(e) = self.commit_sinks(epoch).await {
+        let sink_statuses = self.commit_sinks_tracked(epoch).await;
+        let has_failures = sink_statuses
+            .values()
+            .any(|s| matches!(s, SinkCommitStatus::Failed(_)));
+
+        // ── Step 6b: Save manifest again with final sink commit statuses ──
+        if !sink_statuses.is_empty() {
+            manifest.sink_commit_statuses = sink_statuses;
+            if let Err(e) = self.save_manifest(&manifest).await {
+                warn!(
+                    checkpoint_id,
+                    epoch,
+                    error = %e,
+                    "post-commit manifest update failed"
+                );
+            }
+        }
+
+        if has_failures {
             self.checkpoints_failed += 1;
-            warn!(checkpoint_id, epoch, error = %e, "sink commit partially failed");
+            warn!(checkpoint_id, epoch, "sink commit partially failed");
         }
 
         // ── Success ──

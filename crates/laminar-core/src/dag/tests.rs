@@ -1325,12 +1325,17 @@ fn test_executor_metrics_tracking() {
     // Three nodes processed: src, op, snk.
     // src and op each process 1 event = 2 events_processed.
     // snk gets collected directly, not processed through operator.
+    #[cfg(feature = "dag-metrics")]
     assert!(m.events_processed >= 2);
     // src routes to op, op routes to snk.
+    #[cfg(feature = "dag-metrics")]
     assert!(m.events_routed >= 1);
     // snk has no input queue events to skip (it gets events).
     // The executor processes in topological order, some nodes have empty queues.
     // In a linear DAG with one event, all nodes receive it, so nodes_skipped may be 0.
+    // Without dag-metrics feature, counters are always 0.
+    #[cfg(not(feature = "dag-metrics"))]
+    let _ = m;
 }
 
 #[test]
@@ -1347,6 +1352,7 @@ fn test_executor_metrics_reset() {
     let mut executor = DagExecutor::from_dag(&dag);
     executor.process_event(src_id, test_event(1000, 1)).unwrap();
 
+    #[cfg(feature = "dag-metrics")]
     assert!(executor.metrics().events_processed > 0);
     executor.reset_metrics();
     assert_eq!(executor.metrics().events_processed, 0);
@@ -1377,7 +1383,10 @@ fn test_executor_empty_queue_skip() {
 
     // src_b had no events, so it should have been skipped.
     let m = executor.metrics();
+    #[cfg(feature = "dag-metrics")]
     assert!(m.nodes_skipped > 0);
+    #[cfg(not(feature = "dag-metrics"))]
+    let _ = m;
 }
 
 #[test]
@@ -1545,6 +1554,7 @@ fn test_executor_multicast_metrics() {
     executor.process_event(src_id, test_event(1000, 1)).unwrap();
 
     // shared -> {a, b} is a multicast.
+    #[cfg(feature = "dag-metrics")]
     assert!(executor.metrics().multicast_publishes > 0);
 }
 
@@ -2935,10 +2945,12 @@ fn test_process_watermark_advances_generators() {
 
     // Process watermark
     executor.process_watermark(src_id, 5000).unwrap();
+    #[cfg(feature = "dag-metrics")]
     assert_eq!(executor.metrics().watermarks_processed, 1);
 
     // Process another watermark
     executor.process_watermark(src_id, 8000).unwrap();
+    #[cfg(feature = "dag-metrics")]
     assert_eq!(executor.metrics().watermarks_processed, 2);
 }
 

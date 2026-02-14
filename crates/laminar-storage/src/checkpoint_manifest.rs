@@ -19,6 +19,22 @@
 
 use std::collections::HashMap;
 
+/// Per-sink commit status tracked during the checkpoint commit phase.
+///
+/// After the manifest is persisted (Step 5), sinks start as [`Pending`](Self::Pending).
+/// The coordinator updates each sink's status during commit (Step 6) and
+/// saves the manifest again. Recovery uses these statuses to determine
+/// which sinks need rollback.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum SinkCommitStatus {
+    /// Sink has been pre-committed but not yet committed.
+    Pending,
+    /// Sink commit succeeded.
+    Committed,
+    /// Sink commit failed.
+    Failed(String),
+}
+
 /// A point-in-time snapshot of all pipeline state.
 ///
 /// This is the single source of truth for checkpoint persistence, replacing
@@ -44,6 +60,13 @@ pub struct CheckpointManifest {
     /// Per-sink last committed epoch (key: sink name).
     #[serde(default)]
     pub sink_epochs: HashMap<String, u64>,
+    /// Per-sink commit status (key: sink name).
+    ///
+    /// Populated during the commit phase (Step 6) and saved to the manifest
+    /// afterward. Recovery uses this to decide which sinks need rollback
+    /// (those with [`SinkCommitStatus::Pending`] or [`SinkCommitStatus::Failed`]).
+    #[serde(default)]
+    pub sink_commit_statuses: HashMap<String, SinkCommitStatus>,
     /// Per-table source offsets for reference tables (key: table name).
     #[serde(default)]
     pub table_offsets: HashMap<String, ConnectorCheckpoint>,
@@ -87,7 +110,74 @@ pub struct CheckpointManifest {
     pub parent_id: Option<u64>,
 }
 
+/// Errors found during manifest validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestValidationError {
+    /// Human-readable description of the issue.
+    pub message: String,
+}
+
+impl std::fmt::Display for ManifestValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 impl CheckpointManifest {
+    /// Validates manifest consistency before recovery.
+    ///
+    /// Returns a list of issues found. An empty list means the manifest is valid.
+    /// Callers should treat non-empty results as warnings (recovery may still
+    /// proceed) or errors depending on severity.
+    #[must_use]
+    pub fn validate(&self) -> Vec<ManifestValidationError> {
+        let mut errors = Vec::new();
+
+        if self.version == 0 {
+            errors.push(ManifestValidationError {
+                message: "manifest version is 0".into(),
+            });
+        }
+
+        if self.checkpoint_id == 0 {
+            errors.push(ManifestValidationError {
+                message: "checkpoint_id is 0".into(),
+            });
+        }
+
+        if self.epoch == 0 {
+            errors.push(ManifestValidationError {
+                message: "epoch is 0".into(),
+            });
+        }
+
+        if self.timestamp_ms == 0 {
+            errors.push(ManifestValidationError {
+                message: "timestamp_ms is 0 (missing creation time)".into(),
+            });
+        }
+
+        // Sink epochs should match sink commit statuses
+        for sink_name in self.sink_epochs.keys() {
+            if !self.sink_commit_statuses.is_empty()
+                && !self.sink_commit_statuses.contains_key(sink_name)
+            {
+                errors.push(ManifestValidationError {
+                    message: format!("sink '{sink_name}' has epoch but no commit status"),
+                });
+            }
+        }
+
+        // Incremental checkpoints must have a parent
+        if self.is_incremental && self.parent_id.is_none() {
+            errors.push(ManifestValidationError {
+                message: "incremental checkpoint has no parent_id".into(),
+            });
+        }
+
+        errors
+    }
+
     /// Creates a new manifest with the given ID and epoch.
     #[must_use]
     pub fn new(checkpoint_id: u64, epoch: u64) -> Self {
@@ -104,6 +194,7 @@ impl CheckpointManifest {
             timestamp_ms,
             source_offsets: HashMap::new(),
             sink_epochs: HashMap::new(),
+            sink_commit_statuses: HashMap::new(),
             table_offsets: HashMap::new(),
             operator_states: HashMap::new(),
             table_store_checkpoint_path: None,

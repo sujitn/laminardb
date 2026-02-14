@@ -279,7 +279,10 @@ impl DagExecutor {
             }
         }
 
-        self.metrics.watermarks_processed += 1;
+        #[cfg(feature = "dag-metrics")]
+        {
+            self.metrics.watermarks_processed += 1;
+        }
         Ok(())
     }
 
@@ -506,7 +509,10 @@ impl DagExecutor {
         let idx = node_id.0 as usize;
 
         if self.input_queues[idx].is_empty() {
-            self.metrics.nodes_skipped += 1;
+            #[cfg(feature = "dag-metrics")]
+            {
+                self.metrics.nodes_skipped += 1;
+            }
             return;
         }
 
@@ -522,7 +528,10 @@ impl DagExecutor {
         let mut runtime = self.runtimes[idx].take();
 
         for event in events.drain(..) {
-            self.metrics.events_processed += 1;
+            #[cfg(feature = "dag-metrics")]
+            {
+                self.metrics.events_processed += 1;
+            }
 
             let outputs = if let Some(op) = &mut operator {
                 if let Some(rt) = &mut runtime {
@@ -570,10 +579,16 @@ impl DagExecutor {
             return;
         }
 
-        self.metrics.events_routed += 1;
+        #[cfg(feature = "dag-metrics")]
+        {
+            self.metrics.events_routed += 1;
+        }
 
         if entry.is_multicast {
-            self.metrics.multicast_publishes += 1;
+            #[cfg(feature = "dag-metrics")]
+            {
+                self.metrics.multicast_publishes += 1;
+            }
             let targets = entry.target_ids();
 
             // Clone to all targets except the last, which gets the moved value.

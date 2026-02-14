@@ -25,14 +25,14 @@
 
 | # | Fix | File(s) | Impact | Status |
 |---|-----|---------|--------|--------|
-| 11 | Manifest/sink commit atomicity (per-sink tracking) | `checkpoint_coordinator.rs:436-477, 531-554` | Exactly-once | |
-| 12 | WAL synced position tracking | `per_core_wal/writer.rs:75-105` | Data loss prevention | |
-| 13 | Recovery manifest validation | `recovery_manager.rs:120-141` | State corruption prevention | |
-| 14 | Session window LRU cache eviction | `session_window.rs:288-534` | Memory leak prevention | |
-| 15 | Add timeout to two-phase commit pre-commit | `checkpoint_coordinator.rs:517-528` | Availability | |
-| 16 | Changelog drainer max_pending bounds | `changelog_drainer.rs:21-68` | Memory bounds | |
-| 17 | Feature-gate DAG executor metrics | `dag/executor.rs:509-576` | 5-10ns/event | |
-| 18 | Separate PipelineCounters by ring (cache lines) | `metrics.rs:40-62` | False sharing | |
+| 11 | Manifest/sink commit atomicity (per-sink tracking) | `checkpoint_coordinator.rs:436-477, 531-554` | Exactly-once | ✅ Done |
+| 12 | WAL synced position tracking | `per_core_wal/writer.rs:75-105` | Data loss prevention | ✅ Done |
+| 13 | Recovery manifest validation | `recovery_manager.rs:120-141` | State corruption prevention | ✅ Done |
+| 14 | Session window LRU cache eviction | `session_window.rs:288-534` | Memory leak prevention | ✅ Done |
+| 15 | Add timeout to two-phase commit pre-commit | `checkpoint_coordinator.rs:517-528` | Availability | ✅ Done |
+| 16 | Changelog drainer max_pending bounds | `changelog_drainer.rs:21-68` | Memory bounds | ✅ Done (fix #9) |
+| 17 | Feature-gate DAG executor metrics | `dag/executor.rs:509-576` | 5-10ns/event | ✅ Done |
+| 18 | Separate PipelineCounters by ring (cache lines) | `metrics.rs:40-62` | False sharing | ✅ Done |
 
 ### Week 3 — Hardening & Observability
 

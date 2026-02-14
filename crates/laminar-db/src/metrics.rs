@@ -33,11 +33,24 @@ impl std::fmt::Display for PipelineState {
     }
 }
 
+/// Cache line size (bytes) for padding between hot/cold counter groups.
+const CACHE_LINE_SIZE: usize = 64;
+
 /// Shared atomic counters incremented by the pipeline processing loop.
+///
+/// Counters are separated into two groups on different cache lines to
+/// prevent false sharing between Ring 0 (hot path) and Ring 2 (checkpoint):
+///
+/// - **Ring 0 group** (`events_ingested` … `total_batches`): incremented on
+///   every processing cycle from the reactor thread.
+/// - **Ring 2 group** (`checkpoints_completed` … `checkpoint_epoch`): updated
+///   from the async checkpoint coordinator.
 ///
 /// All reads and writes use `Ordering::Relaxed` — metrics are advisory,
 /// not transactional.
+#[repr(C)]
 pub struct PipelineCounters {
+    // ── Ring 0 counters (hot path, tight loop) ──
     /// Total events ingested from sources.
     pub events_ingested: AtomicU64,
     /// Total events emitted to streams/sinks.
@@ -50,7 +63,13 @@ pub struct PipelineCounters {
     pub last_cycle_duration_ns: AtomicU64,
     /// Total batches processed.
     pub total_batches: AtomicU64,
-    // ── F-CKP-009: Checkpoint counters ──
+
+    // ── Cache line padding ──
+    // Ring 0 group is 6 × 8 = 48 bytes. Pad to a full cache line boundary
+    // so Ring 2 counters start on a separate cache line.
+    _pad: [u8; CACHE_LINE_SIZE - (6 * std::mem::size_of::<AtomicU64>()) % CACHE_LINE_SIZE],
+
+    // ── Ring 2 counters (checkpoint coordinator, async) ──
     /// Total checkpoints completed successfully.
     pub checkpoints_completed: AtomicU64,
     /// Total checkpoints that failed.
@@ -72,6 +91,7 @@ impl PipelineCounters {
             cycles: AtomicU64::new(0),
             last_cycle_duration_ns: AtomicU64::new(0),
             total_batches: AtomicU64::new(0),
+            _pad: [0; CACHE_LINE_SIZE - (6 * std::mem::size_of::<AtomicU64>()) % CACHE_LINE_SIZE],
             checkpoints_completed: AtomicU64::new(0),
             checkpoints_failed: AtomicU64::new(0),
             last_checkpoint_duration_ms: AtomicU64::new(0),
@@ -346,6 +366,23 @@ mod tests {
         let dbg = format!("{m:?}");
         assert!(dbg.contains("trades"));
         assert!(dbg.contains("1000"));
+    }
+
+    #[test]
+    fn test_cache_line_separation() {
+        let c = PipelineCounters::new();
+        let base = &c as *const PipelineCounters as usize;
+        let ring0_start = &c.events_ingested as *const AtomicU64 as usize;
+        let ring2_start = &c.checkpoints_completed as *const AtomicU64 as usize;
+
+        // Ring 0 starts at offset 0
+        assert_eq!(ring0_start - base, 0);
+        // Ring 2 starts at least 64 bytes from Ring 0
+        assert!(
+            ring2_start - ring0_start >= 64,
+            "Ring 2 counters must be on a separate cache line (offset: {})",
+            ring2_start - ring0_start
+        );
     }
 
     #[test]
