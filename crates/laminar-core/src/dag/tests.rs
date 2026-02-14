@@ -3343,7 +3343,7 @@ fn test_operator_node_metrics_accumulate() {
     // Process 3 events
     for i in 0..3 {
         executor
-            .process_event(src_id, test_event(1000 + i, i as i64))
+            .process_event(src_id, test_event(1000 + i, i))
             .unwrap();
     }
 
