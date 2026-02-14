@@ -53,6 +53,10 @@ pub(crate) struct StreamRegistration {
     pub name: String,
     /// SQL query that defines the stream.
     pub query_sql: String,
+    /// EMIT clause from the planner (e.g., `OnWindowClose`, `Final`).
+    pub emit_clause: Option<laminar_sql::parser::EmitClause>,
+    /// Window configuration from the planner (window type, size, gap, etc.).
+    pub window_config: Option<laminar_sql::translator::WindowOperatorConfig>,
 }
 
 /// Registration of a reference/dimension table from DDL.
@@ -412,6 +416,8 @@ mod tests {
         mgr.register_stream(StreamRegistration {
             name: "agg_stream".to_string(),
             query_sql: "SELECT count(*) FROM events".to_string(),
+            emit_clause: None,
+            window_config: None,
         });
         assert_eq!(mgr.stream_names(), vec!["agg_stream"]);
     }
@@ -566,6 +572,8 @@ mod tests {
         mgr.register_stream(StreamRegistration {
             name: "st1".to_string(),
             query_sql: "SELECT 1".to_string(),
+            emit_clause: None,
+            window_config: None,
         });
         assert!(mgr.unregister_sink("s1"));
         assert!(!mgr.unregister_sink("s1"));

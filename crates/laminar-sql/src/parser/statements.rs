@@ -211,8 +211,10 @@ pub enum SinkFrom {
 pub struct WatermarkDef {
     /// Column to use for watermark
     pub column: Ident,
-    /// Watermark expression (e.g., column - INTERVAL '5' SECOND)
-    pub expression: Expr,
+    /// Watermark expression (e.g., column - INTERVAL '5' SECOND).
+    /// `None` when `WATERMARK FOR col` is used without `AS expr`,
+    /// meaning watermark advances via `source.watermark()` with zero delay.
+    pub expression: Option<Expr>,
 }
 
 /// Late data handling clause.
@@ -458,7 +460,7 @@ mod tests {
             ],
             watermark: Some(WatermarkDef {
                 column: Ident::new("timestamp"),
-                expression: Expr::Identifier(Ident::new("timestamp")),
+                expression: Some(Expr::Identifier(Ident::new("timestamp"))),
             }),
             with_options: HashMap::from([
                 ("connector".to_string(), "kafka".to_string()),

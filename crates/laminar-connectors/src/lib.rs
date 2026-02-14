@@ -42,7 +42,6 @@
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss,
-        clippy::unchecked_time_subtraction,
         clippy::no_effect_underscore_binding,
         unused_mut
     )
