@@ -371,9 +371,9 @@ mod tests {
     #[test]
     fn test_cache_line_separation() {
         let c = PipelineCounters::new();
-        let base = &c as *const PipelineCounters as usize;
-        let ring0_start = &c.events_ingested as *const AtomicU64 as usize;
-        let ring2_start = &c.checkpoints_completed as *const AtomicU64 as usize;
+        let base = &raw const c as usize;
+        let ring0_start = &raw const c.events_ingested as usize;
+        let ring2_start = &raw const c.checkpoints_completed as usize;
 
         // Ring 0 starts at offset 0
         assert_eq!(ring0_start - base, 0);

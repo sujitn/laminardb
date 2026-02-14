@@ -37,7 +37,7 @@ use crate::io_uring::IoUringError;
 /// Default pre-allocation capacity for completion scratch buffers.
 const CQE_SCRATCH_CAPACITY: usize = 64;
 
-/// Three-ring io_uring reactor separating latency, main, and poll operations.
+/// Three-ring `io_uring` reactor separating latency, main, and poll operations.
 pub struct ThreeRingReactor {
     /// Latency-critical operations (network, urgent).
     /// Always checked first, never blocks.
